@@ -26,27 +26,27 @@ enum class ObservedEventKind {
 // 回调在 FakePlayerEngine 的 emit 调用线程同步记录，不进行跨线程操作。
 class RecordingListener final : public core::PlayerEventListener {
 public:
-    void onStateChanged(const core::PlaybackState state) override {
+    void onStateChanged(const core::PlaybackState state) noexcept override {
         events.push_back(ObservedEventKind::State);
         lastState = state;
     }
 
-    void onPositionChanged(core::PlaybackPosition position) override {
+    void onPositionChanged(core::PlaybackPosition position) noexcept override {
         events.push_back(ObservedEventKind::Position);
         lastPosition = std::move(position);
     }
 
     void onDurationChanged(
-        const std::optional<std::chrono::milliseconds> duration) override {
+        const std::optional<std::chrono::milliseconds> duration) noexcept override {
         events.push_back(ObservedEventKind::Duration);
         lastDuration = duration;
     }
 
-    void onEndReached() override {
+    void onEndReached() noexcept override {
         events.push_back(ObservedEventKind::End);
     }
 
-    void onError(core::PlaybackError error) override {
+    void onError(core::PlaybackError error) noexcept override {
         events.push_back(ObservedEventKind::Error);
         lastError = std::move(error);
     }
@@ -63,14 +63,14 @@ class StateMachineListener final : public core::PlayerEventListener {
 public:
     explicit StateMachineListener(core::PlaybackStateMachine& machine) : machine_(machine) {}
 
-    void onStateChanged(const core::PlaybackState state) override {
+    void onStateChanged(const core::PlaybackState state) noexcept override {
         results.push_back(machine_.transitionTo(state));
     }
 
-    void onPositionChanged(core::PlaybackPosition) override {}
-    void onDurationChanged(std::optional<std::chrono::milliseconds>) override {}
-    void onEndReached() override {}
-    void onError(core::PlaybackError) override {}
+    void onPositionChanged(core::PlaybackPosition) noexcept override {}
+    void onDurationChanged(std::optional<std::chrono::milliseconds>) noexcept override {}
+    void onEndReached() noexcept override {}
+    void onError(core::PlaybackError) noexcept override {}
 
     std::vector<core::PlaybackTransitionResult> results;
 

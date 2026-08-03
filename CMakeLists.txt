@@ -83,6 +83,19 @@ if(NOT MEDIAHUB_CORE_ONLY)
 
     target_include_directories(mediahub_libvlc SYSTEM INTERFACE "${MEDIAHUB_VLC_INCLUDE_DIR}")
     target_link_libraries(mediahub_libvlc INTERFACE "${MEDIAHUB_VLC_IMPORT_LIBRARY}")
+
+    function(mediahub_deploy_vlc targetName)
+        add_custom_command(TARGET ${targetName} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${MEDIAHUB_VLC_RUNTIME}"
+                "${MEDIAHUB_VLC_CORE_RUNTIME}"
+                "$<TARGET_FILE_DIR:${targetName}>"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${MEDIAHUB_VLC_PLUGIN_DIR}"
+                "$<TARGET_FILE_DIR:${targetName}>/plugins"
+            COMMENT "Deploying the libVLC runtime for ${targetName}"
+        )
+    endfunction()
 endif()
 
 add_library(mediahub_core STATIC
@@ -96,7 +109,13 @@ target_include_directories(mediahub_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc
 mediahub_enable_warnings(mediahub_core)
 
 if(NOT MEDIAHUB_CORE_ONLY)
-    add_library(mediahub_engine_vlc STATIC src/engine_vlc/vlc_engine_placeholder.cpp)
+    add_library(mediahub_engine_vlc STATIC
+        include/mediahub/engine_vlc/vlc_player_engine.h
+        src/engine_vlc/vlc_event_mapping.cpp
+        src/engine_vlc/vlc_event_mapping.h
+        src/engine_vlc/vlc_handles.h
+        src/engine_vlc/vlc_player_engine.cpp
+    )
     target_link_libraries(mediahub_engine_vlc
         PUBLIC mediahub_core
         PRIVATE MediaHub::LibVLC
@@ -123,17 +142,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     set_target_properties(mediahub_vlc_probe PROPERTIES OUTPUT_NAME MediaHubVlcProbe)
     target_link_libraries(mediahub_vlc_probe PRIVATE MediaHub::LibVLC)
     mediahub_enable_warnings(mediahub_vlc_probe)
-
-    add_custom_command(TARGET mediahub_vlc_probe POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${MEDIAHUB_VLC_RUNTIME}"
-            "${MEDIAHUB_VLC_CORE_RUNTIME}"
-            "$<TARGET_FILE_DIR:mediahub_vlc_probe>"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${MEDIAHUB_VLC_PLUGIN_DIR}"
-            "$<TARGET_FILE_DIR:mediahub_vlc_probe>/plugins"
-        COMMENT "Deploying the libVLC runtime for the stage 1 probe"
-    )
+    mediahub_deploy_vlc(mediahub_vlc_probe)
 endif()
 
 if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)

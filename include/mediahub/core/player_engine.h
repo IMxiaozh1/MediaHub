@@ -7,17 +7,18 @@
 
 namespace mediahub::core {
 
-// 接收播放内核产生的异步事件。调用线程可能是任意内核线程，实现不得假定为 GUI 线程。
+// 接收播放内核产生的异步事件。调用线程可能是任意内核线程，实现不得假定为 GUI
+// 线程；回调不得抛出异常，也不得同步调用停止、释放或更换监听器等内核方法。
 class PlayerEventListener {
 public:
     virtual ~PlayerEventListener() = default;
 
-    virtual void onStateChanged(PlaybackState state) = 0;
-    virtual void onPositionChanged(PlaybackPosition position) = 0;
+    virtual void onStateChanged(PlaybackState state) noexcept = 0;
+    virtual void onPositionChanged(PlaybackPosition position) noexcept = 0;
     virtual void onDurationChanged(
-        std::optional<std::chrono::milliseconds> duration) = 0;
-    virtual void onEndReached() = 0;
-    virtual void onError(PlaybackError error) = 0;
+        std::optional<std::chrono::milliseconds> duration) noexcept = 0;
+    virtual void onEndReached() noexcept = 0;
+    virtual void onError(PlaybackError error) noexcept = 0;
 };
 
 // 与具体解码库无关的播放边界。控制方法只提交请求，完成结果必须以事件为准。

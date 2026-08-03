@@ -14,6 +14,19 @@ mediahub_enable_warnings(mediahub_tests)
 gtest_discover_tests(mediahub_tests TEST_PREFIX "unit.")
 
 if(NOT MEDIAHUB_CORE_ONLY)
+    add_executable(mediahub_vlc_tests integration/vlc_player_engine_test.cpp)
+    target_include_directories(mediahub_vlc_tests
+        PRIVATE "${PROJECT_SOURCE_DIR}/src/engine_vlc"
+    )
+    target_link_libraries(mediahub_vlc_tests PRIVATE mediahub_engine_vlc GTest::gtest_main)
+    mediahub_enable_warnings(mediahub_vlc_tests)
+    mediahub_deploy_vlc(mediahub_vlc_tests)
+    gtest_discover_tests(mediahub_vlc_tests
+        TEST_PREFIX "integration."
+        DISCOVERY_TIMEOUT 10
+        PROPERTIES TIMEOUT 30
+    )
+
     add_executable(mediahub_gui_tests gui/main_window_test.cpp)
     set_target_properties(mediahub_gui_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_gui_tests PRIVATE mediahub_gui_support Qt5::Test)
