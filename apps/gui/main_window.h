@@ -11,6 +11,7 @@ class QCloseEvent;
 class QLabel;
 class QPushButton;
 class QEvent;
+class QSlider;
 class QVBoxLayout;
 
 namespace mediahub::gui {
@@ -37,6 +38,11 @@ signals:
     void playRequested();
     void pauseRequested();
     void stopRequested();
+    void seekStarted();
+    void seekPreviewRequested(int progressValue);
+    void seekRequested(int progressValue);
+    void volumeRequested(int volume);
+    void muteToggled();
     void videoSurfaceReady(void* nativeHandle);
     void closing();
 
@@ -59,10 +65,15 @@ private:
     QPushButton* pauseButton_{nullptr};
     QPushButton* stopButton_{nullptr};
     QPushButton* fullScreenButton_{nullptr};
+    QPushButton* muteButton_{nullptr};
+    QSlider* progressSlider_{nullptr};
+    QSlider* volumeSlider_{nullptr};
     VideoOutputWidget* videoOutput_{nullptr};
     QLabel* mediaNameLabel_{nullptr};
     QLabel* statusLabel_{nullptr};
     QLabel* errorLabel_{nullptr};
+    QLabel* positionLabel_{nullptr};
+    QLabel* volumeLabel_{nullptr};
     QVBoxLayout* rootLayout_{nullptr};
     QList<QWidget*> fullScreenChrome_;
 };

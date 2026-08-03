@@ -7,6 +7,8 @@
 #include <QFileInfo>
 #include <QThread>
 
+#include <algorithm>
+#include <chrono>
 #include <string>
 #include <utility>
 
@@ -30,6 +32,63 @@ bool isAudioFile(const QString& filePath) {
            suffix == QStringLiteral("opus") || suffix == QStringLiteral("wma");
 }
 
+QString formatTime(const std::chrono::milliseconds value) {
+    const auto totalSeconds = std::max<std::chrono::milliseconds::rep>(
+                                  value.count(), 0) /
+                              1000;
+    const auto hours = totalSeconds / 3600;
+    const auto minutes = (totalSeconds % 3600) / 60;
+    const auto seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(static_cast<qlonglong>(hours))
+            .arg(static_cast<qlonglong>(minutes), 2, 10, QLatin1Char('0'))
+            .arg(static_cast<qlonglong>(seconds), 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2")
+        .arg(static_cast<qlonglong>(minutes), 2, 10, QLatin1Char('0'))
+        .arg(static_cast<qlonglong>(seconds), 2, 10, QLatin1Char('0'));
+}
+
+std::chrono::milliseconds boundedPosition(
+    const std::chrono::milliseconds current,
+    const std::optional<std::chrono::milliseconds> total) {
+    auto bounded = std::max(current, std::chrono::milliseconds::zero());
+    if (total.has_value()) {
+        bounded = std::min(bounded, std::max(*total, std::chrono::milliseconds::zero()));
+    }
+    return bounded;
+}
+
+QString formatPosition(const std::chrono::milliseconds current,
+                       const std::optional<std::chrono::milliseconds> total) {
+    return QStringLiteral("%1 / %2")
+        .arg(formatTime(boundedPosition(current, total)),
+             total.has_value() ? formatTime(*total) : QStringLiteral("--:--"));
+}
+
+int progressValue(const std::chrono::milliseconds current,
+                  const std::optional<std::chrono::milliseconds> total) {
+    if (!total.has_value() || total->count() <= 0) {
+        return 0;
+    }
+    const long double ratio = static_cast<long double>(boundedPosition(current, total).count()) /
+                              static_cast<long double>(total->count());
+    return std::clamp(static_cast<int>(ratio * kProgressMaximum), 0, kProgressMaximum);
+}
+
+std::chrono::milliseconds positionFromProgress(
+    const int value, const std::optional<std::chrono::milliseconds> total) {
+    if (!total.has_value() || total->count() <= 0) {
+        return std::chrono::milliseconds::zero();
+    }
+    const int boundedValue = std::clamp(value, 0, kProgressMaximum);
+    const long double target = static_cast<long double>(total->count()) * boundedValue /
+                               kProgressMaximum;
+    return std::chrono::milliseconds(
+        static_cast<std::chrono::milliseconds::rep>(target));
+}
+
 }  // namespace
 
 PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
@@ -42,6 +101,13 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
     connect(&window_, &MainWindow::playRequested, this, &PlayerPresenter::requestPlay);
     connect(&window_, &MainWindow::pauseRequested, this, &PlayerPresenter::requestPause);
     connect(&window_, &MainWindow::stopRequested, this, &PlayerPresenter::requestStop);
+    connect(&window_, &MainWindow::seekStarted, this, &PlayerPresenter::beginSeek);
+    connect(&window_, &MainWindow::seekPreviewRequested, this,
+            &PlayerPresenter::previewSeek);
+    connect(&window_, &MainWindow::seekRequested, this, &PlayerPresenter::commitSeek);
+    connect(&window_, &MainWindow::volumeRequested, this,
+            &PlayerPresenter::requestVolume);
+    connect(&window_, &MainWindow::muteToggled, this, &PlayerPresenter::toggleMuted);
     connect(&window_, &MainWindow::videoSurfaceReady, this,
             &PlayerPresenter::attachVideoSurface);
     connect(&window_, &MainWindow::closing, this, &PlayerPresenter::shutdown);
@@ -75,6 +141,9 @@ void PlayerPresenter::openLocalFile(const QString& filePath) {
     const QFileInfo fileInfo(filePath);
     mediaName_ = fileInfo.fileName().isEmpty() ? filePath : fileInfo.fileName();
     isAutoPlayPending_ = true;
+    isSeeking_ = false;
+    seekPreviewPosition_.reset();
+    position_ = {};
     isVideoMedia_ = !isAudioFile(filePath);
     isPreparingMedia_ = true;
     window_.clearPlaybackError();
@@ -89,6 +158,8 @@ void PlayerPresenter::shutdown() noexcept {
 
     isShuttingDown_ = true;
     isAutoPlayPending_ = false;
+    isSeeking_ = false;
+    seekPreviewPosition_.reset();
     eventBridge_.deactivate();
     disconnect(&eventBridge_, nullptr, this, nullptr);
     try {
@@ -133,8 +204,80 @@ void PlayerPresenter::requestStop() {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!isShuttingDown_ && makeViewState().canStop) {
         isAutoPlayPending_ = false;
+        isSeeking_ = false;
+        seekPreviewPosition_.reset();
         engine_.stop();
     }
+}
+
+void PlayerPresenter::beginSeek() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_ || !makeViewState().canSeek) {
+        return;
+    }
+
+    isSeeking_ = true;
+    seekPreviewPosition_ = boundedPosition(position_.current, position_.total);
+    render();
+}
+
+void PlayerPresenter::previewSeek(const int progress) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_ || !isSeeking_) {
+        return;
+    }
+
+    seekPreviewPosition_ = positionFromProgress(progress, position_.total);
+    render();
+}
+
+void PlayerPresenter::commitSeek(const int progress) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_) {
+        return;
+    }
+
+    const bool isPlaybackSeekable =
+        position_.isSeekable && position_.total.has_value() && position_.total->count() > 0 &&
+        (stateMachine_.state() == core::PlaybackState::Playing ||
+         stateMachine_.state() == core::PlaybackState::Paused);
+    if (!isPlaybackSeekable) {
+        isSeeking_ = false;
+        seekPreviewPosition_.reset();
+        render();
+        return;
+    }
+
+    const auto target = positionFromProgress(progress, position_.total);
+    isSeeking_ = false;
+    seekPreviewPosition_.reset();
+    position_.current = target;
+    render();
+    engine_.seek(target);
+}
+
+void PlayerPresenter::requestVolume(const int volume) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_) {
+        return;
+    }
+
+    const int boundedVolume = std::clamp(volume, 0, 100);
+    engine_.setVolume(boundedVolume);
+    volume_ = boundedVolume;
+    render();
+}
+
+void PlayerPresenter::toggleMuted() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_) {
+        return;
+    }
+
+    const bool nextMuted = !isMuted_;
+    engine_.setMuted(nextMuted);
+    isMuted_ = nextMuted;
+    render();
 }
 
 void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
@@ -145,6 +288,11 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
 
     if (state == core::PlaybackState::Opening || state == core::PlaybackState::Failed) {
         isPreparingMedia_ = false;
+    }
+    if (state == core::PlaybackState::Stopped || state == core::PlaybackState::Ended ||
+        state == core::PlaybackState::Failed) {
+        isSeeking_ = false;
+        seekPreviewPosition_.reset();
     }
 
     const auto result = stateMachine_.transitionTo(state);
@@ -165,6 +313,9 @@ void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!isShuttingDown_) {
         position_ = std::move(position);
+        if (!isSeeking_) {
+            render();
+        }
     }
 }
 
@@ -172,6 +323,9 @@ void PlayerPresenter::handleDurationChanged(const OptionalDuration duration) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!isShuttingDown_) {
         position_.total = duration;
+        if (!isSeeking_) {
+            render();
+        }
     }
 }
 
@@ -183,6 +337,8 @@ void PlayerPresenter::handleEndReached() {
 
     const auto result = stateMachine_.transitionTo(core::PlaybackState::Ended);
     if (result != core::PlaybackTransitionResult::Rejected) {
+        isSeeking_ = false;
+        seekPreviewPosition_.reset();
         render();
         emit stateApplied(stateMachine_.state());
     }
@@ -195,6 +351,8 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
     }
 
     isAutoPlayPending_ = false;
+    isSeeking_ = false;
+    seekPreviewPosition_.reset();
     isPreparingMedia_ = false;
     const auto result = stateMachine_.transitionTo(core::PlaybackState::Failed);
     if (result != core::PlaybackTransitionResult::Rejected) {
@@ -212,6 +370,15 @@ void PlayerPresenter::render() {
 PlayerViewState PlayerPresenter::makeViewState() const {
     PlayerViewState viewState;
     viewState.mediaName = mediaName_;
+    viewState.videoPlaceholder = QStringLiteral("打开媒体后，画面会出现在这里");
+    const auto displayedPosition = seekPreviewPosition_.value_or(position_.current);
+    viewState.positionText = formatPosition(displayedPosition, position_.total);
+    viewState.progressValue = progressValue(displayedPosition, position_.total);
+    viewState.volumeValue = volume_;
+    viewState.isMuted = isMuted_;
+    viewState.volumeText = isMuted_
+                               ? QStringLiteral("已静音 · %1%").arg(volume_)
+                               : QStringLiteral("音量 %1%").arg(volume_);
 
     switch (stateMachine_.state()) {
     case core::PlaybackState::Idle:
@@ -247,6 +414,11 @@ PlayerViewState PlayerPresenter::makeViewState() const {
         viewState.statusText = QStringLiteral("播放失败");
         break;
     }
+
+    viewState.canSeek = position_.isSeekable && position_.total.has_value() &&
+                        position_.total->count() > 0 &&
+                        (stateMachine_.state() == core::PlaybackState::Playing ||
+                         stateMachine_.state() == core::PlaybackState::Paused);
 
     if (mediaName_ == QStringLiteral("未选择媒体")) {
         return viewState;

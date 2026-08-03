@@ -315,6 +315,10 @@ TEST(VlcPlayerEngineTest, PlaysPausesSeeksResumesAndStopsGeneratedWav) {
     ASSERT_TRUE(listener.waitForKnownDuration());
     ASSERT_TRUE(listener.waitForPositionAtLeast(100ms));
     EXPECT_EQ(engine.state(), core::PlaybackState::Playing);
+    engine.setVolume(64);
+    engine.setMuted(true);
+    engine.setMuted(false);
+    EXPECT_EQ(engine.state(), core::PlaybackState::Playing);
 
     const auto firstPause = listener.stateCount(core::PlaybackState::Paused) + 1;
     engine.pause();
@@ -322,6 +326,7 @@ TEST(VlcPlayerEngineTest, PlaysPausesSeeksResumesAndStopsGeneratedWav) {
 
     engine.seek(1s);
     ASSERT_TRUE(listener.waitForPositionAtLeast(900ms));
+    EXPECT_EQ(engine.state(), core::PlaybackState::Paused);
 
     const auto secondPlaying = listener.stateCount(core::PlaybackState::Playing) + 1;
     engine.play();

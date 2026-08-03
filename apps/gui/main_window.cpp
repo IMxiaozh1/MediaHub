@@ -13,7 +13,9 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QSlider>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -100,6 +102,49 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     cardLayout->addWidget(errorLabel_);
     rootLayout_->addWidget(mediaCard);
 
+    auto* const transportPanel = new QFrame(centralWidget);
+    transportPanel->setObjectName(QStringLiteral("transportPanel"));
+    auto* const transportLayout = new QVBoxLayout(transportPanel);
+    transportLayout->setContentsMargins(20, 14, 20, 14);
+    transportLayout->setSpacing(10);
+
+    auto* const timelineHeader = new QHBoxLayout();
+    auto* const progressCaption = new QLabel(QStringLiteral("播放进度"), transportPanel);
+    progressCaption->setObjectName(QStringLiteral("transportCaptionLabel"));
+    positionLabel_ = new QLabel(QStringLiteral("00:00 / --:--"), transportPanel);
+    positionLabel_->setObjectName(QStringLiteral("positionLabel"));
+    timelineHeader->addWidget(progressCaption);
+    timelineHeader->addStretch(1);
+    timelineHeader->addWidget(positionLabel_);
+    transportLayout->addLayout(timelineHeader);
+
+    progressSlider_ = new QSlider(Qt::Horizontal, transportPanel);
+    progressSlider_->setObjectName(QStringLiteral("progressSlider"));
+    progressSlider_->setAccessibleName(QStringLiteral("播放进度"));
+    progressSlider_->setRange(0, kProgressMaximum);
+    progressSlider_->setPageStep(50);
+    progressSlider_->setEnabled(false);
+    transportLayout->addWidget(progressSlider_);
+
+    auto* const volumeRow = new QHBoxLayout();
+    volumeRow->setSpacing(12);
+    volumeLabel_ = new QLabel(QStringLiteral("音量 100%"), transportPanel);
+    volumeLabel_->setObjectName(QStringLiteral("volumeLabel"));
+    volumeSlider_ = new QSlider(Qt::Horizontal, transportPanel);
+    volumeSlider_->setObjectName(QStringLiteral("volumeSlider"));
+    volumeSlider_->setAccessibleName(QStringLiteral("音量"));
+    volumeSlider_->setRange(0, 100);
+    volumeSlider_->setSingleStep(1);
+    volumeSlider_->setPageStep(10);
+    volumeSlider_->setValue(100);
+    muteButton_ = new QPushButton(QStringLiteral("静音"), transportPanel);
+    muteButton_->setObjectName(QStringLiteral("muteButton"));
+    volumeRow->addWidget(volumeLabel_);
+    volumeRow->addWidget(volumeSlider_, 1);
+    volumeRow->addWidget(muteButton_);
+    transportLayout->addLayout(volumeRow);
+    rootLayout_->addWidget(transportPanel);
+
     auto* const controls = new QHBoxLayout();
     controls->setSpacing(12);
     openButton_ = new QPushButton(QStringLiteral("打开文件"), centralWidget);
@@ -124,6 +169,7 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
                          title,
                          subtitle,
                          mediaCard,
+                         transportPanel,
                          openButton_,
                          playButton_,
                          pauseButton_,
@@ -192,6 +238,36 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
             color: #983f28;
             padding: 9px 12px;
         }
+        QFrame#transportPanel {
+            background: #fffdf7;
+            border: 1px solid #d9d4c8;
+            border-radius: 8px;
+        }
+        QLabel#transportCaptionLabel, QLabel#positionLabel, QLabel#volumeLabel {
+            color: #49645f;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        QSlider::groove:horizontal {
+            background: #d9e1dc;
+            border-radius: 3px;
+            height: 6px;
+        }
+        QSlider::sub-page:horizontal {
+            background: #cc5a36;
+            border-radius: 3px;
+        }
+        QSlider::handle:horizontal {
+            background: #fffdf7;
+            border: 2px solid #1f7770;
+            border-radius: 7px;
+            margin: -5px 0;
+            width: 14px;
+        }
+        QSlider::groove:horizontal:disabled,
+        QSlider::sub-page:horizontal:disabled {
+            background: #e2dfd7;
+        }
         QPushButton {
             background: #fffdf7;
             border: 1px solid #aebdb7;
@@ -219,6 +295,10 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
             border-color: #d4cfc5;
             color: #a09d95;
         }
+        QPushButton#muteButton {
+            min-width: 76px;
+            padding: 7px 12px;
+        }
     )"));
 
     connect(openAction_, &QAction::triggered, this, &MainWindow::chooseLocalFile);
@@ -226,6 +306,19 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     connect(playButton_, &QPushButton::clicked, this, &MainWindow::playRequested);
     connect(pauseButton_, &QPushButton::clicked, this, &MainWindow::pauseRequested);
     connect(stopButton_, &QPushButton::clicked, this, &MainWindow::stopRequested);
+    connect(progressSlider_, &QSlider::sliderPressed, this, &MainWindow::seekStarted);
+    connect(progressSlider_, &QSlider::sliderMoved, this,
+            &MainWindow::seekPreviewRequested);
+    connect(progressSlider_, &QSlider::sliderReleased, this, [this] {
+        emit seekRequested(progressSlider_->value());
+    });
+    connect(progressSlider_, &QSlider::valueChanged, this, [this](const int value) {
+        if (!progressSlider_->isSliderDown()) {
+            emit seekRequested(value);
+        }
+    });
+    connect(volumeSlider_, &QSlider::valueChanged, this, &MainWindow::volumeRequested);
+    connect(muteButton_, &QPushButton::clicked, this, &MainWindow::muteToggled);
     connect(fullScreenButton_, &QPushButton::clicked, this, &MainWindow::toggleFullScreen);
     connect(fullScreenAction_, &QAction::triggered, this, &MainWindow::toggleFullScreen);
     connect(exitFullScreenAction, &QAction::triggered, this, &MainWindow::exitFullScreen);
@@ -233,20 +326,31 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
             &MainWindow::videoSurfaceReady);
     connect(exitAction, &QAction::triggered, this, &MainWindow::close);
 
-    applyViewState(PlayerViewState{QStringLiteral("未选择媒体"),
-                                   QStringLiteral("未打开媒体")});
+    PlayerViewState initialState;
+    initialState.mediaName = QStringLiteral("未选择媒体");
+    initialState.statusText = QStringLiteral("未打开媒体");
+    applyViewState(initialState);
 }
 
 void MainWindow::applyViewState(const PlayerViewState& viewState) {
+    const QSignalBlocker progressBlocker(progressSlider_);
+    const QSignalBlocker volumeBlocker(volumeSlider_);
     openAction_->setEnabled(viewState.canOpen);
     openButton_->setEnabled(viewState.canOpen);
     playButton_->setEnabled(viewState.canPlay);
     pauseButton_->setEnabled(viewState.canPause);
     stopButton_->setEnabled(viewState.canStop);
+    progressSlider_->setEnabled(viewState.canSeek);
+    progressSlider_->setValue(viewState.progressValue);
+    volumeSlider_->setValue(viewState.volumeValue);
     fullScreenAction_->setEnabled(viewState.canToggleFullscreen);
     fullScreenButton_->setEnabled(viewState.canToggleFullscreen);
     mediaNameLabel_->setText(viewState.mediaName);
     statusLabel_->setText(viewState.statusText);
+    positionLabel_->setText(viewState.positionText);
+    volumeLabel_->setText(viewState.volumeText);
+    muteButton_->setText(viewState.isMuted ? QStringLiteral("取消静音")
+                                           : QStringLiteral("静音"));
     videoOutput_->setPresentation(viewState.isVideoSurfaceActive,
                                   viewState.videoPlaceholder);
     if (!viewState.canToggleFullscreen && isFullScreen()) {

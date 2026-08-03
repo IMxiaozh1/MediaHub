@@ -8,6 +8,8 @@
 #include <QObject>
 #include <QString>
 
+#include <optional>
+
 namespace mediahub::gui {
 
 class MainWindow;
@@ -33,10 +35,15 @@ signals:
     void stateApplied(core::PlaybackState state);
 
 private:
+    // 调用线程：GUI 主线程。以下方法只由主线程输入或队列事件调用。
     void requestPlay();
     void requestPause();
     void requestStop();
-    // 调用线程：GUI 主线程。以下方法只由主线程输入或队列事件调用。
+    void beginSeek();
+    void previewSeek(int progressValue);
+    void commitSeek(int progressValue);
+    void requestVolume(int volume);
+    void toggleMuted();
     void attachVideoSurface(void* nativeHandle);
     void handleStateChanged(core::PlaybackState state);
     void handlePositionChanged(core::PlaybackPosition position);
@@ -51,8 +58,12 @@ private:
     MainWindow& window_;
     core::PlaybackStateMachine stateMachine_;
     core::PlaybackPosition position_;
+    std::optional<std::chrono::milliseconds> seekPreviewPosition_;
     QString mediaName_{QStringLiteral("未选择媒体")};
+    int volume_{100};
     bool isAutoPlayPending_{false};
+    bool isSeeking_{false};
+    bool isMuted_{false};
     bool isVideoMedia_{false};
     bool isPreparingMedia_{false};
     bool isShuttingDown_{false};

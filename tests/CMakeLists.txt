@@ -48,10 +48,10 @@ if(NOT MEDIAHUB_CORE_ONLY)
         VERBATIM
     )
 
-    add_test(NAME gui.stage6_video_output COMMAND mediahub_gui_tests -platform offscreen)
-    set_tests_properties(gui.stage6_video_output PROPERTIES TIMEOUT 15)
+    add_test(NAME gui.stage7_progress_volume COMMAND mediahub_gui_tests -platform offscreen)
+    set_tests_properties(gui.stage7_progress_volume PROPERTIES TIMEOUT 15)
     if(WIN32 AND DEFINED ENV{WINDIR})
-        set_property(TEST gui.stage6_video_output APPEND PROPERTY
+        set_property(TEST gui.stage7_progress_volume APPEND PROPERTY
             ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
         )
     endif()

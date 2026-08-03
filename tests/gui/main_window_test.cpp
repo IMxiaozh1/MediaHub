@@ -9,6 +9,7 @@
 #include <QCoreApplication>
 #include <QLabel>
 #include <QPushButton>
+#include <QSlider>
 #include <QTest>
 #include <QThread>
 
@@ -63,6 +64,14 @@ bool hasSurfaceCommand(const GuiHarness& harness, const bool expectsNullHandle) 
     });
 }
 
+int commandCount(const GuiHarness& harness, const test::FakeEngineCommandKind kind) {
+    const auto commands = harness.engine.commands();
+    return static_cast<int>(std::count_if(
+        commands.begin(), commands.end(), [kind](const auto& command) {
+            return command.kind == kind;
+        }));
+}
+
 }  // namespace
 
 class MainWindowTest final : public QObject {
@@ -78,6 +87,10 @@ private slots:
     void displaysEngineErrorWithoutBlockingDialog();
     void appliesWorkerThreadStateOnGuiThread();
     void forwardsEveryBridgeEventAsQueuedValue();
+    void rendersPositionDurationAndSeekability();
+    void keepsSeekPreviewStableAndSeeksOnlyOnRelease();
+    void routesVolumeAndMuteWithoutChangingPlaybackState();
+    void appliesBurstPositionEventsOnGuiThread();
     void switchesBetweenVideoSurfaceAndAudioPlaceholder();
     void resizesVideoSurfaceAndTogglesFullScreen();
     void stopsForwardingBeforeWindowCloses();
@@ -95,6 +108,20 @@ void MainWindowTest::hasFormalInitialLayout() {
     QVERIFY(!requiredChild<QPushButton>(harness.window, "pauseButton")->isEnabled());
     QVERIFY(!requiredChild<QPushButton>(harness.window, "stopButton")->isEnabled());
     QVERIFY(!requiredChild<QPushButton>(harness.window, "fullScreenButton")->isEnabled());
+    auto* const progressSlider = requiredChild<QSlider>(harness.window, "progressSlider");
+    QCOMPARE(progressSlider->minimum(), 0);
+    QCOMPARE(progressSlider->maximum(), 1000);
+    QCOMPARE(progressSlider->value(), 0);
+    QVERIFY(!progressSlider->isEnabled());
+    QCOMPARE(requiredChild<QLabel>(harness.window, "positionLabel")->text(),
+             QStringLiteral("00:00 / --:--"));
+    auto* const volumeSlider = requiredChild<QSlider>(harness.window, "volumeSlider");
+    QCOMPARE(volumeSlider->minimum(), 0);
+    QCOMPARE(volumeSlider->maximum(), 100);
+    QCOMPARE(volumeSlider->value(), 100);
+    QVERIFY(volumeSlider->isEnabled());
+    QCOMPARE(requiredChild<QPushButton>(harness.window, "muteButton")->text(),
+             QStringLiteral("静音"));
     QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
 
     auto* const videoOutput = requiredChild<VideoOutputWidget>(
@@ -290,6 +317,105 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
     QCOMPARE(receivedError.userMessage, std::string("工作线程错误"));
 }
 
+void MainWindowTest::rendersPositionDurationAndSeekability() {
+    GuiHarness harness;
+    openAndReachPlaying(harness);
+    auto* const progressSlider = requiredChild<QSlider>(harness.window, "progressSlider");
+    auto* const positionLabel = requiredChild<QLabel>(harness.window, "positionLabel");
+
+    harness.engine.emitPositionChanged(core::PlaybackPosition{65s, 125s, true});
+    QTRY_COMPARE(positionLabel->text(), QStringLiteral("01:05 / 02:05"));
+    QCOMPARE(progressSlider->value(), 520);
+    QVERIFY(progressSlider->isEnabled());
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 0);
+
+    harness.engine.emitPositionChanged(core::PlaybackPosition{3661s, 7322s, true});
+    QTRY_COMPARE(positionLabel->text(), QStringLiteral("1:01:01 / 2:02:02"));
+    QCOMPARE(progressSlider->value(), 500);
+
+    harness.engine.emitPositionChanged(core::PlaybackPosition{2s, std::nullopt, false});
+    QTRY_COMPARE(positionLabel->text(), QStringLiteral("00:02 / --:--"));
+    QCOMPARE(progressSlider->value(), 0);
+    QVERIFY(!progressSlider->isEnabled());
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 0);
+
+    harness.presenter.openLocalFile(QStringLiteral("C:/audio/next.wav"));
+    QCOMPARE(positionLabel->text(), QStringLiteral("00:00 / --:--"));
+    QCOMPARE(progressSlider->value(), 0);
+    QVERIFY(!progressSlider->isEnabled());
+}
+
+void MainWindowTest::keepsSeekPreviewStableAndSeeksOnlyOnRelease() {
+    GuiHarness harness;
+    openAndReachPlaying(harness);
+    auto* const progressSlider = requiredChild<QSlider>(harness.window, "progressSlider");
+    auto* const positionLabel = requiredChild<QLabel>(harness.window, "positionLabel");
+    harness.engine.emitPositionChanged(core::PlaybackPosition{30s, 120s, true});
+    QTRY_VERIFY(progressSlider->isEnabled());
+    QCOMPARE(progressSlider->value(), 250);
+
+    const int commandsBeforeDrag = static_cast<int>(harness.engine.commands().size());
+    progressSlider->setSliderDown(true);
+    progressSlider->setSliderPosition(750);
+    QTRY_COMPARE(positionLabel->text(), QStringLiteral("01:30 / 02:00"));
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 0);
+
+    harness.engine.emitPositionChanged(core::PlaybackPosition{40s, 120s, true});
+    QCoreApplication::processEvents();
+    QCOMPARE(positionLabel->text(), QStringLiteral("01:30 / 02:00"));
+
+    progressSlider->setSliderDown(false);
+    QTRY_COMPARE(static_cast<int>(harness.engine.commands().size()), commandsBeforeDrag + 1);
+    const auto commands = harness.engine.commands();
+    QVERIFY(commands.back().kind == test::FakeEngineCommandKind::Seek);
+    QCOMPARE(commands.back().position, 90s);
+    QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+}
+
+void MainWindowTest::routesVolumeAndMuteWithoutChangingPlaybackState() {
+    GuiHarness harness;
+    openAndReachPlaying(harness);
+    auto* const volumeSlider = requiredChild<QSlider>(harness.window, "volumeSlider");
+    auto* const volumeLabel = requiredChild<QLabel>(harness.window, "volumeLabel");
+    auto* const muteButton = requiredChild<QPushButton>(harness.window, "muteButton");
+
+    volumeSlider->setValue(64);
+    QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetVolume), 1);
+    QCOMPARE(harness.engine.commands().back().volume, 64);
+    QCOMPARE(volumeLabel->text(), QStringLiteral("音量 64%"));
+
+    QTest::mouseClick(muteButton, Qt::LeftButton);
+    QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted), 1);
+    QVERIFY(harness.engine.commands().back().flag);
+    QCOMPARE(muteButton->text(), QStringLiteral("取消静音"));
+    QCOMPARE(volumeLabel->text(), QStringLiteral("已静音 · 64%"));
+
+    QTest::mouseClick(muteButton, Qt::LeftButton);
+    QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted), 2);
+    QVERIFY(!harness.engine.commands().back().flag);
+    QCOMPARE(muteButton->text(), QStringLiteral("静音"));
+    QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+}
+
+void MainWindowTest::appliesBurstPositionEventsOnGuiThread() {
+    GuiHarness harness;
+    openAndReachPlaying(harness);
+    auto* const progressSlider = requiredChild<QSlider>(harness.window, "progressSlider");
+    auto* const positionLabel = requiredChild<QLabel>(harness.window, "positionLabel");
+
+    std::thread worker([&harness] {
+        for (int index = 1; index <= 400; ++index) {
+            harness.engine.emitPositionChanged(
+                core::PlaybackPosition{std::chrono::milliseconds(index * 10), 10s, true});
+        }
+    });
+    worker.join();
+
+    QTRY_COMPARE(positionLabel->text(), QStringLiteral("00:04 / 00:10"));
+    QCOMPARE(progressSlider->value(), 400);
+    QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+}
+
 void MainWindowTest::switchesBetweenVideoSurfaceAndAudioPlaceholder() {
     GuiHarness harness;
     auto* const videoOutput = requiredChild<VideoOutputWidget>(
@@ -322,9 +448,16 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
     auto* const openButton = requiredChild<QPushButton>(harness.window, "openFileButton");
     auto* const fullScreenButton = requiredChild<QPushButton>(
         harness.window, "fullScreenButton");
+    auto* const progressSlider = requiredChild<QSlider>(harness.window, "progressSlider");
+    auto* const volumeSlider = requiredChild<QSlider>(harness.window, "volumeSlider");
+    auto* const muteButton = requiredChild<QPushButton>(harness.window, "muteButton");
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*openButton, harness.window)));
     QVERIFY(harness.window.rect().contains(
         geometryInsideWindow(*fullScreenButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(
+        geometryInsideWindow(*progressSlider, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*volumeSlider, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*muteButton, harness.window)));
 
     harness.window.resize(1200, 800);
     QTRY_VERIFY(videoOutput->size().width() > initialSize.width());
@@ -332,6 +465,10 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*openButton, harness.window)));
     QVERIFY(harness.window.rect().contains(
         geometryInsideWindow(*fullScreenButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(
+        geometryInsideWindow(*progressSlider, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*volumeSlider, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*muteButton, harness.window)));
 
     harness.presenter.openLocalFile(QStringLiteral("C:/video/fullscreen.mkv"));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);
