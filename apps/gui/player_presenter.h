@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine_event_bridge.h"
+#include "mediahub/logging/logger.h"
 #include "mediahub/core/playback_state_machine.h"
 #include "mediahub/core/player_engine.h"
 #include "mediahub/core/playlist.h"
@@ -25,7 +26,8 @@ public:
     PlayerPresenter(core::PlayerEngine& engine,
                     EngineEventBridge& eventBridge,
                     MainWindow& window,
-                    QObject* parent = nullptr);
+                    QObject* parent = nullptr,
+                    logging::Logger* logger = nullptr);
     ~PlayerPresenter() override;
 
     // 调用线程：GUI 主线程。路径来自文件选择器，使用 UTF-8 交给核心接口。
@@ -67,6 +69,7 @@ private:
     core::PlayerEngine& engine_;
     EngineEventBridge& eventBridge_;
     MainWindow& window_;
+    logging::Logger* logger_{nullptr};
     core::PlaybackStateMachine stateMachine_;
     core::Playlist playlist_;
     PlaylistModel playlistModel_;

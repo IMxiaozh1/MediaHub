@@ -16,6 +16,46 @@
 namespace mediahub::gui {
 namespace {
 
+std::string stateName(const core::PlaybackState state) {
+    switch (state) {
+    case core::PlaybackState::Idle:
+        return "idle";
+    case core::PlaybackState::Opening:
+        return "opening";
+    case core::PlaybackState::Buffering:
+        return "buffering";
+    case core::PlaybackState::Playing:
+        return "playing";
+    case core::PlaybackState::Paused:
+        return "paused";
+    case core::PlaybackState::Stopped:
+        return "stopped";
+    case core::PlaybackState::Ended:
+        return "ended";
+    case core::PlaybackState::Failed:
+        return "failed";
+    }
+    return "unknown";
+}
+
+std::string errorKindName(const core::PlaybackErrorKind kind) {
+    switch (kind) {
+    case core::PlaybackErrorKind::SourceNotFound:
+        return "source_not_found";
+    case core::PlaybackErrorKind::SourceUnreadable:
+        return "source_unreadable";
+    case core::PlaybackErrorKind::UnsupportedFormat:
+        return "unsupported_format";
+    case core::PlaybackErrorKind::AudioDeviceUnavailable:
+        return "audio_device_unavailable";
+    case core::PlaybackErrorKind::EngineNotInitialized:
+        return "engine_not_initialized";
+    case core::PlaybackErrorKind::Unknown:
+        return "unknown";
+    }
+    return "unknown";
+}
+
 std::string utf8String(const QString& text) {
     const QByteArray encoded = text.toUtf8();
     return std::string(encoded.constData(), static_cast<std::size_t>(encoded.size()));
@@ -95,11 +135,13 @@ std::chrono::milliseconds positionFromProgress(
 PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
                                  EngineEventBridge& eventBridge,
                                  MainWindow& window,
-                                 QObject* const parent)
+                                 QObject* const parent,
+                                 logging::Logger* const logger)
     : QObject(parent),
       engine_(engine),
       eventBridge_(eventBridge),
       window_(window),
+      logger_(logger),
       playlistModel_(playlist_) {
     window_.setPlaylistModel(&playlistModel_);
     connect(&window_, &MainWindow::localFilesSelected, this,
@@ -140,6 +182,9 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
             &PlayerPresenter::handleError, Qt::QueuedConnection);
 
     engine_.setEventListener(&eventBridge_);
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Info, "presenter", "created");
+    }
     render();
 }
 
@@ -172,10 +217,17 @@ void PlayerPresenter::addLocalFiles(const QStringList& filePaths) {
         return;
     }
 
+    const auto addedCount = items.size();
     const std::size_t firstNewIndex = playlist_.size();
     playlist_.add(std::move(items));
     static_cast<void>(playlist_.select(firstNewIndex));
     playlistModel_.refresh();
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Info,
+                     "presenter",
+                     "media_batch_added",
+                     {{"count", std::to_string(addedCount)}});
+    }
     openCurrentPlaylistItem();
 }
 
@@ -194,6 +246,12 @@ void PlayerPresenter::openCurrentPlaylistItem() {
         item->source.data(), static_cast<int>(item->source.size())));
     isPreparingMedia_ = true;
     window_.clearPlaybackError();
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Info,
+                     "presenter",
+                     "media_open_requested",
+                     {{"media", item->displayName}});
+    }
     render();
     engine_.open(*item);
 }
@@ -204,6 +262,9 @@ void PlayerPresenter::shutdown() noexcept {
     }
 
     isShuttingDown_ = true;
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Info, "presenter", "shutdown");
+    }
     isAutoPlayPending_ = false;
     isSeeking_ = false;
     seekPreviewPosition_.reset();
@@ -299,6 +360,12 @@ void PlayerPresenter::commitSeek(const int progress) {
     isSeeking_ = false;
     seekPreviewPosition_.reset();
     position_.current = target;
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Info,
+                     "presenter",
+                     "seek_requested",
+                     {{"position_ms", std::to_string(target.count())}});
+    }
     render();
     engine_.seek(target);
 }
@@ -425,6 +492,12 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     }
 
     render();
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Info,
+                     "presenter",
+                     "state_changed",
+                     {{"state", stateName(state)}});
+    }
     emit stateApplied(stateMachine_.state());
 
     if (state == core::PlaybackState::Opening && isAutoPlayPending_) {
@@ -484,6 +557,12 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
     isSeeking_ = false;
     seekPreviewPosition_.reset();
     isPreparingMedia_ = false;
+    if (logger_ != nullptr) {
+        logger_->log(logging::LogLevel::Error,
+                     "presenter",
+                     "media_error",
+                     {{"kind", errorKindName(error.kind)}, {"detail", error.engineDetail}});
+    }
     const auto result = stateMachine_.transitionTo(core::PlaybackState::Failed);
     if (result != core::PlaybackTransitionResult::Rejected) {
         render();

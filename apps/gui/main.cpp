@@ -9,28 +9,45 @@
 
 #include <cstdlib>
 #include <exception>
+#include <iostream>
 
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     QApplication::setApplicationName(QStringLiteral("MediaHub"));
     QApplication::setOrganizationName(QStringLiteral("MediaHub"));
 
+    mediahub::logging::Logger logger(std::clog);
+    logger.log(mediahub::logging::LogLevel::Info, "application", "started");
     try {
-        mediahub::engine_vlc::VlcPlayerEngine engine;
-        mediahub::gui::EngineEventBridge eventBridge;
-        mediahub::gui::MainWindow mainWindow;
-        mediahub::gui::PlayerPresenter presenter(engine, eventBridge, mainWindow);
-        mainWindow.show();
-        const QStringList arguments = application.arguments();
-        if (arguments.size() > 1) {
-            const QStringList initialMediaPaths = arguments.mid(1);
-            QTimer::singleShot(0, &presenter, [&presenter, initialMediaPaths] {
-                presenter.addLocalFiles(initialMediaPaths);
-            });
-        }
+        int exitCode = EXIT_FAILURE;
+        {
+            mediahub::engine_vlc::VlcPlayerEngine engine;
+            logger.log(mediahub::logging::LogLevel::Info, "engine", "initialized");
+            mediahub::gui::EngineEventBridge eventBridge;
+            mediahub::gui::MainWindow mainWindow;
+            mediahub::gui::PlayerPresenter presenter(
+                engine, eventBridge, mainWindow, nullptr, &logger);
+            mainWindow.show();
+            const QStringList arguments = application.arguments();
+            if (arguments.size() > 1) {
+                const QStringList initialMediaPaths = arguments.mid(1);
+                QTimer::singleShot(0, &presenter, [&presenter, initialMediaPaths] {
+                    presenter.addLocalFiles(initialMediaPaths);
+                });
+            }
 
-        return application.exec();
+            exitCode = application.exec();
+        }
+        logger.log(mediahub::logging::LogLevel::Info,
+                   "application",
+                   "stopped",
+                   {{"exit_code", std::to_string(exitCode)}});
+        return exitCode;
     } catch (const std::exception& error) {
+        logger.log(mediahub::logging::LogLevel::Error,
+                   "application",
+                   "startup_failed",
+                   {{"detail", error.what()}});
         QMessageBox::critical(nullptr,
                               QStringLiteral("MediaHub 启动失败"),
                               QString::fromUtf8(error.what()));

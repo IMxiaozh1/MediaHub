@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -120,6 +121,36 @@ std::filesystem::path pathFromUtf8(const std::string_view source) {
     return std::filesystem::path(std::u8string(begin, begin + source.size()));
 }
 
+bool hasObviouslyInvalidMp4Content(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](const char value) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
+    });
+    if (extension != ".mp4") {
+        return false;
+    }
+
+    std::error_code sizeError;
+    const auto size = std::filesystem::file_size(path, sizeError);
+    if (sizeError || size < 12) {
+        return true;
+    }
+
+    std::array<char, 64> header{};
+    std::ifstream input(path, std::ios::binary);
+    input.read(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto bytesRead = static_cast<std::size_t>(input.gcount());
+    const auto end = header.begin() + static_cast<std::ptrdiff_t>(bytesRead);
+    const std::array<char, 4> signature{'f', 't', 'y', 'p'};
+    if (std::search(header.begin(), end, signature.begin(), signature.end()) != end) {
+        return false;
+    }
+
+    return std::all_of(header.begin(), end, [](const unsigned char value) {
+        return std::isprint(value) != 0 || std::isspace(value) != 0;
+    });
+}
+
 }  // namespace
 
 class VlcPlayerEngine::Impl {
@@ -177,6 +208,14 @@ public:
         }
         input.close();
 
+        if (hasObviouslyInvalidMp4Content(path)) {
+            reportError(core::PlaybackErrorKind::UnsupportedFormat,
+                        "MP4 container signature is missing or invalid",
+                        "无法播放媒体“" + displayNameFor(item) +
+                            "”，文件内容可能损坏或格式不受支持。");
+            return;
+        }
+
         VlcMediaPtr newMedia(libvlc_media_new_path(instance_.get(), item.source.c_str()));
         if (!newMedia) {
             reportError(core::PlaybackErrorKind::SourceUnreadable,
@@ -202,7 +241,8 @@ public:
             return;
         }
         if (libvlc_media_player_play(player_.get()) != 0) {
-            reportPlaybackFailure("libVLC rejected the play request");
+            reportPlaybackFailure("libVLC rejected the play request",
+                                  core::PlaybackErrorKind::Unknown);
         }
     }
 
@@ -367,7 +407,9 @@ private:
                     listener.onEndReached();
                 });
             } else if (*playbackEvent == VlcPlaybackEvent::EncounteredError) {
-                reportPlaybackFailure("libVLC reported MediaPlayerEncounteredError", false);
+                reportPlaybackFailure("libVLC reported MediaPlayerEncounteredError",
+                                      core::PlaybackErrorKind::UnsupportedFormat,
+                                      false);
             }
             return;
         }
@@ -462,7 +504,10 @@ private:
         });
     }
 
-    void reportPlaybackFailure(const std::string detail, const bool updateFailedState = true) {
+    void reportPlaybackFailure(
+        const std::string detail,
+        const core::PlaybackErrorKind kind = core::PlaybackErrorKind::UnsupportedFormat,
+        const bool updateFailedState = true) {
         std::string displayName;
         {
             const std::lock_guard lock(mutex_);
@@ -472,7 +517,7 @@ private:
             updateState(core::PlaybackState::Failed);
         }
         dispatch([error = core::PlaybackError{
-                      core::PlaybackErrorKind::Unknown,
+                      kind,
                       detail,
                       "无法播放媒体“" + displayName + "”，文件内容可能损坏或格式不受支持。"}](
                      core::PlayerEventListener& listener) mutable noexcept {

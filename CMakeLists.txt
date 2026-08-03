@@ -110,6 +110,13 @@ add_library(mediahub_core STATIC
 target_include_directories(mediahub_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 mediahub_enable_warnings(mediahub_core)
 
+add_library(mediahub_logging STATIC
+    include/mediahub/logging/logger.h
+    src/logging/logger.cpp
+)
+target_include_directories(mediahub_logging PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+mediahub_enable_warnings(mediahub_logging)
+
 if(NOT MEDIAHUB_CORE_ONLY)
     add_library(mediahub_engine_vlc STATIC
         include/mediahub/engine_vlc/vlc_player_engine.h
@@ -140,7 +147,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     set_target_properties(mediahub_gui_support PROPERTIES AUTOMOC ON)
     target_include_directories(mediahub_gui_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui")
     target_link_libraries(mediahub_gui_support
-        PUBLIC mediahub_core Qt5::Widgets
+        PUBLIC mediahub_core mediahub_logging Qt5::Widgets
     )
     mediahub_enable_warnings(mediahub_gui_support)
 

@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <chrono>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -31,12 +32,14 @@ namespace {
 using namespace std::chrono_literals;
 
 struct GuiHarness {
+    std::ostringstream logOutput;
+    logging::Logger logger{logOutput};
     test::FakePlayerEngine engine;
     EngineEventBridge eventBridge;
     MainWindow window;
     PlayerPresenter presenter;
 
-    GuiHarness() : presenter(engine, eventBridge, window) {}
+    GuiHarness() : presenter(engine, eventBridge, window, nullptr, &logger) {}
 };
 
 template <typename Widget>
@@ -91,6 +94,8 @@ private slots:
     void rendersBufferingAsNonInteractiveWait();
     void allowsReplayAfterNaturalEnd();
     void displaysEngineErrorWithoutBlockingDialog();
+    void keepsOtherPlaylistItemsUsableAfterFailure();
+    void writesLifecycleLogsWithoutMediaPath();
     void appliesWorkerThreadStateOnGuiThread();
     void forwardsEveryBridgeEventAsQueuedValue();
     void rendersPositionDurationAndSeekability();
@@ -251,6 +256,49 @@ void MainWindowTest::displaysEngineErrorWithoutBlockingDialog() {
 
     harness.presenter.openLocalFile(QStringLiteral("C:/新的媒体.wav"));
     QVERIFY(errorLabel->isHidden());
+}
+
+void MainWindowTest::keepsOtherPlaylistItemsUsableAfterFailure() {
+    GuiHarness harness;
+    harness.presenter.addLocalFiles({QStringLiteral("C:/bad.mp4"),
+                                     QStringLiteral("C:/good.mp4")});
+    harness.engine.emitError(core::PlaybackError{
+        core::PlaybackErrorKind::UnsupportedFormat,
+        "invalid media",
+        "无法播放媒体“bad.mp4”，文件内容可能损坏或格式不受支持。",
+    });
+    QTRY_COMPARE(statusText(harness), QStringLiteral("播放失败"));
+
+    auto* const playlistView = requiredChild<QListView>(harness.window, "playlistView");
+    QVERIFY(QMetaObject::invokeMethod(playlistView, "doubleClicked", Qt::DirectConnection,
+                                      Q_ARG(QModelIndex, playlistView->model()->index(1, 0))));
+    QVERIFY(harness.engine.commands().back().media.has_value());
+    QCOMPARE(harness.engine.commands().back().media->displayName, std::string("good.mp4"));
+    QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")->isHidden());
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    harness.engine.emitStateChanged(core::PlaybackState::Playing);
+    QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+}
+
+void MainWindowTest::writesLifecycleLogsWithoutMediaPath() {
+    GuiHarness harness;
+    const QString source = QStringLiteral("C:/private/folder/秘密 视频.mp4");
+    harness.presenter.openLocalFile(source);
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    harness.engine.emitStateChanged(core::PlaybackState::Playing);
+    harness.engine.emitError(core::PlaybackError{
+        core::PlaybackErrorKind::UnsupportedFormat,
+        "libVLC reported invalid media",
+        "无法播放媒体。",
+    });
+    QTRY_COMPARE(statusText(harness), QStringLiteral("播放失败"));
+
+    const std::string logs = harness.logOutput.str();
+    QVERIFY(logs.find("media_open_requested") != std::string::npos);
+    QVERIFY(logs.find("秘密 视频.mp4") != std::string::npos);
+    QVERIFY(logs.find("state_changed") != std::string::npos);
+    QVERIFY(logs.find("unsupported_format") != std::string::npos);
+    QVERIFY(logs.find("C:/private/folder") == std::string::npos);
 }
 
 void MainWindowTest::appliesWorkerThreadStateOnGuiThread() {

@@ -109,6 +109,43 @@ private:
     std::filesystem::path path_;
 };
 
+// 创建可读但不是媒体的文件，用于验证损坏内容和伪装扩展名的失败分类。
+class GeneratedInvalidMedia final {
+public:
+    GeneratedInvalidMedia(std::wstring fileName, std::string contents) {
+        const auto uniquePart =
+            std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
+        directory_ = std::filesystem::temp_directory_path() /
+                     std::filesystem::path(L"MediaHub 阶段9 错误") / uniquePart;
+        std::filesystem::create_directories(directory_);
+        path_ = directory_ / std::filesystem::path(std::move(fileName));
+        std::ofstream output(path_, std::ios::binary | std::ios::trunc);
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        if (!output.good()) {
+            throw std::runtime_error("无法生成阶段 9 测试媒体。");
+        }
+    }
+
+    ~GeneratedInvalidMedia() {
+        std::error_code error;
+        const auto parent = directory_.parent_path();
+        std::filesystem::remove_all(directory_, error);
+        error.clear();
+        std::filesystem::remove(parent, error);
+    }
+
+    GeneratedInvalidMedia(const GeneratedInvalidMedia&) = delete;
+    GeneratedInvalidMedia& operator=(const GeneratedInvalidMedia&) = delete;
+
+    [[nodiscard]] std::string source() const {
+        return pathToUtf8(path_);
+    }
+
+private:
+    std::filesystem::path directory_;
+    std::filesystem::path path_;
+};
+
 // libVLC 回调线程只写受互斥量保护的测试快照，并通过条件变量唤醒测试线程。
 class RecordingListener final : public core::PlayerEventListener {
 public:
@@ -299,6 +336,30 @@ TEST(VlcPlayerEngineTest, FailedOpenDoesNotLeavePreviousMediaLoaded) {
     engine.play();
     ASSERT_TRUE(listener.waitForErrorCount(2));
     EXPECT_EQ(listener.lastError().kind, core::PlaybackErrorKind::EngineNotInitialized);
+}
+
+TEST(VlcPlayerEngineTest, ReportsCorruptAndDisguisedMediaAsUnsupportedFormat) {
+    const std::vector<std::pair<std::wstring, std::string>> invalidFiles{
+        {L"损坏 视频.mp4", std::string({char{0}, char{static_cast<char>(0xFF)},
+                                           char{static_cast<char>(0x7F)}, 'b', 'r', 'o', 'k',
+                                           'e', 'n'})},
+        {L"文本 伪装.mp4", "This is plain text, not a media file."},
+    };
+
+    for (const auto& [fileName, contents] : invalidFiles) {
+        GeneratedInvalidMedia media(fileName, contents);
+        RecordingListener listener;
+        VlcPlayerEngine engine(testOptions());
+        engine.setEventListener(&listener);
+        engine.open(core::makeMediaItem(media.source()));
+
+        ASSERT_TRUE(listener.waitForError(5s));
+        const auto error = listener.lastError();
+        EXPECT_EQ(error.kind, core::PlaybackErrorKind::UnsupportedFormat);
+        EXPECT_NE(error.userMessage.find("损坏或格式不受支持"), std::string::npos);
+        EXPECT_EQ(error.engineDetail.find(media.source()), std::string::npos);
+        EXPECT_EQ(error.userMessage.find(media.source()), std::string::npos);
+    }
 }
 
 TEST(VlcPlayerEngineTest, PlaysPausesSeeksResumesAndStopsGeneratedWav) {
