@@ -23,9 +23,9 @@ int main(int argc, char* argv[]) {
         mainWindow.show();
         const QStringList arguments = application.arguments();
         if (arguments.size() > 1) {
-            const QString initialMediaPath = arguments.at(1);
-            QTimer::singleShot(0, &presenter, [&presenter, initialMediaPath] {
-                presenter.openLocalFile(initialMediaPath);
+            const QStringList initialMediaPaths = arguments.mid(1);
+            QTimer::singleShot(0, &presenter, [&presenter, initialMediaPaths] {
+                presenter.addLocalFiles(initialMediaPaths);
             });
         }
 

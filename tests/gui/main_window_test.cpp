@@ -6,12 +6,18 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QLabel>
+#include <QListView>
+#include <QMimeData>
 #include <QPushButton>
 #include <QSlider>
 #include <QTest>
 #include <QThread>
+#include <QUrl>
 
 #include <algorithm>
 #include <chrono>
@@ -91,6 +97,10 @@ private slots:
     void keepsSeekPreviewStableAndSeeksOnlyOnRelease();
     void routesVolumeAndMuteWithoutChangingPlaybackState();
     void appliesBurstPositionEventsOnGuiThread();
+    void addsMultipleFilesAndActivatesRequestedItem();
+    void acceptsDroppedLocalFilesInOrder();
+    void advancesNaturalEndAccordingToPlaybackMode();
+    void removesCurrentItemsWithoutLeavingInvalidSelection();
     void switchesBetweenVideoSurfaceAndAudioPlaceholder();
     void resizesVideoSurfaceAndTogglesFullScreen();
     void stopsForwardingBeforeWindowCloses();
@@ -122,6 +132,15 @@ void MainWindowTest::hasFormalInitialLayout() {
     QVERIFY(volumeSlider->isEnabled());
     QCOMPARE(requiredChild<QPushButton>(harness.window, "muteButton")->text(),
              QStringLiteral("静音"));
+    auto* const playlistView = requiredChild<QListView>(harness.window, "playlistView");
+    QVERIFY(playlistView->model() != nullptr);
+    QCOMPARE(playlistView->model()->rowCount(), 0);
+    QCOMPARE(requiredChild<QComboBox>(harness.window, "playbackModeCombo")->currentIndex(),
+             0);
+    QVERIFY(!requiredChild<QPushButton>(harness.window, "previousButton")->isEnabled());
+    QVERIFY(!requiredChild<QPushButton>(harness.window, "nextButton")->isEnabled());
+    QVERIFY(!requiredChild<QPushButton>(harness.window,
+                                        "removePlaylistButton")->isEnabled());
     QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
 
     auto* const videoOutput = requiredChild<VideoOutputWidget>(
@@ -416,6 +435,112 @@ void MainWindowTest::appliesBurstPositionEventsOnGuiThread() {
     QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
 }
 
+void MainWindowTest::addsMultipleFilesAndActivatesRequestedItem() {
+    GuiHarness harness;
+    const QStringList paths{QStringLiteral("C:/媒体/第一首.mp3"),
+                            QStringLiteral("C:/媒体/第二段.mp4"),
+                            QStringLiteral("C:/媒体/第三首.wav")};
+    harness.presenter.addLocalFiles(paths);
+
+    auto* const playlistView = requiredChild<QListView>(harness.window, "playlistView");
+    auto* const model = playlistView->model();
+    QCOMPARE(model->rowCount(), 3);
+    QVERIFY(model->data(model->index(0, 0)).toString().contains(QStringLiteral("第一首.mp3")));
+    QVERIFY(model->data(model->index(1, 0)).toString().contains(QStringLiteral("第二段.mp4")));
+    QVERIFY(model->data(model->index(2, 0)).toString().contains(QStringLiteral("第三首.wav")));
+    QVERIFY(harness.engine.commands().back().media.has_value());
+    QCOMPARE(harness.engine.commands().back().media->source, paths.front().toUtf8().toStdString());
+    QCOMPARE(playlistView->currentIndex().row(), 0);
+    QVERIFY(requiredChild<QPushButton>(harness.window, "nextButton")->isEnabled());
+
+    const QModelIndex third = model->index(2, 0);
+    QVERIFY(QMetaObject::invokeMethod(playlistView, "doubleClicked", Qt::DirectConnection,
+                                      Q_ARG(QModelIndex, third)));
+    QVERIFY(harness.engine.commands().back().media.has_value());
+    QCOMPARE(harness.engine.commands().back().media->source, paths.back().toUtf8().toStdString());
+    QCOMPARE(playlistView->currentIndex().row(), 2);
+    QVERIFY(requiredChild<QPushButton>(harness.window, "previousButton")->isEnabled());
+    QVERIFY(!requiredChild<QPushButton>(harness.window, "nextButton")->isEnabled());
+}
+
+void MainWindowTest::acceptsDroppedLocalFilesInOrder() {
+    GuiHarness harness;
+    QMimeData mimeData;
+    mimeData.setUrls({QUrl::fromLocalFile(QStringLiteral("C:/拖放/甲.mp3")),
+                      QUrl::fromLocalFile(QStringLiteral("C:/拖放/乙.mp4"))});
+    QDragEnterEvent dragEnter(QPoint(10, 10), Qt::CopyAction, &mimeData,
+                              Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&harness.window, &dragEnter);
+    QVERIFY(dragEnter.isAccepted());
+
+    QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &mimeData,
+                    Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&harness.window, &drop);
+    QVERIFY(drop.isAccepted());
+
+    auto* const model = requiredChild<QListView>(harness.window, "playlistView")->model();
+    QCOMPARE(model->rowCount(), 2);
+    QVERIFY(model->data(model->index(0, 0)).toString().contains(QStringLiteral("甲.mp3")));
+    QVERIFY(model->data(model->index(1, 0)).toString().contains(QStringLiteral("乙.mp4")));
+}
+
+void MainWindowTest::advancesNaturalEndAccordingToPlaybackMode() {
+    const QStringList paths{QStringLiteral("C:/list/one.mp3"),
+                            QStringLiteral("C:/list/two.mp3")};
+    for (int modeIndex = 0; modeIndex < 3; ++modeIndex) {
+        GuiHarness harness;
+        harness.presenter.addLocalFiles(paths);
+        harness.engine.emitStateChanged(core::PlaybackState::Opening);
+        harness.engine.emitStateChanged(core::PlaybackState::Playing);
+        auto* const playlistView = requiredChild<QListView>(harness.window, "playlistView");
+        const QModelIndex second = playlistView->model()->index(1, 0);
+        QVERIFY(QMetaObject::invokeMethod(playlistView, "doubleClicked", Qt::DirectConnection,
+                                          Q_ARG(QModelIndex, second)));
+        requiredChild<QComboBox>(harness.window, "playbackModeCombo")->setCurrentIndex(modeIndex);
+        const int opensBeforeEnd = commandCount(harness, test::FakeEngineCommandKind::Open);
+
+        harness.engine.emitEndReached();
+        if (modeIndex == 0) {
+            QTRY_COMPARE(statusText(harness), QStringLiteral("播放结束"));
+            QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), opensBeforeEnd);
+            continue;
+        }
+
+        QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
+                     opensBeforeEnd + 1);
+        const auto command = harness.engine.commands().back();
+        QVERIFY(command.media.has_value());
+        const QString expected = modeIndex == 1 ? paths.front() : paths.back();
+        QCOMPARE(command.media->source, expected.toUtf8().toStdString());
+    }
+}
+
+void MainWindowTest::removesCurrentItemsWithoutLeavingInvalidSelection() {
+    GuiHarness harness;
+    harness.presenter.addLocalFiles(
+        {QStringLiteral("C:/remove/one.mp3"), QStringLiteral("C:/remove/two.mp3")});
+    auto* const playlistView = requiredChild<QListView>(harness.window, "playlistView");
+    auto* const removeButton = requiredChild<QPushButton>(harness.window,
+                                                          "removePlaylistButton");
+
+    QTest::mouseClick(removeButton, Qt::LeftButton);
+    QCOMPARE(playlistView->model()->rowCount(), 1);
+    QCOMPARE(playlistView->currentIndex().row(), 0);
+    QVERIFY(harness.engine.commands().back().media.has_value());
+    QCOMPARE(harness.engine.commands().back().media->displayName, std::string("two.mp3"));
+
+    QTest::mouseClick(removeButton, Qt::LeftButton);
+    QCOMPARE(playlistView->model()->rowCount(), 0);
+    QVERIFY(!removeButton->isEnabled());
+    QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+    QVERIFY(harness.engine.commands().back().kind == test::FakeEngineCommandKind::Stop);
+
+    // 移除最后一项后，内核可能迟到发送停止事件；空列表仍保持空闲界面。
+    harness.engine.emitStateChanged(core::PlaybackState::Stopped);
+    QCoreApplication::processEvents();
+    QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+}
+
 void MainWindowTest::switchesBetweenVideoSurfaceAndAudioPlaceholder() {
     GuiHarness harness;
     auto* const videoOutput = requiredChild<VideoOutputWidget>(
@@ -451,6 +576,12 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
     auto* const progressSlider = requiredChild<QSlider>(harness.window, "progressSlider");
     auto* const volumeSlider = requiredChild<QSlider>(harness.window, "volumeSlider");
     auto* const muteButton = requiredChild<QPushButton>(harness.window, "muteButton");
+    auto* const previousButton = requiredChild<QPushButton>(
+        harness.window, "previousButton");
+    auto* const nextButton = requiredChild<QPushButton>(harness.window, "nextButton");
+    auto* const removePlaylistButton = requiredChild<QPushButton>(
+        harness.window, "removePlaylistButton");
+    auto* const playlistView = requiredChild<QListView>(harness.window, "playlistView");
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*openButton, harness.window)));
     QVERIFY(harness.window.rect().contains(
         geometryInsideWindow(*fullScreenButton, harness.window)));
@@ -458,6 +589,12 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
         geometryInsideWindow(*progressSlider, harness.window)));
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*volumeSlider, harness.window)));
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*muteButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*previousButton,
+                                                               harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*nextButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*removePlaylistButton,
+                                                               harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*playlistView, harness.window)));
 
     harness.window.resize(1200, 800);
     QTRY_VERIFY(videoOutput->size().width() > initialSize.width());
@@ -469,6 +606,12 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
         geometryInsideWindow(*progressSlider, harness.window)));
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*volumeSlider, harness.window)));
     QVERIFY(harness.window.rect().contains(geometryInsideWindow(*muteButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*previousButton,
+                                                               harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*nextButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*removePlaylistButton,
+                                                               harness.window)));
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*playlistView, harness.window)));
 
     harness.presenter.openLocalFile(QStringLiteral("C:/video/fullscreen.mkv"));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);

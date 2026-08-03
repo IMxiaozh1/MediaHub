@@ -15,11 +15,16 @@ struct PlayerViewState {
     QString volumeText{QStringLiteral("音量 100%")};
     int progressValue{0};
     int volumeValue{100};
+    int currentPlaylistIndex{-1};
+    int playbackModeIndex{0};
     bool canOpen{true};
     bool canPlay{false};
     bool canPause{false};
     bool canStop{false};
     bool canSeek{false};
+    bool canGoPrevious{false};
+    bool canGoNext{false};
+    bool canRemovePlaylistItem{false};
     bool isMuted{false};
     bool isVideoSurfaceActive{false};
     bool canToggleFullscreen{false};

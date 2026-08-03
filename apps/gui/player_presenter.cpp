@@ -11,6 +11,7 @@
 #include <chrono>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mediahub::gui {
 namespace {
@@ -95,9 +96,14 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
                                  EngineEventBridge& eventBridge,
                                  MainWindow& window,
                                  QObject* const parent)
-    : QObject(parent), engine_(engine), eventBridge_(eventBridge), window_(window) {
-    connect(&window_, &MainWindow::localFileSelected, this,
-            &PlayerPresenter::openLocalFile);
+    : QObject(parent),
+      engine_(engine),
+      eventBridge_(eventBridge),
+      window_(window),
+      playlistModel_(playlist_) {
+    window_.setPlaylistModel(&playlistModel_);
+    connect(&window_, &MainWindow::localFilesSelected, this,
+            &PlayerPresenter::addLocalFiles);
     connect(&window_, &MainWindow::playRequested, this, &PlayerPresenter::requestPlay);
     connect(&window_, &MainWindow::pauseRequested, this, &PlayerPresenter::requestPause);
     connect(&window_, &MainWindow::stopRequested, this, &PlayerPresenter::requestStop);
@@ -108,6 +114,15 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
     connect(&window_, &MainWindow::volumeRequested, this,
             &PlayerPresenter::requestVolume);
     connect(&window_, &MainWindow::muteToggled, this, &PlayerPresenter::toggleMuted);
+    connect(&window_, &MainWindow::previousRequested, this,
+            &PlayerPresenter::requestPrevious);
+    connect(&window_, &MainWindow::nextRequested, this, &PlayerPresenter::requestNext);
+    connect(&window_, &MainWindow::playlistItemActivated, this,
+            &PlayerPresenter::activatePlaylistItem);
+    connect(&window_, &MainWindow::removePlaylistItemRequested, this,
+            &PlayerPresenter::removePlaylistItem);
+    connect(&window_, &MainWindow::playbackModeRequested, this,
+            &PlayerPresenter::changePlaybackMode);
     connect(&window_, &MainWindow::videoSurfaceReady, this,
             &PlayerPresenter::attachVideoSurface);
     connect(&window_, &MainWindow::closing, this, &PlayerPresenter::shutdown);
@@ -133,22 +148,54 @@ PlayerPresenter::~PlayerPresenter() {
 }
 
 void PlayerPresenter::openLocalFile(const QString& filePath) {
+    addLocalFiles(QStringList{filePath});
+}
+
+void PlayerPresenter::addLocalFiles(const QStringList& filePaths) {
     Q_ASSERT(QThread::currentThread() == thread());
-    if (isShuttingDown_ || filePath.isEmpty()) {
+    if (isShuttingDown_ || filePaths.isEmpty()) {
         return;
     }
 
-    const QFileInfo fileInfo(filePath);
-    mediaName_ = fileInfo.fileName().isEmpty() ? filePath : fileInfo.fileName();
+    std::vector<core::MediaItem> items;
+    items.reserve(static_cast<std::size_t>(filePaths.size()));
+    for (const auto& filePath : filePaths) {
+        if (filePath.isEmpty()) {
+            continue;
+        }
+        const QFileInfo fileInfo(filePath);
+        const QString displayName = fileInfo.fileName().isEmpty() ? filePath
+                                                                  : fileInfo.fileName();
+        items.push_back(core::makeMediaItem(utf8String(filePath), utf8String(displayName)));
+    }
+    if (items.empty()) {
+        return;
+    }
+
+    const std::size_t firstNewIndex = playlist_.size();
+    playlist_.add(std::move(items));
+    static_cast<void>(playlist_.select(firstNewIndex));
+    playlistModel_.refresh();
+    openCurrentPlaylistItem();
+}
+
+void PlayerPresenter::openCurrentPlaylistItem() {
+    const auto* const item = playlist_.currentItem();
+    if (item == nullptr) {
+        return;
+    }
+
+    mediaName_ = fromUtf8(item->displayName);
     isAutoPlayPending_ = true;
     isSeeking_ = false;
     seekPreviewPosition_.reset();
     position_ = {};
-    isVideoMedia_ = !isAudioFile(filePath);
+    isVideoMedia_ = !isAudioFile(QString::fromUtf8(
+        item->source.data(), static_cast<int>(item->source.size())));
     isPreparingMedia_ = true;
     window_.clearPlaybackError();
     render();
-    engine_.open(core::makeMediaItem(utf8String(filePath), utf8String(mediaName_)));
+    engine_.open(*item);
 }
 
 void PlayerPresenter::shutdown() noexcept {
@@ -280,6 +327,83 @@ void PlayerPresenter::toggleMuted() {
     render();
 }
 
+void PlayerPresenter::requestPrevious() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!isShuttingDown_ && playlist_.selectPrevious()) {
+        playlistModel_.refresh();
+        openCurrentPlaylistItem();
+    }
+}
+
+void PlayerPresenter::requestNext() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!isShuttingDown_ && playlist_.selectNext()) {
+        playlistModel_.refresh();
+        openCurrentPlaylistItem();
+    }
+}
+
+void PlayerPresenter::activatePlaylistItem(const int row) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!isShuttingDown_ && row >= 0 && playlist_.select(static_cast<std::size_t>(row))) {
+        playlistModel_.refresh();
+        openCurrentPlaylistItem();
+    }
+}
+
+void PlayerPresenter::removePlaylistItem(const int row) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_ || row < 0) {
+        return;
+    }
+
+    const bool wasCurrent = playlist_.currentIndex() == static_cast<std::size_t>(row);
+    if (!playlist_.remove(static_cast<std::size_t>(row))) {
+        return;
+    }
+    playlistModel_.refresh();
+    if (!wasCurrent) {
+        render();
+        return;
+    }
+    if (!playlist_.empty()) {
+        openCurrentPlaylistItem();
+        return;
+    }
+
+    isAutoPlayPending_ = false;
+    isSeeking_ = false;
+    seekPreviewPosition_.reset();
+    position_ = {};
+    mediaName_ = QStringLiteral("未选择媒体");
+    isVideoMedia_ = false;
+    isPreparingMedia_ = false;
+    engine_.stop();
+    stateMachine_.reset();
+    render();
+}
+
+void PlayerPresenter::changePlaybackMode(const int modeIndex) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (isShuttingDown_) {
+        return;
+    }
+
+    switch (modeIndex) {
+    case 1:
+        playlist_.setMode(core::PlaybackMode::LoopAll);
+        break;
+    case 2:
+        playlist_.setMode(core::PlaybackMode::LoopOne);
+        break;
+    default:
+        playlist_.setMode(core::PlaybackMode::Sequential);
+        break;
+    }
+    playlistModel_.refresh();
+    render();
+}
+
 void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (isShuttingDown_) {
@@ -335,6 +459,12 @@ void PlayerPresenter::handleEndReached() {
         return;
     }
 
+    if (playlist_.advanceAfterEnd()) {
+        playlistModel_.refresh();
+        openCurrentPlaylistItem();
+        return;
+    }
+
     const auto result = stateMachine_.transitionTo(core::PlaybackState::Ended);
     if (result != core::PlaybackTransitionResult::Rejected) {
         isSeeking_ = false;
@@ -379,6 +509,13 @@ PlayerViewState PlayerPresenter::makeViewState() const {
     viewState.volumeText = isMuted_
                                ? QStringLiteral("已静音 · %1%").arg(volume_)
                                : QStringLiteral("音量 %1%").arg(volume_);
+    viewState.currentPlaylistIndex = playlist_.currentIndex().has_value()
+                                         ? static_cast<int>(*playlist_.currentIndex())
+                                         : -1;
+    viewState.playbackModeIndex = static_cast<int>(playlist_.mode());
+    viewState.canGoPrevious = playlist_.previousIndex().has_value();
+    viewState.canGoNext = playlist_.nextIndex().has_value();
+    viewState.canRemovePlaylistItem = playlist_.currentIndex().has_value();
 
     switch (stateMachine_.state()) {
     case core::PlaybackState::Idle:

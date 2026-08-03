@@ -3,19 +3,26 @@
 #include "video_output_widget.h"
 
 #include <QAction>
+#include <QAbstractItemModel>
 #include <QCloseEvent>
+#include <QComboBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
+#include <QListView>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMimeData>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -26,12 +33,29 @@ constexpr int kNormalHorizontalMargin = 36;
 constexpr int kNormalVerticalMargin = 28;
 constexpr int kNormalSpacing = 16;
 
+QStringList localFilePaths(const QMimeData* const mimeData) {
+    QStringList paths;
+    if (mimeData == nullptr || !mimeData->hasUrls()) {
+        return paths;
+    }
+    for (const auto& url : mimeData->urls()) {
+        if (url.isLocalFile()) {
+            const QString path = url.toLocalFile();
+            if (!path.isEmpty()) {
+                paths.push_back(path);
+            }
+        }
+    }
+    return paths;
+}
+
 }  // namespace
 
 MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     setWindowTitle(QStringLiteral("MediaHub"));
     resize(960, 720);
     setMinimumSize(760, 640);
+    setAcceptDrops(true);
 
     auto* const fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
     openAction_ = fileMenu->addAction(QStringLiteral("打开媒体文件(&O)..."));
@@ -69,7 +93,37 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     rootLayout_->addWidget(subtitle);
 
     videoOutput_ = new VideoOutputWidget(centralWidget);
-    rootLayout_->addWidget(videoOutput_, 1);
+    auto* const mediaWorkspace = new QHBoxLayout();
+    mediaWorkspace->setSpacing(kNormalSpacing);
+    mediaWorkspace->addWidget(videoOutput_, 3);
+
+    auto* const playlistPanel = new QFrame(centralWidget);
+    playlistPanel->setObjectName(QStringLiteral("playlistPanel"));
+    playlistPanel->setMinimumWidth(220);
+    playlistPanel->setMaximumWidth(320);
+    auto* const playlistLayout = new QVBoxLayout(playlistPanel);
+    playlistLayout->setContentsMargins(16, 14, 16, 14);
+    playlistLayout->setSpacing(10);
+    auto* const playlistTitle = new QLabel(QStringLiteral("播放列表"), playlistPanel);
+    playlistTitle->setObjectName(QStringLiteral("playlistTitleLabel"));
+    playbackModeCombo_ = new QComboBox(playlistPanel);
+    playbackModeCombo_->setObjectName(QStringLiteral("playbackModeCombo"));
+    playbackModeCombo_->addItems({QStringLiteral("顺序播放"),
+                                  QStringLiteral("列表循环"),
+                                  QStringLiteral("单曲循环")});
+    playlistView_ = new QListView(playlistPanel);
+    playlistView_->setObjectName(QStringLiteral("playlistView"));
+    playlistView_->setAccessibleName(QStringLiteral("播放列表"));
+    playlistView_->setSelectionMode(QAbstractItemView::SingleSelection);
+    playlistView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    removePlaylistButton_ = new QPushButton(QStringLiteral("移除选中"), playlistPanel);
+    removePlaylistButton_->setObjectName(QStringLiteral("removePlaylistButton"));
+    playlistLayout->addWidget(playlistTitle);
+    playlistLayout->addWidget(playbackModeCombo_);
+    playlistLayout->addWidget(playlistView_, 1);
+    playlistLayout->addWidget(removePlaylistButton_);
+    mediaWorkspace->addWidget(playlistPanel, 1);
+    rootLayout_->addLayout(mediaWorkspace, 1);
 
     auto* const mediaCard = new QFrame(centralWidget);
     mediaCard->setObjectName(QStringLiteral("mediaCard"));
@@ -160,20 +214,29 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     fullScreenButton_->setObjectName(QStringLiteral("fullScreenButton"));
     controls->addWidget(openButton_);
     controls->addStretch(1);
+    previousButton_ = new QPushButton(QStringLiteral("上一首"), centralWidget);
+    previousButton_->setObjectName(QStringLiteral("previousButton"));
+    nextButton_ = new QPushButton(QStringLiteral("下一首"), centralWidget);
+    nextButton_->setObjectName(QStringLiteral("nextButton"));
+    controls->addWidget(previousButton_);
     controls->addWidget(playButton_);
     controls->addWidget(pauseButton_);
     controls->addWidget(stopButton_);
+    controls->addWidget(nextButton_);
     controls->addWidget(fullScreenButton_);
     rootLayout_->addLayout(controls);
     fullScreenChrome_ = {eyebrow,
                          title,
                          subtitle,
+                         playlistPanel,
                          mediaCard,
                          transportPanel,
                          openButton_,
+                         previousButton_,
                          playButton_,
                          pauseButton_,
                          stopButton_,
+                         nextButton_,
                          fullScreenButton_};
 
     setCentralWidget(centralWidget);
@@ -212,6 +275,39 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
             border: 1px solid #d9d4c8;
             border-left: 5px solid #1f7770;
             border-radius: 8px;
+        }
+        QFrame#playlistPanel {
+            background: #fffdf7;
+            border: 1px solid #d9d4c8;
+            border-radius: 8px;
+        }
+        QLabel#playlistTitleLabel {
+            color: #173c3a;
+            font-size: 15px;
+            font-weight: 700;
+        }
+        QListView#playlistView {
+            background: #f7f4eb;
+            border: 1px solid #d9d4c8;
+            border-radius: 5px;
+            color: #294b47;
+            outline: none;
+            padding: 4px;
+        }
+        QListView#playlistView::item {
+            border-radius: 4px;
+            padding: 7px 6px;
+        }
+        QListView#playlistView::item:selected {
+            background: #dce7df;
+            color: #174f4b;
+        }
+        QComboBox#playbackModeCombo {
+            background: #f7f4eb;
+            border: 1px solid #aebdb7;
+            border-radius: 5px;
+            color: #294b47;
+            padding: 6px 8px;
         }
         QLabel#captionLabel {
             color: #778984;
@@ -275,8 +371,8 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
             color: #173c3a;
             font-size: 14px;
             font-weight: 600;
-            min-width: 88px;
-            padding: 10px 18px;
+            min-width: 72px;
+            padding: 10px 14px;
         }
         QPushButton:hover:enabled {
             background: #e6eee9;
@@ -306,6 +402,8 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     connect(playButton_, &QPushButton::clicked, this, &MainWindow::playRequested);
     connect(pauseButton_, &QPushButton::clicked, this, &MainWindow::pauseRequested);
     connect(stopButton_, &QPushButton::clicked, this, &MainWindow::stopRequested);
+    connect(previousButton_, &QPushButton::clicked, this, &MainWindow::previousRequested);
+    connect(nextButton_, &QPushButton::clicked, this, &MainWindow::nextRequested);
     connect(progressSlider_, &QSlider::sliderPressed, this, &MainWindow::seekStarted);
     connect(progressSlider_, &QSlider::sliderMoved, this,
             &MainWindow::seekPreviewRequested);
@@ -319,6 +417,16 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     });
     connect(volumeSlider_, &QSlider::valueChanged, this, &MainWindow::volumeRequested);
     connect(muteButton_, &QPushButton::clicked, this, &MainWindow::muteToggled);
+    connect(playlistView_, &QListView::doubleClicked, this,
+            [this](const QModelIndex& index) { emit playlistItemActivated(index.row()); });
+    connect(removePlaylistButton_, &QPushButton::clicked, this, [this] {
+        const QModelIndex index = playlistView_->currentIndex();
+        if (index.isValid()) {
+            emit removePlaylistItemRequested(index.row());
+        }
+    });
+    connect(playbackModeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::playbackModeRequested);
     connect(fullScreenButton_, &QPushButton::clicked, this, &MainWindow::toggleFullScreen);
     connect(fullScreenAction_, &QAction::triggered, this, &MainWindow::toggleFullScreen);
     connect(exitFullScreenAction, &QAction::triggered, this, &MainWindow::exitFullScreen);
@@ -335,14 +443,19 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
 void MainWindow::applyViewState(const PlayerViewState& viewState) {
     const QSignalBlocker progressBlocker(progressSlider_);
     const QSignalBlocker volumeBlocker(volumeSlider_);
+    const QSignalBlocker modeBlocker(playbackModeCombo_);
     openAction_->setEnabled(viewState.canOpen);
     openButton_->setEnabled(viewState.canOpen);
     playButton_->setEnabled(viewState.canPlay);
     pauseButton_->setEnabled(viewState.canPause);
     stopButton_->setEnabled(viewState.canStop);
+    previousButton_->setEnabled(viewState.canGoPrevious);
+    nextButton_->setEnabled(viewState.canGoNext);
+    removePlaylistButton_->setEnabled(viewState.canRemovePlaylistItem);
     progressSlider_->setEnabled(viewState.canSeek);
     progressSlider_->setValue(viewState.progressValue);
     volumeSlider_->setValue(viewState.volumeValue);
+    playbackModeCombo_->setCurrentIndex(viewState.playbackModeIndex);
     fullScreenAction_->setEnabled(viewState.canToggleFullscreen);
     fullScreenButton_->setEnabled(viewState.canToggleFullscreen);
     mediaNameLabel_->setText(viewState.mediaName);
@@ -351,6 +464,12 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
     volumeLabel_->setText(viewState.volumeText);
     muteButton_->setText(viewState.isMuted ? QStringLiteral("取消静音")
                                            : QStringLiteral("静音"));
+    if (playlistView_->model() != nullptr && viewState.currentPlaylistIndex >= 0) {
+        playlistView_->setCurrentIndex(
+            playlistView_->model()->index(viewState.currentPlaylistIndex, 0));
+    } else {
+        playlistView_->setCurrentIndex(QModelIndex{});
+    }
     videoOutput_->setPresentation(viewState.isVideoSurfaceActive,
                                   viewState.videoPlaceholder);
     if (!viewState.canToggleFullscreen && isFullScreen()) {
@@ -368,6 +487,10 @@ void MainWindow::clearPlaybackError() {
     errorLabel_->hide();
 }
 
+void MainWindow::setPlaylistModel(QAbstractItemModel* const model) {
+    playlistView_->setModel(model);
+}
+
 void MainWindow::closeEvent(QCloseEvent* const event) {
     emit closing();
     QMainWindow::closeEvent(event);
@@ -381,15 +504,33 @@ void MainWindow::changeEvent(QEvent* const event) {
 }
 
 void MainWindow::chooseLocalFile() {
-    const QString filePath = QFileDialog::getOpenFileName(
+    const QStringList filePaths = QFileDialog::getOpenFileNames(
         this,
         QStringLiteral("打开本地媒体"),
         {},
         QStringLiteral("媒体文件 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.mp4 *.mkv "
                        "*.avi *.mov *.webm);;所有文件 (*.*)"));
-    if (!filePath.isEmpty()) {
-        emit localFileSelected(filePath);
+    if (!filePaths.isEmpty()) {
+        emit localFilesSelected(filePaths);
     }
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* const event) {
+    if (!localFilePaths(event->mimeData()).isEmpty()) {
+        event->acceptProposedAction();
+        return;
+    }
+    event->ignore();
+}
+
+void MainWindow::dropEvent(QDropEvent* const event) {
+    const QStringList paths = localFilePaths(event->mimeData());
+    if (paths.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    event->acceptProposedAction();
+    emit localFilesSelected(paths);
 }
 
 void MainWindow::toggleFullScreen() {

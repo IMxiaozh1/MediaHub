@@ -101,9 +101,11 @@ endif()
 add_library(mediahub_core STATIC
     include/mediahub/core/media_types.h
     include/mediahub/core/playback_state_machine.h
+    include/mediahub/core/playlist.h
     include/mediahub/core/player_engine.h
     src/core/media_types.cpp
     src/core/playback_state_machine.cpp
+    src/core/playlist.cpp
 )
 target_include_directories(mediahub_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 mediahub_enable_warnings(mediahub_core)
@@ -130,6 +132,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/player_presenter.cpp
         apps/gui/player_presenter.h
         apps/gui/player_view_state.h
+        apps/gui/playlist_model.cpp
+        apps/gui/playlist_model.h
         apps/gui/video_output_widget.cpp
         apps/gui/video_output_widget.h
     )

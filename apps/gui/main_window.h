@@ -5,10 +5,16 @@
 #include <QList>
 #include <QMainWindow>
 #include <QString>
+#include <QStringList>
 
+class QAbstractItemModel;
 class QAction;
+class QComboBox;
 class QCloseEvent;
+class QDragEnterEvent;
+class QDropEvent;
 class QLabel;
+class QListView;
 class QPushButton;
 class QEvent;
 class QSlider;
@@ -32,9 +38,11 @@ public:
     void showPlaybackError(const QString& message);
     // 调用线程：GUI 主线程。
     void clearPlaybackError();
+    // 调用线程：GUI 主线程。model 由 presenter 持有且生命周期覆盖本窗口。
+    void setPlaylistModel(QAbstractItemModel* model);
 
 signals:
-    void localFileSelected(const QString& filePath);
+    void localFilesSelected(const QStringList& filePaths);
     void playRequested();
     void pauseRequested();
     void stopRequested();
@@ -43,6 +51,11 @@ signals:
     void seekRequested(int progressValue);
     void volumeRequested(int volume);
     void muteToggled();
+    void previousRequested();
+    void nextRequested();
+    void playlistItemActivated(int row);
+    void removePlaylistItemRequested(int row);
+    void playbackModeRequested(int modeIndex);
     void videoSurfaceReady(void* nativeHandle);
     void closing();
 
@@ -51,6 +64,10 @@ protected:
     void closeEvent(QCloseEvent* event) override;
     // 调用线程：GUI 主线程。同步全屏动作与按钮文字。
     void changeEvent(QEvent* event) override;
+    // 调用线程：GUI 主线程。只接受包含本地文件的拖放数据。
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    // 调用线程：GUI 主线程。保持拖入文件的原始顺序并交给 presenter。
+    void dropEvent(QDropEvent* event) override;
 
 private:
     void chooseLocalFile();
@@ -66,8 +83,13 @@ private:
     QPushButton* stopButton_{nullptr};
     QPushButton* fullScreenButton_{nullptr};
     QPushButton* muteButton_{nullptr};
+    QPushButton* previousButton_{nullptr};
+    QPushButton* nextButton_{nullptr};
+    QPushButton* removePlaylistButton_{nullptr};
     QSlider* progressSlider_{nullptr};
     QSlider* volumeSlider_{nullptr};
+    QComboBox* playbackModeCombo_{nullptr};
+    QListView* playlistView_{nullptr};
     VideoOutputWidget* videoOutput_{nullptr};
     QLabel* mediaNameLabel_{nullptr};
     QLabel* statusLabel_{nullptr};
