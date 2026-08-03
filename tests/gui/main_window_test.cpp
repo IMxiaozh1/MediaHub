@@ -1,7 +1,9 @@
 #include "engine_event_bridge.h"
 #include "fakes/fake_player_engine.h"
 #include "main_window.h"
+#include "mediahub/core/playlist.h"
 #include "player_presenter.h"
+#include "playlist_model.h"
 #include "video_output_widget.h"
 
 #include <QAction>
@@ -15,11 +17,13 @@
 #include <QMimeData>
 #include <QPushButton>
 #include <QSlider>
+#include <QSignalSpy>
 #include <QTest>
 #include <QThread>
 #include <QUrl>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <sstream>
@@ -104,8 +108,11 @@ private slots:
     void appliesBurstPositionEventsOnGuiThread();
     void addsMultipleFilesAndActivatesRequestedItem();
     void acceptsDroppedLocalFilesInOrder();
+    void exposesPlaylistModelRolesAndSelectionMarker();
     void advancesNaturalEndAccordingToPlaybackMode();
     void removesCurrentItemsWithoutLeavingInvalidSelection();
+    void ignoresRejectedStateEventsAndCommandsAfterShutdown();
+    void mapsEveryErrorKindToStableLogValue();
     void switchesBetweenVideoSurfaceAndAudioPlaceholder();
     void resizesVideoSurfaceAndTogglesFullScreen();
     void stopsForwardingBeforeWindowCloses();
@@ -532,6 +539,30 @@ void MainWindowTest::acceptsDroppedLocalFilesInOrder() {
     QVERIFY(model->data(model->index(1, 0)).toString().contains(QStringLiteral("乙.mp4")));
 }
 
+void MainWindowTest::exposesPlaylistModelRolesAndSelectionMarker() {
+    core::Playlist playlist;
+    playlist.add(core::makeMediaItem("C:/list/one.mp3", "第一首.mp3"));
+    playlist.add(core::makeMediaItem("C:/list/two.mp4", "第二段.mp4"));
+    PlaylistModel model(playlist);
+
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(model.rowCount(model.index(0, 0)), 0);
+    const QModelIndex first = model.index(0, 0);
+    const QModelIndex second = model.index(1, 0);
+    QCOMPARE(model.data(first, Qt::DisplayRole), model.data(first, Qt::AccessibleTextRole));
+    QVERIFY(model.data(first).toString().startsWith(QStringLiteral("▶ 1. ")));
+    QVERIFY(model.data(second).toString().startsWith(QStringLiteral("   2. ")));
+    QVERIFY(!model.data(first, Qt::DecorationRole).isValid());
+    QVERIFY(!model.data(QModelIndex{}, Qt::DisplayRole).isValid());
+
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QVERIFY(playlist.select(1));
+    model.refresh();
+    QCOMPARE(resetSpy.count(), 1);
+    QVERIFY(model.data(model.index(0, 0)).toString().startsWith(QStringLiteral("   1. ")));
+    QVERIFY(model.data(model.index(1, 0)).toString().startsWith(QStringLiteral("▶ 2. ")));
+}
+
 void MainWindowTest::advancesNaturalEndAccordingToPlaybackMode() {
     const QStringList paths{QStringLiteral("C:/list/one.mp3"),
                             QStringLiteral("C:/list/two.mp3")};
@@ -587,6 +618,50 @@ void MainWindowTest::removesCurrentItemsWithoutLeavingInvalidSelection() {
     harness.engine.emitStateChanged(core::PlaybackState::Stopped);
     QCoreApplication::processEvents();
     QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+}
+
+void MainWindowTest::ignoresRejectedStateEventsAndCommandsAfterShutdown() {
+    GuiHarness harness;
+    openAndReachPlaying(harness);
+    QSignalSpy stateSpy(&harness.presenter, &PlayerPresenter::stateApplied);
+
+    harness.engine.emitStateChanged(core::PlaybackState::Idle);
+    QCoreApplication::processEvents();
+    QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+    QCOMPARE(stateSpy.count(), 0);
+
+    harness.presenter.shutdown();
+    const int commandsAfterShutdown = static_cast<int>(harness.engine.commands().size());
+    harness.presenter.addLocalFiles({QStringLiteral("C:/ignored/after.wav")});
+    harness.engine.emitStateChanged(core::PlaybackState::Paused);
+    harness.engine.emitError(core::PlaybackError{
+        core::PlaybackErrorKind::Unknown, "late error", "不应显示",
+    });
+    QCoreApplication::processEvents();
+    QCOMPARE(static_cast<int>(harness.engine.commands().size()), commandsAfterShutdown);
+    QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+    QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")->isHidden());
+}
+
+void MainWindowTest::mapsEveryErrorKindToStableLogValue() {
+    const std::array cases{
+        std::pair{core::PlaybackErrorKind::SourceNotFound, "source_not_found"},
+        std::pair{core::PlaybackErrorKind::SourceUnreadable, "source_unreadable"},
+        std::pair{core::PlaybackErrorKind::UnsupportedFormat, "unsupported_format"},
+        std::pair{core::PlaybackErrorKind::AudioDeviceUnavailable,
+                  "audio_device_unavailable"},
+        std::pair{core::PlaybackErrorKind::EngineNotInitialized,
+                  "engine_not_initialized"},
+        std::pair{core::PlaybackErrorKind::Unknown, "unknown"},
+    };
+
+    for (const auto& [kind, expected] : cases) {
+        GuiHarness harness;
+        harness.engine.emitError(core::PlaybackError{kind, "detail", "用户提示"});
+        QTRY_COMPARE(statusText(harness), QStringLiteral("播放失败"));
+        const std::string logs = harness.logOutput.str();
+        QVERIFY(logs.find(std::string("kind=\"") + expected + '"') != std::string::npos);
+    }
 }
 
 void MainWindowTest::switchesBetweenVideoSurfaceAndAudioPlaceholder() {

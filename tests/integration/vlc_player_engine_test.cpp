@@ -1,4 +1,5 @@
 #include "mediahub/engine_vlc/vlc_player_engine.h"
+#include "support/generated_media.h"
 #include "vlc_event_mapping.h"
 
 #include <gtest/gtest.h>
@@ -6,9 +7,6 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -21,130 +19,8 @@ namespace {
 
 using namespace std::chrono_literals;
 
-void writeLittleEndian16(std::ostream& output, const std::uint16_t value) {
-    const char bytes[]{
-        static_cast<char>(value & 0xFFU),
-        static_cast<char>((value >> 8U) & 0xFFU),
-    };
-    output.write(bytes, sizeof(bytes));
-}
-
-void writeLittleEndian32(std::ostream& output, const std::uint32_t value) {
-    const char bytes[]{
-        static_cast<char>(value & 0xFFU),
-        static_cast<char>((value >> 8U) & 0xFFU),
-        static_cast<char>((value >> 16U) & 0xFFU),
-        static_cast<char>((value >> 24U) & 0xFFU),
-    };
-    output.write(bytes, sizeof(bytes));
-}
-
-std::string pathToUtf8(const std::filesystem::path& path) {
-    const auto utf8 = path.u8string();
-    return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
-}
-
-// 每个测试在系统临时目录生成静音 PCM/WAV，析构时只清理自己创建的唯一目录。
-class GeneratedWav final {
-public:
-    explicit GeneratedWav(const std::chrono::milliseconds duration) {
-        const auto uniquePart =
-            std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
-        directory_ = std::filesystem::temp_directory_path() /
-                     std::filesystem::path(L"MediaHub 阶段4 空格") / uniquePart;
-        std::filesystem::create_directories(directory_);
-        path_ = directory_ / std::filesystem::path(L"测试 音频.wav");
-        writeFile(duration);
-    }
-
-    ~GeneratedWav() {
-        std::error_code error;
-        const auto parent = directory_.parent_path();
-        std::filesystem::remove_all(directory_, error);
-        error.clear();
-        std::filesystem::remove(parent, error);
-    }
-
-    GeneratedWav(const GeneratedWav&) = delete;
-    GeneratedWav& operator=(const GeneratedWav&) = delete;
-
-    [[nodiscard]] std::string source() const {
-        return pathToUtf8(path_);
-    }
-
-private:
-    void writeFile(const std::chrono::milliseconds duration) {
-        constexpr std::uint32_t kSampleRate = 8'000;
-        constexpr std::uint16_t kChannels = 1;
-        constexpr std::uint16_t kBitsPerSample = 16;
-        constexpr std::uint16_t kBlockAlign = kChannels * kBitsPerSample / 8;
-        constexpr std::uint32_t kByteRate = kSampleRate * kBlockAlign;
-
-        const auto sampleCount = static_cast<std::uint32_t>(
-            duration.count() * kSampleRate / 1'000);
-        const std::uint32_t dataSize = sampleCount * kBlockAlign;
-
-        std::ofstream output(path_, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.is_open());
-        output.write("RIFF", 4);
-        writeLittleEndian32(output, 36U + dataSize);
-        output.write("WAVE", 4);
-        output.write("fmt ", 4);
-        writeLittleEndian32(output, 16U);
-        writeLittleEndian16(output, 1U);
-        writeLittleEndian16(output, kChannels);
-        writeLittleEndian32(output, kSampleRate);
-        writeLittleEndian32(output, kByteRate);
-        writeLittleEndian16(output, kBlockAlign);
-        writeLittleEndian16(output, kBitsPerSample);
-        output.write("data", 4);
-        writeLittleEndian32(output, dataSize);
-
-        const std::vector<char> silence(dataSize, 0);
-        output.write(silence.data(), static_cast<std::streamsize>(silence.size()));
-        ASSERT_TRUE(output.good());
-    }
-
-    std::filesystem::path directory_;
-    std::filesystem::path path_;
-};
-
-// 创建可读但不是媒体的文件，用于验证损坏内容和伪装扩展名的失败分类。
-class GeneratedInvalidMedia final {
-public:
-    GeneratedInvalidMedia(std::wstring fileName, std::string contents) {
-        const auto uniquePart =
-            std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
-        directory_ = std::filesystem::temp_directory_path() /
-                     std::filesystem::path(L"MediaHub 阶段9 错误") / uniquePart;
-        std::filesystem::create_directories(directory_);
-        path_ = directory_ / std::filesystem::path(std::move(fileName));
-        std::ofstream output(path_, std::ios::binary | std::ios::trunc);
-        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        if (!output.good()) {
-            throw std::runtime_error("无法生成阶段 9 测试媒体。");
-        }
-    }
-
-    ~GeneratedInvalidMedia() {
-        std::error_code error;
-        const auto parent = directory_.parent_path();
-        std::filesystem::remove_all(directory_, error);
-        error.clear();
-        std::filesystem::remove(parent, error);
-    }
-
-    GeneratedInvalidMedia(const GeneratedInvalidMedia&) = delete;
-    GeneratedInvalidMedia& operator=(const GeneratedInvalidMedia&) = delete;
-
-    [[nodiscard]] std::string source() const {
-        return pathToUtf8(path_);
-    }
-
-private:
-    std::filesystem::path directory_;
-    std::filesystem::path path_;
-};
+using test::GeneratedInvalidMedia;
+using test::GeneratedWav;
 
 // libVLC 回调线程只写受互斥量保护的测试快照，并通过条件变量唤醒测试线程。
 class RecordingListener final : public core::PlayerEventListener {

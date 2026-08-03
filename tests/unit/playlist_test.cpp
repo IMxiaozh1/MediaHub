@@ -96,5 +96,39 @@ TEST(PlaylistTest, ClearRemovesSelectionButPreservesMode) {
     EXPECT_EQ(playlist.mode(), PlaybackMode::LoopAll);
 }
 
+TEST(PlaylistTest, ReportsNavigationBoundariesForEmptyAndSingleItemLists) {
+    Playlist playlist;
+    for (const auto mode : {PlaybackMode::Sequential, PlaybackMode::LoopAll,
+                            PlaybackMode::LoopOne}) {
+        playlist.setMode(mode);
+        EXPECT_EQ(playlist.previousIndex(), std::nullopt);
+        EXPECT_EQ(playlist.nextIndex(), std::nullopt);
+        EXPECT_FALSE(playlist.advanceAfterEnd());
+    }
+
+    playlist.add(item("only.mp3"));
+    playlist.setMode(PlaybackMode::LoopAll);
+    EXPECT_EQ(playlist.previousIndex(), std::nullopt);
+    EXPECT_EQ(playlist.nextIndex(), std::nullopt);
+    EXPECT_TRUE(playlist.advanceAfterEnd());
+    EXPECT_EQ(playlist.currentIndex(), 0U);
+}
+
+TEST(PlaylistTest, RemovingItemsAroundSelectionPreservesTheSameCurrentMedia) {
+    auto playlist = threeItems();
+    ASSERT_TRUE(playlist.select(1));
+
+    ASSERT_TRUE(playlist.remove(2));
+    ASSERT_NE(playlist.currentItem(), nullptr);
+    EXPECT_EQ(playlist.currentIndex(), 1U);
+    EXPECT_EQ(playlist.currentItem()->displayName, "two.mp4");
+
+    playlist.add(item("four.ogg"));
+    ASSERT_TRUE(playlist.remove(0));
+    ASSERT_NE(playlist.currentItem(), nullptr);
+    EXPECT_EQ(playlist.currentIndex(), 0U);
+    EXPECT_EQ(playlist.currentItem()->displayName, "two.mp4");
+}
+
 }  // namespace
 }  // namespace mediahub::core

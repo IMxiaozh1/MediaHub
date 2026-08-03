@@ -43,5 +43,19 @@ TEST(MediaItemTest, PreservesExplicitDisplayName) {
     EXPECT_EQ(item.displayName, "测试直播");
 }
 
+TEST(MediaItemTest, KeepsStableNamesForRootQueriesAndTrailingSeparators) {
+    const auto rootStream = makeMediaItem("https://example.test/?token=private#live");
+    EXPECT_EQ(rootStream.kind, MediaSourceKind::NetworkStream);
+    EXPECT_EQ(rootStream.displayName, rootStream.source);
+
+    const auto trailingLocal = makeMediaItem(R"(C:\Media\)");
+    EXPECT_EQ(trailingLocal.kind, MediaSourceKind::LocalFile);
+    EXPECT_EQ(trailingLocal.displayName, trailingLocal.source);
+
+    const auto emptySource = makeMediaItem("");
+    EXPECT_EQ(emptySource.kind, MediaSourceKind::LocalFile);
+    EXPECT_TRUE(emptySource.displayName.empty());
+}
+
 }  // namespace
 }  // namespace mediahub::core
