@@ -2,6 +2,7 @@
 #include "fakes/fake_player_engine.h"
 #include "main_window.h"
 #include "player_presenter.h"
+#include "video_output_widget.h"
 
 #include <QAction>
 #include <QApplication>
@@ -11,6 +12,7 @@
 #include <QTest>
 #include <QThread>
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -41,12 +43,24 @@ QString statusText(GuiHarness& harness) {
     return requiredChild<QLabel>(harness.window, "playbackStatusLabel")->text();
 }
 
+QRect geometryInsideWindow(QWidget& widget, MainWindow& window) {
+    return QRect(widget.mapTo(&window, QPoint(0, 0)), widget.size());
+}
+
 void openAndReachPlaying(GuiHarness& harness) {
     harness.presenter.openLocalFile(QStringLiteral("C:/媒体 库/测试 音频.wav"));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);
     QTRY_COMPARE(static_cast<int>(harness.engine.commands().size()), 2);
     harness.engine.emitStateChanged(core::PlaybackState::Playing);
     QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+}
+
+bool hasSurfaceCommand(const GuiHarness& harness, const bool expectsNullHandle) {
+    const auto commands = harness.engine.commands();
+    return std::any_of(commands.begin(), commands.end(), [expectsNullHandle](const auto& command) {
+        return command.kind == test::FakeEngineCommandKind::SetVideoSurface &&
+               (command.nativeHandle == nullptr) == expectsNullHandle;
+    });
 }
 
 }  // namespace
@@ -56,6 +70,7 @@ class MainWindowTest final : public QObject {
 
 private slots:
     void hasFormalInitialLayout();
+    void publishesNativeSurfaceOnlyAfterWindowIsShown();
     void opensUtf8LocalFileAndStartsAfterOpeningEvent();
     void routesPauseResumeAndStopThroughPresenter();
     void rendersBufferingAsNonInteractiveWait();
@@ -63,6 +78,8 @@ private slots:
     void displaysEngineErrorWithoutBlockingDialog();
     void appliesWorkerThreadStateOnGuiThread();
     void forwardsEveryBridgeEventAsQueuedValue();
+    void switchesBetweenVideoSurfaceAndAudioPlaceholder();
+    void resizesVideoSurfaceAndTogglesFullScreen();
     void stopsForwardingBeforeWindowCloses();
 };
 
@@ -70,14 +87,32 @@ void MainWindowTest::hasFormalInitialLayout() {
     GuiHarness harness;
 
     QCOMPARE(harness.window.windowTitle(), QStringLiteral("MediaHub"));
-    QCOMPARE(harness.window.size(), QSize(960, 600));
+    QCOMPARE(harness.window.size(), QSize(960, 720));
     QVERIFY(!harness.window.isVisible());
     QVERIFY(requiredChild<QAction>(harness.window, "openFileAction")->isEnabled());
     QVERIFY(requiredChild<QPushButton>(harness.window, "openFileButton")->isEnabled());
     QVERIFY(!requiredChild<QPushButton>(harness.window, "playButton")->isEnabled());
     QVERIFY(!requiredChild<QPushButton>(harness.window, "pauseButton")->isEnabled());
     QVERIFY(!requiredChild<QPushButton>(harness.window, "stopButton")->isEnabled());
+    QVERIFY(!requiredChild<QPushButton>(harness.window, "fullScreenButton")->isEnabled());
     QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+
+    auto* const videoOutput = requiredChild<VideoOutputWidget>(
+        harness.window, "videoOutputWidget");
+    QVERIFY(!videoOutput->isVideoActive());
+    QVERIFY(!videoOutput->hasHeightForWidth());
+    QCOMPARE(videoOutput->sizeHint(), QSize(720, 405));
+    QCOMPARE(videoOutput->placeholderText(),
+             QStringLiteral("打开媒体后，画面会出现在这里"));
+    QVERIFY(!hasSurfaceCommand(harness, false));
+}
+
+void MainWindowTest::publishesNativeSurfaceOnlyAfterWindowIsShown() {
+    GuiHarness harness;
+    QVERIFY(!hasSurfaceCommand(harness, false));
+
+    harness.window.show();
+    QTRY_VERIFY(hasSurfaceCommand(harness, false));
 }
 
 void MainWindowTest::opensUtf8LocalFileAndStartsAfterOpeningEvent() {
@@ -255,6 +290,64 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
     QCOMPARE(receivedError.userMessage, std::string("工作线程错误"));
 }
 
+void MainWindowTest::switchesBetweenVideoSurfaceAndAudioPlaceholder() {
+    GuiHarness harness;
+    auto* const videoOutput = requiredChild<VideoOutputWidget>(
+        harness.window, "videoOutputWidget");
+
+    harness.presenter.openLocalFile(QStringLiteral("C:/video/sample.mp4"));
+    QVERIFY(!videoOutput->isVideoActive());
+    QCOMPARE(videoOutput->placeholderText(), QStringLiteral("正在准备视频画面..."));
+
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    QTRY_VERIFY(videoOutput->isVideoActive());
+    QCOMPARE(videoOutput->placeholderText(), QString());
+    QVERIFY(videoOutput->testAttribute(Qt::WA_NoSystemBackground));
+    QVERIFY(!videoOutput->testAttribute(Qt::WA_OpaquePaintEvent));
+
+    harness.presenter.openLocalFile(QStringLiteral("C:/audio/sample.flac"));
+    QVERIFY(!videoOutput->isVideoActive());
+    QVERIFY(videoOutput->placeholderText().contains(QStringLiteral("音频播放模式")));
+    QVERIFY(!videoOutput->testAttribute(Qt::WA_NoSystemBackground));
+    QVERIFY(videoOutput->testAttribute(Qt::WA_OpaquePaintEvent));
+}
+
+void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
+    GuiHarness harness;
+    harness.window.show();
+    QCoreApplication::processEvents();
+    auto* const videoOutput = requiredChild<VideoOutputWidget>(
+        harness.window, "videoOutputWidget");
+    const QSize initialSize = videoOutput->size();
+    auto* const openButton = requiredChild<QPushButton>(harness.window, "openFileButton");
+    auto* const fullScreenButton = requiredChild<QPushButton>(
+        harness.window, "fullScreenButton");
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*openButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(
+        geometryInsideWindow(*fullScreenButton, harness.window)));
+
+    harness.window.resize(1200, 800);
+    QTRY_VERIFY(videoOutput->size().width() > initialSize.width());
+    QTRY_VERIFY(videoOutput->size().height() > initialSize.height());
+    QVERIFY(harness.window.rect().contains(geometryInsideWindow(*openButton, harness.window)));
+    QVERIFY(harness.window.rect().contains(
+        geometryInsideWindow(*fullScreenButton, harness.window)));
+
+    harness.presenter.openLocalFile(QStringLiteral("C:/video/fullscreen.mkv"));
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    QTRY_VERIFY(fullScreenButton->isEnabled());
+
+    QTest::mouseClick(fullScreenButton, Qt::LeftButton);
+    QTRY_VERIFY(harness.window.isFullScreen());
+    QCOMPARE(fullScreenButton->text(), QStringLiteral("退出全屏"));
+    QVERIFY(fullScreenButton->isHidden());
+
+    requiredChild<QAction>(harness.window, "fullScreenAction")->trigger();
+    QTRY_VERIFY(!harness.window.isFullScreen());
+    QCOMPARE(fullScreenButton->text(), QStringLiteral("全屏"));
+    QVERIFY(!fullScreenButton->isHidden());
+}
+
 void MainWindowTest::stopsForwardingBeforeWindowCloses() {
     GuiHarness harness;
     harness.window.show();
@@ -264,8 +357,12 @@ void MainWindowTest::stopsForwardingBeforeWindowCloses() {
     harness.window.close();
     QCoreApplication::processEvents();
     QVERIFY(!harness.window.isVisible());
-    QCOMPARE(static_cast<int>(harness.engine.commands().size()), 1);
-    QVERIFY(harness.engine.commands().back().kind == test::FakeEngineCommandKind::Stop);
+    const auto commands = harness.engine.commands();
+    QVERIFY(commands.size() >= 3);
+    QVERIFY(commands[commands.size() - 2].kind ==
+            test::FakeEngineCommandKind::SetVideoSurface);
+    QCOMPARE(commands[commands.size() - 2].nativeHandle, nullptr);
+    QVERIFY(commands.back().kind == test::FakeEngineCommandKind::Stop);
 
     harness.eventBridge.onStateChanged(core::PlaybackState::Opening);
     QCoreApplication::processEvents();

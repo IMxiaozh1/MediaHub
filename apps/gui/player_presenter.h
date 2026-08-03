@@ -36,6 +36,8 @@ private:
     void requestPlay();
     void requestPause();
     void requestStop();
+    // 调用线程：GUI 主线程。以下方法只由主线程输入或队列事件调用。
+    void attachVideoSurface(void* nativeHandle);
     void handleStateChanged(core::PlaybackState state);
     void handlePositionChanged(core::PlaybackPosition position);
     void handleDurationChanged(OptionalDuration duration);
@@ -51,6 +53,8 @@ private:
     core::PlaybackPosition position_;
     QString mediaName_{QStringLiteral("未选择媒体")};
     bool isAutoPlayPending_{false};
+    bool isVideoMedia_{false};
+    bool isPreparingMedia_{false};
     bool isShuttingDown_{false};
 };
 

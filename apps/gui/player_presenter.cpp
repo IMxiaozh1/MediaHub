@@ -22,6 +22,14 @@ QString fromUtf8(const std::string& text) {
     return QString::fromUtf8(text.data(), static_cast<int>(text.size()));
 }
 
+bool isAudioFile(const QString& filePath) {
+    const QString suffix = QFileInfo(filePath).suffix().toLower();
+    return suffix == QStringLiteral("mp3") || suffix == QStringLiteral("wav") ||
+           suffix == QStringLiteral("flac") || suffix == QStringLiteral("aac") ||
+           suffix == QStringLiteral("m4a") || suffix == QStringLiteral("ogg") ||
+           suffix == QStringLiteral("opus") || suffix == QStringLiteral("wma");
+}
+
 }  // namespace
 
 PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
@@ -34,6 +42,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
     connect(&window_, &MainWindow::playRequested, this, &PlayerPresenter::requestPlay);
     connect(&window_, &MainWindow::pauseRequested, this, &PlayerPresenter::requestPause);
     connect(&window_, &MainWindow::stopRequested, this, &PlayerPresenter::requestStop);
+    connect(&window_, &MainWindow::videoSurfaceReady, this,
+            &PlayerPresenter::attachVideoSurface);
     connect(&window_, &MainWindow::closing, this, &PlayerPresenter::shutdown);
 
     // 强制排队可避免同步内核回调在原调用栈中重新进入控制接口。
@@ -65,6 +75,8 @@ void PlayerPresenter::openLocalFile(const QString& filePath) {
     const QFileInfo fileInfo(filePath);
     mediaName_ = fileInfo.fileName().isEmpty() ? filePath : fileInfo.fileName();
     isAutoPlayPending_ = true;
+    isVideoMedia_ = !isAudioFile(filePath);
+    isPreparingMedia_ = true;
     window_.clearPlaybackError();
     render();
     engine_.open(core::makeMediaItem(utf8String(filePath), utf8String(mediaName_)));
@@ -81,9 +93,25 @@ void PlayerPresenter::shutdown() noexcept {
     disconnect(&eventBridge_, nullptr, this, nullptr);
     try {
         engine_.setEventListener(nullptr);
+    } catch (...) {
+        // 关闭阶段继续执行剩余清理，不能让第三方内核异常越过 Qt 事件循环。
+    }
+    try {
+        engine_.setVideoSurface(nullptr);
+    } catch (...) {
+        // 即使句柄解绑失败，也必须继续提交停止请求。
+    }
+    try {
         engine_.stop();
     } catch (...) {
-        // 关闭阶段不能让第三方内核异常越过 Qt 事件循环。
+        // 析构和关闭事件都不能向外传播异常。
+    }
+}
+
+void PlayerPresenter::attachVideoSurface(void* const nativeHandle) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!isShuttingDown_) {
+        engine_.setVideoSurface(nativeHandle);
     }
 }
 
@@ -113,6 +141,10 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (isShuttingDown_) {
         return;
+    }
+
+    if (state == core::PlaybackState::Opening || state == core::PlaybackState::Failed) {
+        isPreparingMedia_ = false;
     }
 
     const auto result = stateMachine_.transitionTo(state);
@@ -163,6 +195,7 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
     }
 
     isAutoPlayPending_ = false;
+    isPreparingMedia_ = false;
     const auto result = stateMachine_.transitionTo(core::PlaybackState::Failed);
     if (result != core::PlaybackTransitionResult::Rejected) {
         render();
@@ -212,6 +245,45 @@ PlayerViewState PlayerPresenter::makeViewState() const {
         break;
     case core::PlaybackState::Failed:
         viewState.statusText = QStringLiteral("播放失败");
+        break;
+    }
+
+    if (mediaName_ == QStringLiteral("未选择媒体")) {
+        return viewState;
+    }
+    if (!isVideoMedia_) {
+        viewState.videoPlaceholder = QStringLiteral("音频播放模式\n当前媒体没有视频画面");
+        return viewState;
+    }
+
+    viewState.canToggleFullscreen = !isPreparingMedia_ &&
+                                    stateMachine_.state() != core::PlaybackState::Failed &&
+                                    stateMachine_.state() != core::PlaybackState::Stopped &&
+                                    stateMachine_.state() != core::PlaybackState::Ended;
+    if (isPreparingMedia_) {
+        viewState.videoPlaceholder = QStringLiteral("正在准备视频画面...");
+        return viewState;
+    }
+
+    switch (stateMachine_.state()) {
+    case core::PlaybackState::Opening:
+    case core::PlaybackState::Buffering:
+    case core::PlaybackState::Playing:
+    case core::PlaybackState::Paused:
+        viewState.isVideoSurfaceActive = true;
+        viewState.videoPlaceholder.clear();
+        break;
+    case core::PlaybackState::Stopped:
+        viewState.videoPlaceholder = QStringLiteral("视频已停止");
+        break;
+    case core::PlaybackState::Ended:
+        viewState.videoPlaceholder = QStringLiteral("视频播放结束");
+        break;
+    case core::PlaybackState::Failed:
+        viewState.videoPlaceholder = QStringLiteral("视频播放失败");
+        break;
+    case core::PlaybackState::Idle:
+        viewState.videoPlaceholder = QStringLiteral("正在准备视频画面...");
         break;
     }
 

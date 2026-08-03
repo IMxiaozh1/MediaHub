@@ -232,6 +232,11 @@ TEST(VlcEventMappingTest, MapsEveryPlaybackEventToCoreState) {
     EXPECT_EQ(mapPlaybackState(VlcPlaybackEvent::EndReached), core::PlaybackState::Ended);
     EXPECT_EQ(mapPlaybackState(VlcPlaybackEvent::EncounteredError),
               core::PlaybackState::Failed);
+    EXPECT_TRUE(isBufferingInProgress(0.0F, false));
+    EXPECT_TRUE(isBufferingInProgress(99.9F, false));
+    EXPECT_FALSE(isBufferingInProgress(100.0F, false));
+    EXPECT_FALSE(isBufferingInProgress(101.0F, false));
+    EXPECT_FALSE(isBufferingInProgress(25.0F, true));
 }
 
 TEST(VlcPlayerEngineTest, InitializesWithStableEmptySnapshots) {
@@ -309,6 +314,7 @@ TEST(VlcPlayerEngineTest, PlaysPausesSeeksResumesAndStopsGeneratedWav) {
     EXPECT_NE(listener.stateThread(core::PlaybackState::Playing), std::this_thread::get_id());
     ASSERT_TRUE(listener.waitForKnownDuration());
     ASSERT_TRUE(listener.waitForPositionAtLeast(100ms));
+    EXPECT_EQ(engine.state(), core::PlaybackState::Playing);
 
     const auto firstPause = listener.stateCount(core::PlaybackState::Paused) + 1;
     engine.pause();

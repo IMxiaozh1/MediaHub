@@ -130,6 +130,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/player_presenter.cpp
         apps/gui/player_presenter.h
         apps/gui/player_view_state.h
+        apps/gui/video_output_widget.cpp
+        apps/gui/video_output_widget.h
     )
     set_target_properties(mediahub_gui_support PROPERTIES AUTOMOC ON)
     target_include_directories(mediahub_gui_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui")

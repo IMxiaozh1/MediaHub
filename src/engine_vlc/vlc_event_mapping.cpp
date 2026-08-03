@@ -25,4 +25,9 @@ core::PlaybackState mapPlaybackState(const VlcPlaybackEvent event) noexcept {
     return core::PlaybackState::Failed;
 }
 
+bool isBufferingInProgress(const float cachePercentage,
+                           const bool isPlayerAlreadyPlaying) noexcept {
+    return cachePercentage < 100.0F && !isPlayerAlreadyPlaying;
+}
+
 }  // namespace mediahub::engine_vlc

@@ -1,7 +1,10 @@
 #include "main_window.h"
 
+#include "video_output_widget.h"
+
 #include <QAction>
 #include <QCloseEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -15,11 +18,18 @@
 #include <QWidget>
 
 namespace mediahub::gui {
+namespace {
+
+constexpr int kNormalHorizontalMargin = 36;
+constexpr int kNormalVerticalMargin = 28;
+constexpr int kNormalSpacing = 16;
+
+}  // namespace
 
 MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     setWindowTitle(QStringLiteral("MediaHub"));
-    resize(960, 600);
-    setMinimumSize(760, 480);
+    resize(960, 720);
+    setMinimumSize(760, 640);
 
     auto* const fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
     openAction_ = fileMenu->addAction(QStringLiteral("打开媒体文件(&O)..."));
@@ -28,23 +38,36 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     fileMenu->addSeparator();
     auto* const exitAction = fileMenu->addAction(QStringLiteral("退出(&X)"));
     exitAction->setShortcut(QKeySequence::Quit);
+    auto* const viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+    fullScreenAction_ = viewMenu->addAction(QStringLiteral("进入全屏(&F)"));
+    fullScreenAction_->setObjectName(QStringLiteral("fullScreenAction"));
+    fullScreenAction_->setShortcut(QKeySequence(Qt::Key_F11));
+    auto* const exitFullScreenAction = new QAction(this);
+    exitFullScreenAction->setShortcut(QKeySequence(Qt::Key_Escape));
+    addAction(exitFullScreenAction);
 
     auto* const centralWidget = new QWidget(this);
     centralWidget->setObjectName(QStringLiteral("centralSurface"));
-    auto* const rootLayout = new QVBoxLayout(centralWidget);
-    rootLayout->setContentsMargins(48, 42, 48, 42);
-    rootLayout->setSpacing(24);
+    rootLayout_ = new QVBoxLayout(centralWidget);
+    rootLayout_->setContentsMargins(kNormalHorizontalMargin,
+                                    kNormalVerticalMargin,
+                                    kNormalHorizontalMargin,
+                                    kNormalVerticalMargin);
+    rootLayout_->setSpacing(kNormalSpacing);
 
     auto* const eyebrow = new QLabel(QStringLiteral("LOCAL MEDIA / 01"), centralWidget);
     eyebrow->setObjectName(QStringLiteral("eyebrowLabel"));
     auto* const title = new QLabel(QStringLiteral("让本地声音重新流动"), centralWidget);
     title->setObjectName(QStringLiteral("titleLabel"));
     auto* const subtitle = new QLabel(
-        QStringLiteral("打开一段本地音频，MediaHub 会在这里接管播放。"), centralWidget);
+        QStringLiteral("打开本地音视频，声音与画面都留在你的设备上。"), centralWidget);
     subtitle->setObjectName(QStringLiteral("subtitleLabel"));
-    rootLayout->addWidget(eyebrow);
-    rootLayout->addWidget(title);
-    rootLayout->addWidget(subtitle);
+    rootLayout_->addWidget(eyebrow);
+    rootLayout_->addWidget(title);
+    rootLayout_->addWidget(subtitle);
+
+    videoOutput_ = new VideoOutputWidget(centralWidget);
+    rootLayout_->addWidget(videoOutput_, 1);
 
     auto* const mediaCard = new QFrame(centralWidget);
     mediaCard->setObjectName(QStringLiteral("mediaCard"));
@@ -75,7 +98,7 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     errorLabel_->setWordWrap(true);
     errorLabel_->hide();
     cardLayout->addWidget(errorLabel_);
-    rootLayout->addWidget(mediaCard);
+    rootLayout_->addWidget(mediaCard);
 
     auto* const controls = new QHBoxLayout();
     controls->setSpacing(12);
@@ -88,13 +111,24 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     pauseButton_->setObjectName(QStringLiteral("pauseButton"));
     stopButton_ = new QPushButton(QStringLiteral("停止"), centralWidget);
     stopButton_->setObjectName(QStringLiteral("stopButton"));
+    fullScreenButton_ = new QPushButton(QStringLiteral("全屏"), centralWidget);
+    fullScreenButton_->setObjectName(QStringLiteral("fullScreenButton"));
     controls->addWidget(openButton_);
     controls->addStretch(1);
     controls->addWidget(playButton_);
     controls->addWidget(pauseButton_);
     controls->addWidget(stopButton_);
-    rootLayout->addLayout(controls);
-    rootLayout->addStretch(1);
+    controls->addWidget(fullScreenButton_);
+    rootLayout_->addLayout(controls);
+    fullScreenChrome_ = {eyebrow,
+                         title,
+                         subtitle,
+                         mediaCard,
+                         openButton_,
+                         playButton_,
+                         pauseButton_,
+                         stopButton_,
+                         fullScreenButton_};
 
     setCentralWidget(centralWidget);
     setStyleSheet(QStringLiteral(R"(
@@ -192,6 +226,11 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     connect(playButton_, &QPushButton::clicked, this, &MainWindow::playRequested);
     connect(pauseButton_, &QPushButton::clicked, this, &MainWindow::pauseRequested);
     connect(stopButton_, &QPushButton::clicked, this, &MainWindow::stopRequested);
+    connect(fullScreenButton_, &QPushButton::clicked, this, &MainWindow::toggleFullScreen);
+    connect(fullScreenAction_, &QAction::triggered, this, &MainWindow::toggleFullScreen);
+    connect(exitFullScreenAction, &QAction::triggered, this, &MainWindow::exitFullScreen);
+    connect(videoOutput_, &VideoOutputWidget::surfaceReady, this,
+            &MainWindow::videoSurfaceReady);
     connect(exitAction, &QAction::triggered, this, &MainWindow::close);
 
     applyViewState(PlayerViewState{QStringLiteral("未选择媒体"),
@@ -204,8 +243,15 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
     playButton_->setEnabled(viewState.canPlay);
     pauseButton_->setEnabled(viewState.canPause);
     stopButton_->setEnabled(viewState.canStop);
+    fullScreenAction_->setEnabled(viewState.canToggleFullscreen);
+    fullScreenButton_->setEnabled(viewState.canToggleFullscreen);
     mediaNameLabel_->setText(viewState.mediaName);
     statusLabel_->setText(viewState.statusText);
+    videoOutput_->setPresentation(viewState.isVideoSurfaceActive,
+                                  viewState.videoPlaceholder);
+    if (!viewState.canToggleFullscreen && isFullScreen()) {
+        showNormal();
+    }
 }
 
 void MainWindow::showPlaybackError(const QString& message) {
@@ -223,6 +269,13 @@ void MainWindow::closeEvent(QCloseEvent* const event) {
     QMainWindow::closeEvent(event);
 }
 
+void MainWindow::changeEvent(QEvent* const event) {
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        updateFullScreenText();
+    }
+}
+
 void MainWindow::chooseLocalFile() {
     const QString filePath = QFileDialog::getOpenFileName(
         this,
@@ -233,6 +286,50 @@ void MainWindow::chooseLocalFile() {
     if (!filePath.isEmpty()) {
         emit localFileSelected(filePath);
     }
+}
+
+void MainWindow::toggleFullScreen() {
+    if (isFullScreen()) {
+        showNormal();
+    } else {
+        showFullScreen();
+    }
+    updateFullScreenText();
+}
+
+void MainWindow::exitFullScreen() {
+    if (isFullScreen()) {
+        showNormal();
+        updateFullScreenText();
+    }
+}
+
+void MainWindow::updateFullScreenText() {
+    if (fullScreenAction_ == nullptr || fullScreenButton_ == nullptr) {
+        return;
+    }
+
+    const bool isNowFullScreen = isFullScreen();
+    menuBar()->setVisible(!isNowFullScreen);
+    for (auto* const widget : fullScreenChrome_) {
+        widget->setVisible(!isNowFullScreen);
+    }
+    if (isNowFullScreen) {
+        rootLayout_->setContentsMargins(0, 0, 0, 0);
+        rootLayout_->setSpacing(0);
+    } else {
+        rootLayout_->setContentsMargins(kNormalHorizontalMargin,
+                                        kNormalVerticalMargin,
+                                        kNormalHorizontalMargin,
+                                        kNormalVerticalMargin);
+        rootLayout_->setSpacing(kNormalSpacing);
+    }
+
+    const QString actionText = isNowFullScreen ? QStringLiteral("退出全屏(&F)")
+                                               : QStringLiteral("进入全屏(&F)");
+    fullScreenAction_->setText(actionText);
+    fullScreenButton_->setText(isNowFullScreen ? QStringLiteral("退出全屏")
+                                               : QStringLiteral("全屏"));
 }
 
 }  // namespace mediahub::gui

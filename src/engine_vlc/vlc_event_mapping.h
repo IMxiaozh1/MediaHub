@@ -18,4 +18,8 @@ enum class VlcPlaybackEvent {
 
 [[nodiscard]] core::PlaybackState mapPlaybackState(VlcPlaybackEvent event) noexcept;
 
+// 100% 是缓冲完成通知，不能把已经进入 Playing 的界面降级回 Buffering。
+[[nodiscard]] bool isBufferingInProgress(float cachePercentage,
+                                         bool isPlayerAlreadyPlaying) noexcept;
+
 }  // namespace mediahub::engine_vlc

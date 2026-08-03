@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QMessageBox>
+#include <QTimer>
 
 #include "engine_event_bridge.h"
 #include "main_window.h"
@@ -20,6 +21,13 @@ int main(int argc, char* argv[]) {
         mediahub::gui::MainWindow mainWindow;
         mediahub::gui::PlayerPresenter presenter(engine, eventBridge, mainWindow);
         mainWindow.show();
+        const QStringList arguments = application.arguments();
+        if (arguments.size() > 1) {
+            const QString initialMediaPath = arguments.at(1);
+            QTimer::singleShot(0, &presenter, [&presenter, initialMediaPath] {
+                presenter.openLocalFile(initialMediaPath);
+            });
+        }
 
         return application.exec();
     } catch (const std::exception& error) {

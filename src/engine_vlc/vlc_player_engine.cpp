@@ -348,6 +348,12 @@ private:
     // 调用线程：libVLC 事件线程，只更新快照并向监听器发送值类型事件。
     void handleEvent(const libvlc_event_t& event) noexcept {
         if (const auto playbackEvent = playbackEventFromLibVlc(event.type)) {
+            if (*playbackEvent == VlcPlaybackEvent::Buffering &&
+                !isBufferingInProgress(
+                    event.u.media_player_buffering.new_cache,
+                    libvlc_media_player_get_state(player_.get()) == libvlc_Playing)) {
+                return;
+            }
             const auto nextState = mapPlaybackState(*playbackEvent);
             if (*playbackEvent == VlcPlaybackEvent::Stopped) {
                 updatePosition(0ms, true);

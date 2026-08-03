@@ -8,10 +8,13 @@ namespace mediahub::gui {
 struct PlayerViewState {
     QString mediaName;
     QString statusText;
+    QString videoPlaceholder{QStringLiteral("打开媒体后，画面会出现在这里")};
     bool canOpen{true};
     bool canPlay{false};
     bool canPause{false};
     bool canStop{false};
+    bool isVideoSurfaceActive{false};
+    bool canToggleFullscreen{false};
 };
 
 }  // namespace mediahub::gui
