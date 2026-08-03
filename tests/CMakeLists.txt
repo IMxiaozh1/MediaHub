@@ -27,8 +27,13 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PROPERTIES TIMEOUT 30
     )
 
-    add_executable(mediahub_gui_tests gui/main_window_test.cpp)
+    add_executable(mediahub_gui_tests
+        fakes/fake_player_engine.cpp
+        fakes/fake_player_engine.h
+        gui/main_window_test.cpp
+    )
     set_target_properties(mediahub_gui_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(mediahub_gui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(mediahub_gui_tests PRIVATE mediahub_gui_support Qt5::Test)
     mediahub_enable_warnings(mediahub_gui_tests)
 
@@ -43,6 +48,11 @@ if(NOT MEDIAHUB_CORE_ONLY)
         VERBATIM
     )
 
-    add_test(NAME gui.stage2_main_window COMMAND mediahub_gui_tests -platform offscreen)
-    set_tests_properties(gui.stage2_main_window PROPERTIES TIMEOUT 10)
+    add_test(NAME gui.stage5_player_controls COMMAND mediahub_gui_tests -platform offscreen)
+    set_tests_properties(gui.stage5_player_controls PROPERTIES TIMEOUT 15)
+    if(WIN32 AND DEFINED ENV{WINDIR})
+        set_property(TEST gui.stage5_player_controls APPEND PROPERTY
+            ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
+        )
+    endif()
 endif()

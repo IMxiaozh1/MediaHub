@@ -1,12 +1,31 @@
 #include <QApplication>
+#include <QMessageBox>
 
+#include "engine_event_bridge.h"
 #include "main_window.h"
+#include "mediahub/engine_vlc/vlc_player_engine.h"
+#include "player_presenter.h"
+
+#include <cstdlib>
+#include <exception>
 
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
+    QApplication::setApplicationName(QStringLiteral("MediaHub"));
+    QApplication::setOrganizationName(QStringLiteral("MediaHub"));
 
-    mediahub::gui::MainWindow mainWindow;
-    mainWindow.show();
+    try {
+        mediahub::engine_vlc::VlcPlayerEngine engine;
+        mediahub::gui::EngineEventBridge eventBridge;
+        mediahub::gui::MainWindow mainWindow;
+        mediahub::gui::PlayerPresenter presenter(engine, eventBridge, mainWindow);
+        mainWindow.show();
 
-    return application.exec();
+        return application.exec();
+    } catch (const std::exception& error) {
+        QMessageBox::critical(nullptr,
+                              QStringLiteral("MediaHub 启动失败"),
+                              QString::fromUtf8(error.what()));
+        return EXIT_FAILURE;
+    }
 }

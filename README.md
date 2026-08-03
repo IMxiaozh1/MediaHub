@@ -2,8 +2,8 @@
 
 一个使用 C++20 和 Qt 5.14.2 开发的 Windows 桌面媒体播放器。
 
-> **当前状态：阶段 4 已完成，阶段 5（GUI 播放控制与线程边界）尚未开始。
-> libVLC 本地音频链路已通过哑输出集成测试，但当前 Qt 窗口尚未接入播放控件。**
+> **当前状态：阶段 5 已完成，阶段 6（视频输出）尚未开始。
+> 正式 Qt 窗口已接入真实 libVLC 内核，可打开本地媒体并控制播放、暂停与停止。**
 
 ## 这是什么
 
@@ -91,14 +91,14 @@ cmake --build cmake-build-core-debug
 ctest --test-dir cmake-build-core-debug --output-on-failure
 ```
 
-运行当前空窗口：
+运行当前程序：
 
 ```powershell
 .\cmake-build-debug\MediaHub.exe
 ```
 
-当前 `MediaHub.exe` 只验证 Qt 5.14.2 窗口、目标依赖和生命周期。打开媒体、播放、
-暂停、视频输出等功能从后续阶段逐步加入。
+当前 `MediaHub.exe` 已提供文件菜单、打开入口、播放、暂停、停止和状态提示。选择本地
+媒体后会自动开始播放；视频画面区域、进度与音量控件从后续阶段逐步加入。
 
 ## 项目文档
 
@@ -106,7 +106,7 @@ ctest --test-dir cmake-build-core-debug --output-on-failure
 
 - [docs/文档说明.md](docs/文档说明.md) — 文档导航
 - [docs/交接文档.md](docs/交接文档.md) — **当前状态和下一步，开工前先读这份**
-- [docs/测试/阶段4测试.md](docs/测试/阶段4测试.md) — 阶段 4 的实际构建与测试记录
+- [docs/测试/阶段5测试.md](docs/测试/阶段5测试.md) — 阶段 5 的实际构建与测试记录
 
 按主题：
 

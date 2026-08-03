@@ -123,9 +123,15 @@ if(NOT MEDIAHUB_CORE_ONLY)
     mediahub_enable_warnings(mediahub_engine_vlc)
 
     add_library(mediahub_gui_support STATIC
+        apps/gui/engine_event_bridge.cpp
+        apps/gui/engine_event_bridge.h
         apps/gui/main_window.cpp
         apps/gui/main_window.h
+        apps/gui/player_presenter.cpp
+        apps/gui/player_presenter.h
+        apps/gui/player_view_state.h
     )
+    set_target_properties(mediahub_gui_support PROPERTIES AUTOMOC ON)
     target_include_directories(mediahub_gui_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui")
     target_link_libraries(mediahub_gui_support
         PUBLIC mediahub_core Qt5::Widgets
@@ -137,6 +143,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     target_link_libraries(mediahub_gui PRIVATE mediahub_engine_vlc mediahub_gui_support)
     mediahub_enable_warnings(mediahub_gui)
     mediahub_deploy_qt(mediahub_gui)
+    mediahub_deploy_vlc(mediahub_gui)
 
     add_executable(mediahub_vlc_probe tools/vlc_probe/main.cpp)
     set_target_properties(mediahub_vlc_probe PROPERTIES OUTPUT_NAME MediaHubVlcProbe)

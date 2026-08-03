@@ -42,6 +42,13 @@
   - 测试模式通过构造选项启用 libVLC 哑音频和哑视频输出。
   - 集成测试运行时生成中文空格路径的无版权静音 PCM/WAV，不提交媒体文件。
   - Debug、Release CTest 均为 23/23 通过，无测试构建与核心独立回归通过。
+- 阶段 5：GUI 播放控制与线程边界（2026-08-03）
+  - 建立正式主窗口、文件菜单、打开入口、播放、暂停、停止和内联状态提示。
+  - 建立 `PlayerPresenter`，集中驱动状态机与全部控件启用规则。
+  - 建立 `EngineEventBridge`，通过 Qt 队列连接把五类内核事件投递到 GUI 主线程。
+  - `main.cpp` 组装真实 `VlcPlayerEngine`，GUI 支持库继续只依赖核心接口与 Qt。
+  - 为正式 GUI 目标部署 libVLC DLL 与插件目录，并验证 Release 窗口正常启动退出。
+  - Qt Test 11/11 通过，Debug、Release、核心独立与无测试构建回归通过。
 
 ## 版本计划
 
