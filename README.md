@@ -2,8 +2,8 @@
 
 一个使用 C++20 和 Qt 5.14.2 开发的 Windows 桌面媒体播放器。
 
-> **当前状态：阶段 2 已完成，阶段 3（播放内核抽象与状态机）尚未开始。当前已有
-> 可运行的空白 Qt 窗口，但还没有任何播放功能。**
+> **当前状态：阶段 3 已完成，阶段 4（libVLC 内核实现与本地音频）尚未开始。
+> 当前已有可运行的空白 Qt 窗口、纯 C++ 播放接口与状态机，但还没有真实播放功能。**
 
 ## 这是什么
 
@@ -80,7 +80,18 @@ cmake --build cmake-build-debug
 ctest --test-dir cmake-build-debug --output-on-failure
 ```
 
-运行阶段 2 空窗口：
+只构建并测试不依赖 Qt、libVLC 的核心层：
+
+```powershell
+cmake -S . -B cmake-build-core-debug -G Ninja ^
+      -DCMAKE_BUILD_TYPE=Debug ^
+      -DMEDIAHUB_CORE_ONLY=ON
+
+cmake --build cmake-build-core-debug
+ctest --test-dir cmake-build-core-debug --output-on-failure
+```
+
+运行当前空窗口：
 
 ```powershell
 .\cmake-build-debug\MediaHub.exe
@@ -95,7 +106,7 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 - [docs/文档说明.md](docs/文档说明.md) — 文档导航
 - [docs/交接文档.md](docs/交接文档.md) — **当前状态和下一步，开工前先读这份**
-- [docs/测试/阶段2测试.md](docs/测试/阶段2测试.md) — 阶段 2 的实际构建与测试记录
+- [docs/测试/阶段3测试.md](docs/测试/阶段3测试.md) — 阶段 3 的实际构建与测试记录
 
 按主题：
 

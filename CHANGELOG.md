@@ -28,6 +28,13 @@
   - 使用 Qt 5.14.2 Widgets 生成可启动和正常关闭的空窗口 `MediaHub.exe`。
   - 接入 GoogleTest、Qt Test、CTest 和构建后 Qt 运行库部署。
   - Debug、Release CTest 均为 3/3 通过，依赖隔离与无测试构建验证通过。
+- 阶段 3：播放内核抽象与状态机（2026-08-03）
+  - 定义媒体项、来源、播放状态、位置、错误和播放模式等纯 C++ 值类型。
+  - 建立不暴露 Qt、libVLC、FFmpeg 或 Windows 类型的 `PlayerEngine` 与事件接口。
+  - 建立 8 状态转换表，区分状态改变、重复事件和非法事件。
+  - 建立测试专用 `FakePlayerEngine`，控制请求与异步事件时序可独立验证。
+  - 增加 `MEDIAHUB_CORE_ONLY`，在不查找 Qt/libVLC 时构建核心库与单元测试。
+  - Debug、Release CTest 均为 15/15 通过，核心独立 CTest 为 13/13 通过。
 
 ## 版本计划
 
