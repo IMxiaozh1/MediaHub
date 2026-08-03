@@ -2,8 +2,8 @@
 
 一个使用 C++20 和 Qt 5.14.2 开发的 Windows 桌面媒体播放器。
 
-> **当前状态：阶段 1 已完成，阶段 2（最小工程骨架）尚未开始。当前只有依赖探针，
-> 还没有播放器界面。**
+> **当前状态：阶段 2 已完成，阶段 3（播放内核抽象与状态机）尚未开始。当前已有
+> 可运行的空白 Qt 窗口，但还没有任何播放功能。**
 
 ## 这是什么
 
@@ -60,6 +60,7 @@ MediaHub 不内置任何直播源列表，不提供源搜索能力，也不实�
 | CMake | 3.20 以上 | 已在本机 |
 | Ninja | 任意 | VS 2022 自带 |
 | libVLC | 3.0.21 win64 SDK | 已在本机 `C:\SDK\vlc-3.0.21` |
+| GoogleTest | 1.17.0 | 已固定在 `Third_Party/googletest` |
 
 libVLC 不随仓库分发。获取和接入步骤见
 [docs/交付/依赖接入与部署说明.md](docs/交付/依赖接入与部署说明.md)。
@@ -79,8 +80,14 @@ cmake --build cmake-build-debug
 ctest --test-dir cmake-build-debug --output-on-failure
 ```
 
-阶段 1 只生成 `MediaHubVlcProbe.exe`，用于验证 libVLC 能初始化、读取版本并释放。
-正式的 `MediaHub.exe` 从阶段 2 开始建立。
+运行阶段 2 空窗口：
+
+```powershell
+.\cmake-build-debug\MediaHub.exe
+```
+
+当前 `MediaHub.exe` 只验证 Qt 5.14.2 窗口、目标依赖和生命周期。打开媒体、播放、
+暂停、视频输出等功能从后续阶段逐步加入。
 
 ## 项目文档
 
@@ -88,6 +95,7 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 - [docs/文档说明.md](docs/文档说明.md) — 文档导航
 - [docs/交接文档.md](docs/交接文档.md) — **当前状态和下一步，开工前先读这份**
+- [docs/测试/阶段2测试.md](docs/测试/阶段2测试.md) — 阶段 2 的实际构建与测试记录
 
 按主题：
 

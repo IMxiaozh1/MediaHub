@@ -21,6 +21,13 @@
   - 增加 `MediaHubVlcProbe.exe`，使用 RAII 创建和释放 libVLC 实例。
   - Debug 与 Release 均输出 `libVLC version: 3.0.21 Vetinari`，CTest 1/1 通过。
   - 初始化本地 Git 仓库和构建产物忽略规则，并配置 Gitee SSH 远程仓库。
+- 阶段 2：最小工程骨架（2026-08-03）
+  - 固定接入 GoogleTest 1.17.0，并保留完整上游源码和许可证。
+  - 建立 `mediahub_core`、`mediahub_engine_vlc`、`mediahub_gui_support`、
+    `mediahub_gui`、`mediahub_tests` 和 `mediahub_gui_tests` 基础目标。
+  - 使用 Qt 5.14.2 Widgets 生成可启动和正常关闭的空窗口 `MediaHub.exe`。
+  - 接入 GoogleTest、Qt Test、CTest 和构建后 Qt 运行库部署。
+  - Debug、Release CTest 均为 3/3 通过，依赖隔离与无测试构建验证通过。
 
 ## 版本计划
 
