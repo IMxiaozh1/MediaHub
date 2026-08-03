@@ -1,0 +1,26 @@
+# CMake 构建产物
+/build/
+/cmake-build-*/
+/out/
+
+# IDE 本机配置
+/.idea/
+/.vs/
+/.vscode/
+/CMakeSettings.json
+/CMakeUserPresets.json
+
+# CMake 与编译器生成文件
+CMakeCache.txt
+CMakeFiles/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# 本机依赖与媒体文件
+/Third_Party/_downloads/
+*.mp3
+*.mp4
+*.mkv
+*.wav
