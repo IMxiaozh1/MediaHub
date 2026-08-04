@@ -165,12 +165,18 @@ bool isSeekAvailable(const core::PlaybackPosition& position,
 PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
                                  EngineEventBridge& eventBridge,
                                  MainWindow& window, QObject* const parent,
-                                 logging::Logger* const logger)
+                                 logging::Logger* const logger,
+                                 LyricsService* const lyricsService)
     : QObject(parent),
       engine_(engine),
       eventBridge_(eventBridge),
       window_(window),
       logger_(logger),
+      ownedLyricsService_(lyricsService == nullptr
+                              ? std::make_unique<OnlineLyricsService>()
+                              : nullptr),
+      lyricsService_(lyricsService == nullptr ? ownedLyricsService_.get()
+                                              : lyricsService),
       playlistModel_(playlist_) {
   window_.setPlaylistModel(&playlistModel_);
   connect(&window_, &MainWindow::localFilesSelected, this,
@@ -201,6 +207,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
           &PlayerPresenter::requestRelativeSeek);
   connect(&window_, &MainWindow::muteToggled, this,
           &PlayerPresenter::toggleMuted);
+  connect(&window_, &MainWindow::lyricsToggled, this,
+          &PlayerPresenter::toggleLyrics);
   connect(&window_, &MainWindow::previousRequested, this,
           &PlayerPresenter::requestPrevious);
   connect(&window_, &MainWindow::nextRequested, this,
@@ -232,6 +240,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
           &PlayerPresenter::handleEndReached, Qt::QueuedConnection);
   connect(&eventBridge_, &EngineEventBridge::errorOccurred, this,
           &PlayerPresenter::handleError, Qt::QueuedConnection);
+  connect(lyricsService_, &LyricsService::resultReady, this,
+          &PlayerPresenter::handleLyricsResult);
 
   engine_.setEventListener(&eventBridge_);
   if (logger_ != nullptr) {
@@ -287,6 +297,12 @@ void PlayerPresenter::openCurrentPlaylistItem() {
   }
 
   mediaName_ = fromUtf8(item->displayName);
+  currentSourcePath_ = fromUtf8(item->source);
+  lyricsService_->cancel();
+  isLyricsVisible_ = false;
+  isLyricsLoading_ = false;
+  hasLyricsResult_ = false;
+  window_.clearLyrics();
   isAutoPlayPending_ = true;
   isSeeking_ = false;
   seekPreviewPosition_.reset();
@@ -322,6 +338,8 @@ void PlayerPresenter::shutdown() noexcept {
   isRestartPlayRequested_ = false;
   hasCurrentMediaStarted_ = false;
   seekPreviewPosition_.reset();
+  lyricsService_->cancel();
+  isLyricsLoading_ = false;
   eventBridge_.deactivate();
   disconnect(&eventBridge_, nullptr, this, nullptr);
   try {
@@ -557,6 +575,26 @@ void PlayerPresenter::toggleMuted() {
   const bool nextMuted = !isMuted_;
   engine_.setMuted(nextMuted);
   isMuted_ = nextMuted;
+  render();
+}
+
+void PlayerPresenter::toggleLyrics() {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || isVideoMedia_ || currentSourcePath_.isEmpty()) {
+    return;
+  }
+
+  isLyricsVisible_ = !isLyricsVisible_;
+  if (isLyricsVisible_ && !isLyricsLoading_ && !hasLyricsResult_) {
+    isLyricsLoading_ = true;
+    window_.showLyricsLoading();
+    LyricsQuery query;
+    query.filePath = currentSourcePath_;
+    query.displayName = mediaName_;
+    query.durationMilliseconds =
+        position_.total.has_value() ? position_.total->count() : -1;
+    lyricsService_->requestLyrics(query);
+  }
   render();
 }
 
@@ -804,6 +842,17 @@ void PlayerPresenter::handleAudioWaveformChanged(core::AudioWaveform waveform) {
   }
 }
 
+void PlayerPresenter::handleLyricsResult(LyricsResult result) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+  isLyricsLoading_ = false;
+  hasLyricsResult_ = true;
+  window_.setLyricsResult(result);
+  render();
+}
+
 void PlayerPresenter::handleEndReached() {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_ || !hasCurrentMediaStarted_) {
@@ -870,6 +919,8 @@ PlayerViewState PlayerPresenter::makeViewState() const {
       seekPreviewPosition_.value_or(position_.current);
   viewState.positionText = formatPosition(displayedPosition, position_.total);
   viewState.progressValue = progressValue(displayedPosition, position_.total);
+  viewState.positionMilliseconds =
+      std::max<qint64>(static_cast<qint64>(displayedPosition.count()), 0);
   viewState.volumeValue = isMuted_ ? 0 : volume_;
   viewState.isMuted = isMuted_;
   viewState.volumeText = isMuted_ ? QStringLiteral("已静音 · 0%")
@@ -933,6 +984,8 @@ PlayerViewState PlayerPresenter::makeViewState() const {
                              playbackState == core::PlaybackState::Playing ||
                              playbackState == core::PlaybackState::Paused);
   if (!isVideoMedia_) {
+    viewState.canShowLyrics = true;
+    viewState.isLyricsVisible = isLyricsVisible_;
     viewState.isAudioVisualizationActive =
         playbackState != core::PlaybackState::Failed;
     viewState.isAudioVisualizationPlaying =

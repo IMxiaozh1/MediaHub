@@ -18,6 +18,7 @@ struct PlayerViewState {
   int currentPlaylistIndex{-1};
   int playbackModeIndex{0};
   double playbackRate{1.0};
+  qint64 positionMilliseconds{0};
   bool isTemporaryFastPlayback{false};
   bool canOpen{true};
   bool canPlay{false};
@@ -31,6 +32,8 @@ struct PlayerViewState {
   bool isVideoSurfaceActive{false};
   bool isAudioVisualizationActive{false};
   bool isAudioVisualizationPlaying{false};
+  bool canShowLyrics{false};
+  bool isLyricsVisible{false};
   bool canToggleFullscreen{false};
 };
 

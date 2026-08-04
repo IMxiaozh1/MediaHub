@@ -5,9 +5,11 @@
 #include <QString>
 #include <QStringList>
 #include <chrono>
+#include <memory>
 #include <optional>
 
 #include "engine_event_bridge.h"
+#include "lyrics_service.h"
 #include "mediahub/core/playback_state_machine.h"
 #include "mediahub/core/player_engine.h"
 #include "mediahub/core/playlist.h"
@@ -26,7 +28,8 @@ class PlayerPresenter final : public QObject {
  public:
   PlayerPresenter(core::PlayerEngine& engine, EngineEventBridge& eventBridge,
                   MainWindow& window, QObject* parent = nullptr,
-                  logging::Logger* logger = nullptr);
+                  logging::Logger* logger = nullptr,
+                  LyricsService* lyricsService = nullptr);
   ~PlayerPresenter() override;
 
   // 调用线程：GUI 主线程。路径来自文件选择器，使用 UTF-8 交给核心接口。
@@ -57,6 +60,7 @@ class PlayerPresenter final : public QObject {
   void requestTemporaryFastPlayback(bool enabled);
   void applyPlaybackRate(double rate);
   void toggleMuted();
+  void toggleLyrics();
   void requestPrevious();
   void requestNext();
   void activatePlaylistItem(int row);
@@ -69,6 +73,7 @@ class PlayerPresenter final : public QObject {
   void handlePositionChanged(core::PlaybackPosition position);
   void handleDurationChanged(OptionalDuration duration);
   void handleAudioWaveformChanged(core::AudioWaveform waveform);
+  void handleLyricsResult(LyricsResult result);
   void handleEndReached();
   void handleError(core::PlaybackError error);
   void openCurrentPlaylistItem();
@@ -79,6 +84,8 @@ class PlayerPresenter final : public QObject {
   EngineEventBridge& eventBridge_;
   MainWindow& window_;
   logging::Logger* logger_{nullptr};
+  std::unique_ptr<LyricsService> ownedLyricsService_;
+  LyricsService* lyricsService_{nullptr};
   core::PlaybackStateMachine stateMachine_;
   core::Playlist playlist_;
   PlaylistModel playlistModel_;
@@ -86,12 +93,16 @@ class PlayerPresenter final : public QObject {
   std::optional<std::chrono::milliseconds> seekPreviewPosition_;
   std::optional<std::chrono::milliseconds> pendingRestartPosition_;
   QString mediaName_{QStringLiteral("未选择媒体")};
+  QString currentSourcePath_;
   int volume_{100};
   double playbackRate_{1.0};
   double lastAppliedPlaybackRate_{1.0};
   bool isAutoPlayPending_{false};
   bool isSeeking_{false};
   bool isMuted_{false};
+  bool isLyricsVisible_{false};
+  bool isLyricsLoading_{false};
+  bool hasLyricsResult_{false};
   bool isVideoMedia_{false};
   bool isPreparingMedia_{false};
   bool isRestartPlayRequested_{false};

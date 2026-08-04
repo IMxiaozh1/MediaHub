@@ -53,7 +53,7 @@ function(mediahub_enable_warnings targetName)
 endfunction()
 
 if(NOT MEDIAHUB_CORE_ONLY)
-    find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Widgets)
+    find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Network Widgets)
     if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)
         find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Test)
     endif()
@@ -134,6 +134,10 @@ if(NOT MEDIAHUB_CORE_ONLY)
     add_library(mediahub_gui_support STATIC
         apps/gui/engine_event_bridge.cpp
         apps/gui/engine_event_bridge.h
+        apps/gui/lyrics_service.cpp
+        apps/gui/lyrics_service.h
+        apps/gui/lyrics_view.cpp
+        apps/gui/lyrics_view.h
         apps/gui/main_window.cpp
         apps/gui/main_window.h
         apps/gui/player_presenter.cpp
@@ -152,6 +156,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     target_include_directories(mediahub_gui_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui")
     target_link_libraries(mediahub_gui_support
         PUBLIC mediahub_core mediahub_logging Qt5::Widgets
+        PRIVATE Qt5::Network
     )
     mediahub_enable_warnings(mediahub_gui_support)
 

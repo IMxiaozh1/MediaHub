@@ -34,6 +34,7 @@
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
+#include <QStackedLayout>
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
@@ -43,6 +44,7 @@
 #include <array>
 #include <initializer_list>
 
+#include "lyrics_view.h"
 #include "seek_slider.h"
 #include "video_output_widget.h"
 
@@ -532,10 +534,18 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   rootLayout_->addWidget(title);
   rootLayout_->addWidget(subtitle);
 
-  videoOutput_ = new VideoOutputWidget(centralWidget);
   auto* const mediaWorkspace = new QHBoxLayout();
   mediaWorkspace->setSpacing(10);
-  mediaWorkspace->addWidget(videoOutput_, 3);
+  auto* const mediaDisplay = new QWidget(centralWidget);
+  mediaDisplay->setObjectName(QStringLiteral("mediaDisplay"));
+  mediaDisplayStack_ = new QStackedLayout(mediaDisplay);
+  mediaDisplayStack_->setContentsMargins(0, 0, 0, 0);
+  videoOutput_ = new VideoOutputWidget(mediaDisplay);
+  lyricsView_ = new LyricsView(mediaDisplay);
+  mediaDisplayStack_->addWidget(videoOutput_);
+  mediaDisplayStack_->addWidget(lyricsView_);
+  mediaDisplayStack_->setCurrentWidget(videoOutput_);
+  mediaWorkspace->addWidget(mediaDisplay, 3);
 
   playlistToggleButton_ = new QToolButton(centralWidget);
   playlistToggleButton_->setObjectName(QStringLiteral("playlistToggleButton"));
@@ -689,6 +699,17 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   volumeLayout->addWidget(volumeSlider_, 1, Qt::AlignHCenter);
   static_cast<HoverOptionButton*>(volumeButton_)->setHoverPopup(volumePopup);
 
+  lyricsButton_ = new QToolButton(transportPanel);
+  lyricsButton_->setObjectName(QStringLiteral("lyricsButton"));
+  lyricsButton_->setProperty("transportControl", true);
+  lyricsButton_->setProperty("lyricsControl", true);
+  lyricsButton_->setText(QStringLiteral("词"));
+  lyricsButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  lyricsButton_->setCheckable(true);
+  lyricsButton_->setFixedSize(36, 36);
+  lyricsButton_->setAccessibleName(QStringLiteral("显示歌词"));
+  lyricsButton_->setToolTip(QStringLiteral("显示歌词"));
+
   keyboardSeekStepButton_ = new HoverOptionButton(transportPanel);
   keyboardSeekStepButton_->setObjectName(
       QStringLiteral("keyboardSeekStepButton"));
@@ -814,6 +835,7 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   timelineRow->addWidget(nextButton_);
   timelineRow->addWidget(stopButton_);
   timelineRow->addWidget(volumeButton_);
+  timelineRow->addWidget(lyricsButton_);
   timelineRow->addWidget(playbackRateButton_);
   timelineRow->addWidget(keyboardSeekStepButton_);
   timelineRow->addWidget(playbackModeButton_);
@@ -921,6 +943,17 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
         QToolButton[transportControl="true"]:disabled {
             background: #e9e5dc;
             border-color: #d4cfc5;
+        }
+        QToolButton[lyricsControl="true"] {
+            color: #174f4b;
+            font-family: "Microsoft YaHei UI";
+            font-size: 15px;
+            font-weight: 800;
+        }
+        QToolButton[lyricsControl="true"]:checked {
+            color: #8e3d25;
+            background: #f4d8c9;
+            border-color: #cc805d;
         }
         QToolButton[primaryTransport="true"] {
             background: #f4d8c9;
@@ -1103,6 +1136,8 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   connect(volumeSlider_, &QSlider::valueChanged, this,
           &MainWindow::volumeRequested);
   connect(volumeButton_, &QToolButton::clicked, this, &MainWindow::muteToggled);
+  connect(lyricsButton_, &QToolButton::clicked, this,
+          &MainWindow::lyricsToggled);
   connect(playlistView_, &QListView::doubleClicked, this,
           [this](const QModelIndex& index) {
             emit playlistItemActivated(index.row());
@@ -1162,6 +1197,7 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
 void MainWindow::applyViewState(const PlayerViewState& viewState) {
   const QSignalBlocker progressBlocker(progressSlider_);
   const QSignalBlocker volumeBlocker(volumeSlider_);
+  const QSignalBlocker lyricsBlocker(lyricsButton_);
   openAction_->setEnabled(viewState.canOpen);
   openButton_->setEnabled(viewState.canOpen);
   playPauseButton_->setEnabled(viewState.canPlay || viewState.canPause);
@@ -1206,6 +1242,19 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
           .arg(viewState.volumeText, viewState.isMuted
                                          ? QStringLiteral("恢复声音")
                                          : QStringLiteral("静音")));
+  lyricsButton_->setEnabled(viewState.canShowLyrics);
+  lyricsButton_->setChecked(viewState.isLyricsVisible);
+  lyricsButton_->setAccessibleName(viewState.isLyricsVisible
+                                       ? QStringLiteral("隐藏歌词")
+                                       : QStringLiteral("显示歌词"));
+  lyricsButton_->setToolTip(viewState.isLyricsVisible
+                                ? QStringLiteral("返回音频波形")
+                                : QStringLiteral("显示歌词"));
+  mediaDisplayStack_->setCurrentWidget(
+      viewState.isLyricsVisible ? static_cast<QWidget*>(lyricsView_)
+                                : static_cast<QWidget*>(videoOutput_));
+  lyricsView_->setMediaName(viewState.mediaName);
+  lyricsView_->setPosition(viewState.positionMilliseconds);
   const bool hasPlaylistSelection =
       playlistView_->selectionModel() != nullptr &&
       !playlistView_->selectionModel()->selectedRows().isEmpty();
@@ -1228,6 +1277,14 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
 void MainWindow::setAudioWaveform(core::AudioWaveform waveform) {
   videoOutput_->setAudioWaveform(std::move(waveform));
 }
+
+void MainWindow::showLyricsLoading() { lyricsView_->showLoading(); }
+
+void MainWindow::setLyricsResult(const LyricsResult& result) {
+  lyricsView_->setResult(result);
+}
+
+void MainWindow::clearLyrics() { lyricsView_->clearLyrics(); }
 
 void MainWindow::showPlaybackError(const QString& message) {
   errorLabel_->setText(message);

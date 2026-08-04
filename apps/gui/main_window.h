@@ -21,6 +21,7 @@ class QPushButton;
 class QFrame;
 class QEvent;
 class QSlider;
+class QStackedLayout;
 class QTimer;
 class QToolButton;
 class QVBoxLayout;
@@ -28,6 +29,8 @@ class QVBoxLayout;
 namespace mediahub::gui {
 
 class VideoOutputWidget;
+class LyricsView;
+struct LyricsResult;
 
 // 主窗口只负责布局、采集用户输入和渲染展示快照。
 class MainWindow final : public QMainWindow {
@@ -41,6 +44,12 @@ class MainWindow final : public QMainWindow {
   void applyViewState(const PlayerViewState& viewState);
   // 调用线程：GUI 主线程。只更新音频画布，不重复渲染整行播放控件。
   void setAudioWaveform(core::AudioWaveform waveform);
+  // 调用线程：GUI 主线程。歌词查询不阻塞播放，界面先切换为加载状态。
+  void showLyricsLoading();
+  // 调用线程：GUI 主线程。显示当前媒体的同步歌词、普通歌词或失败状态。
+  void setLyricsResult(const LyricsResult& result);
+  // 调用线程：GUI 主线程。切换媒体时清除上一首歌词。
+  void clearLyrics();
   // 调用线程：GUI 主线程。错误以内联方式展示，不阻塞事件循环。
   void showPlaybackError(const QString& message);
   // 调用线程：GUI 主线程。
@@ -63,6 +72,7 @@ class MainWindow final : public QMainWindow {
   void playbackRateRequested(double rate);
   void temporaryFastPlaybackRequested(bool enabled);
   void muteToggled();
+  void lyricsToggled();
   void previousRequested();
   void nextRequested();
   void playlistItemActivated(int row);
@@ -113,6 +123,7 @@ class MainWindow final : public QMainWindow {
   QToolButton* previousButton_{nullptr};
   QToolButton* nextButton_{nullptr};
   QToolButton* volumeButton_{nullptr};
+  QToolButton* lyricsButton_{nullptr};
   QToolButton* keyboardSeekStepButton_{nullptr};
   QToolButton* playbackRateButton_{nullptr};
   QToolButton* playbackModeButton_{nullptr};
@@ -121,6 +132,8 @@ class MainWindow final : public QMainWindow {
   QMenu* playlistContextMenu_{nullptr};
   QFrame* playlistPanel_{nullptr};
   VideoOutputWidget* videoOutput_{nullptr};
+  LyricsView* lyricsView_{nullptr};
+  QStackedLayout* mediaDisplayStack_{nullptr};
   QLabel* mediaNameLabel_{nullptr};
   QLabel* statusLabel_{nullptr};
   QLabel* errorLabel_{nullptr};

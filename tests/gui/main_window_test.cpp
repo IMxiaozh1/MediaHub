@@ -17,6 +17,7 @@
 #include <QSignalSpy>
 #include <QSlider>
 #include <QTest>
+#include <QTextBrowser>
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
@@ -30,9 +31,12 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "engine_event_bridge.h"
 #include "fakes/fake_player_engine.h"
+#include "lyrics_service.h"
+#include "lyrics_view.h"
 #include "mediahub/core/playlist.h"
 #include "player_presenter.h"
 #include "playlist_model.h"
@@ -44,15 +48,34 @@ namespace {
 
 using namespace std::chrono_literals;
 
+class FakeLyricsService final : public LyricsService {
+ public:
+  void requestLyrics(const LyricsQuery& query) override {
+    ++requestCount;
+    lastQuery = query;
+  }
+
+  void cancel() noexcept override { ++cancelCount; }
+
+  void complete(LyricsResult result) { emit resultReady(std::move(result)); }
+
+  LyricsQuery lastQuery;
+  int requestCount{0};
+  int cancelCount{0};
+};
+
 struct GuiHarness {
   std::ostringstream logOutput;
   logging::Logger logger{logOutput};
   test::FakePlayerEngine engine;
   EngineEventBridge eventBridge;
   MainWindow window;
+  FakeLyricsService lyricsService;
   PlayerPresenter presenter;
 
-  GuiHarness() : presenter(engine, eventBridge, window, nullptr, &logger) {}
+  GuiHarness()
+      : presenter(engine, eventBridge, window, nullptr, &logger,
+                  &lyricsService) {}
 };
 
 template <typename Widget>
@@ -122,6 +145,9 @@ class MainWindowTest final : public QObject {
 
  private slots:
   void hasFormalInitialLayout();
+  void parsesSynchronizedAndPlainLyrics();
+  void matchesQualifiedTitleByDurationWhenArtistCreditDiffers();
+  void selectsKugouNestedAudioVersionAndDecodesLyrics();
   void publishesNativeSurfaceOnlyAfterWindowIsShown();
   void opensUtf8LocalFileAndStartsAfterOpeningEvent();
   void routesPauseResumeAndStopThroughPresenter();
@@ -161,6 +187,7 @@ class MainWindowTest final : public QObject {
   void mapsEveryErrorKindToStableLogValue();
   void switchesBetweenVideoSurfaceAndAudioVisualization();
   void rendersBottomUpwardAudioWaveformAndTogglesFullScreen();
+  void togglesLyricsBesideVolumeAndTracksSynchronizedLine();
   void collapsesAndExpandsPlaylistWithMediaResize();
   void resizesVideoSurfaceAndTogglesFullScreen();
   void stopsForwardingBeforeWindowCloses();
@@ -209,6 +236,15 @@ void MainWindowTest::hasFormalInitialLayout() {
   QVERIFY(volumeButton->text().isEmpty());
   QVERIFY(!volumeButton->icon().isNull());
   QVERIFY(volumeButton->menu() == nullptr);
+  auto* const lyricsButton =
+      requiredChild<QToolButton>(harness.window, "lyricsButton");
+  QCOMPARE(lyricsButton->text(), QStringLiteral("词"));
+  QVERIFY(lyricsButton->icon().isNull());
+  QVERIFY(!lyricsButton->isEnabled());
+  QCOMPARE(lyricsButton->size(), QSize(36, 36));
+  QVERIFY(!lyricsButton->isChecked());
+  QVERIFY(requiredChild<QWidget>(harness.window, "lyricsTimingControls")
+              ->isHidden());
   auto* const volumePopup =
       requiredChild<QWidget>(harness.window, "volumePopup");
   QVERIFY(volumePopup->isWindow());
@@ -267,6 +303,65 @@ void MainWindowTest::hasFormalInitialLayout() {
   QVERIFY(!requiredChild<QToolButton>(harness.window, "playlistToggleButton")
                ->icon()
                .isNull());
+}
+
+void MainWindowTest::parsesSynchronizedAndPlainLyrics() {
+  const QString source = QStringLiteral(
+      "[ar:测试歌手]\n[00:01.2][00:02.34]第一句\n[01:03.456]第二句\n");
+  const QVector<LyricLine> lines =
+      lyrics_internal::parseSynchronizedLyrics(source);
+  QCOMPARE(lines.size(), 3);
+  QCOMPARE(lines[0].timeMilliseconds, 1200);
+  QCOMPARE(lines[1].timeMilliseconds, 2340);
+  QCOMPARE(lines[2].timeMilliseconds, 63456);
+  QCOMPARE(lines[2].text, QStringLiteral("第二句"));
+  QCOMPARE(lyrics_internal::plainTextFromLyrics(source),
+           QStringLiteral("第一句\n第二句"));
+}
+
+void MainWindowTest::matchesQualifiedTitleByDurationWhenArtistCreditDiffers() {
+  QVERIFY(lyrics_internal::isAcceptableTrackMatch(
+      QStringLiteral("够爱(《终极一家》电视剧插曲)"), QStringLiteral("东城卫"),
+      292126, QStringLiteral("够爱"), QStringLiteral("曾沛慈"), 291666));
+  QVERIFY(!lyrics_internal::isAcceptableTrackMatch(
+      QStringLiteral("够爱(《终极一家》电视剧插曲)"), QStringLiteral("东城卫"),
+      292126, QStringLiteral("够爱"), QStringLiteral("其他歌手"), 245000));
+}
+
+void MainWindowTest::selectsKugouNestedAudioVersionAndDecodesLyrics() {
+  const QByteArray searchPayload = R"json({
+    "data": {"info": [
+      {
+        "hash": "wrong-duration",
+        "songname": "够爱",
+        "singername": "东城卫",
+        "duration": 572,
+        "group": [{
+          "hash": "matched-audio",
+          "songname": "够爱",
+          "singername": "曾沛慈",
+          "duration": 291
+        }]
+      },
+      {
+        "hash": "wrong-instrumental",
+        "songname": "够爱 (纯音乐)",
+        "songname_original": "够爱",
+        "singername": "东城卫",
+        "duration": 291
+      }
+    ]}
+  })json";
+  QCOMPARE(lyrics_internal::bestKugouTrackIdentity(
+               searchPayload, QStringLiteral("够爱(电视剧插曲)"),
+               QStringLiteral("东城卫"), 292126),
+           QStringLiteral("matched-audio"));
+
+  const QString source = QStringLiteral("[00:01.00]第一句\n");
+  const QByteArray downloadPayload = QByteArrayLiteral("{\"content\":\"") +
+                                     source.toUtf8().toBase64() +
+                                     QByteArrayLiteral("\"}");
+  QCOMPARE(lyrics_internal::decodeKugouLyricsPayload(downloadPayload), source);
 }
 
 void MainWindowTest::publishesNativeSurfaceOnlyAfterWindowIsShown() {
@@ -1763,6 +1858,129 @@ void MainWindowTest::rendersBottomUpwardAudioWaveformAndTogglesFullScreen() {
   QCOMPARE(fullScreenButton->accessibleName(), QStringLiteral("进入全屏"));
 }
 
+void MainWindowTest::togglesLyricsBesideVolumeAndTracksSynchronizedLine() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  auto* const volumeButton =
+      requiredChild<QToolButton>(harness.window, "volumeButton");
+  auto* const lyricsButton =
+      requiredChild<QToolButton>(harness.window, "lyricsButton");
+  auto* const lyricsView =
+      requiredChild<LyricsView>(harness.window, "lyricsView");
+  auto* const videoOutput =
+      requiredChild<VideoOutputWidget>(harness.window, "videoOutputWidget");
+
+  harness.presenter.openLocalFile(QStringLiteral("C:/audio/周杰伦 - 晴天.mp3"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  harness.engine.emitDurationChanged(120s);
+  harness.engine.emitPositionChanged(core::PlaybackPosition{12s, 120s, true});
+  QTRY_VERIFY(lyricsButton->isEnabled());
+  QTRY_COMPARE(requiredChild<QLabel>(harness.window, "positionLabel")->text(),
+               QStringLiteral("00:12 / 02:00"));
+  QVERIFY(geometryInsideWindow(*volumeButton, harness.window).right() <
+          geometryInsideWindow(*lyricsButton, harness.window).left());
+
+  QTest::mouseClick(lyricsButton, Qt::LeftButton);
+  QCOMPARE(harness.lyricsService.requestCount, 1);
+  QCOMPARE(harness.lyricsService.lastQuery.filePath,
+           QStringLiteral("C:/audio/周杰伦 - 晴天.mp3"));
+  QCOMPARE(harness.lyricsService.lastQuery.durationMilliseconds, 120000);
+  QVERIFY(lyricsButton->isChecked());
+  QVERIFY(lyricsView->isVisible());
+  QVERIFY(!videoOutput->isVisible());
+  QCOMPARE(requiredChild<QLabel>(harness.window, "lyricsMessageTitle")->text(),
+           QStringLiteral("正在查找歌词"));
+
+  LyricsResult result;
+  result.kind = LyricsResultKind::Ready;
+  result.title = QStringLiteral("晴天");
+  result.artist = QStringLiteral("周杰伦");
+  result.sourceName = QStringLiteral("网易云音乐");
+  result.synchronizedLines = {
+      {0, QStringLiteral("第一句")},
+      {10000, QStringLiteral("第二句")},
+      {20000, QStringLiteral("第三句")},
+  };
+  harness.lyricsService.complete(result);
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第二句"));
+  QCOMPARE(requiredChild<QLabel>(harness.window, "lyricsSourceLabel")->text(),
+           QStringLiteral("来源 · 网易云音乐"));
+  auto* const timingControls =
+      requiredChild<QWidget>(harness.window, "lyricsTimingControls");
+  auto* const timingLaterButton =
+      requiredChild<QToolButton>(harness.window, "lyricsTimingLaterButton");
+  auto* const timingResetButton =
+      requiredChild<QToolButton>(harness.window, "lyricsTimingResetButton");
+  QVERIFY(timingControls->isVisible());
+  QTest::mouseClick(timingResetButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 0);
+  QCOMPARE(
+      requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")->text(),
+      QStringLiteral("歌词同步 0.0 秒"));
+
+  harness.engine.emitPositionChanged(core::PlaybackPosition{21s, 120s, true});
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第三句"));
+
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{20100ms, 120s, true});
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第三句"));
+  QTest::mouseClick(timingLaterButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 500);
+  QCOMPARE(
+      requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")->text(),
+      QStringLiteral("歌词延后 0.5 秒"));
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第二句"));
+
+  lyricsView->setResult(result);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 500);
+  QTest::mouseClick(timingResetButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 0);
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第三句"));
+
+  lyricsView->setFixedSize(1600, 1040);
+  QTRY_VERIFY(requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")
+                  ->styleSheet()
+                  .contains(QStringLiteral("font-size: 91px")));
+  QTRY_VERIFY(requiredChild<QLabel>(harness.window, "synchronizedLyricLine1")
+                  ->styleSheet()
+                  .contains(QStringLiteral("font-size: 56px")));
+  QTRY_VERIFY(requiredChild<QTextBrowser>(harness.window, "plainLyricsBrowser")
+                  ->styleSheet()
+                  .contains(QStringLiteral("font-size: 42px")));
+  QTRY_VERIFY(requiredChild<QLabel>(harness.window, "lyricsMediaNameLabel")
+                  ->styleSheet()
+                  .contains(QStringLiteral("font-size: 33px")));
+  QTRY_VERIFY(requiredChild<QLabel>(harness.window, "lyricsSourceLabel")
+                  ->styleSheet()
+                  .contains(QStringLiteral("font-size: 24px")));
+  QTRY_VERIFY(requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")
+                  ->styleSheet()
+                  .contains(QStringLiteral("font-size: 27px")));
+  QCOMPARE(timingLaterButton->minimumHeight(), 51);
+  QVERIFY(timingLaterButton->styleSheet().contains(
+      QStringLiteral("font-size: 27px")));
+
+  QTest::mouseClick(lyricsButton, Qt::LeftButton);
+  QVERIFY(!lyricsButton->isChecked());
+  QVERIFY(!lyricsView->isVisible());
+  QVERIFY(videoOutput->isVisible());
+  QTest::mouseClick(lyricsButton, Qt::LeftButton);
+  QCOMPARE(harness.lyricsService.requestCount, 1);
+  QVERIFY(lyricsView->isVisible());
+}
+
 void MainWindowTest::collapsesAndExpandsPlaylistWithMediaResize() {
   GuiHarness harness;
   harness.window.show();
@@ -1806,6 +2024,8 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
       requiredChild<QSlider>(harness.window, "progressSlider");
   auto* const volumeButton =
       requiredChild<QToolButton>(harness.window, "volumeButton");
+  auto* const lyricsButton =
+      requiredChild<QToolButton>(harness.window, "lyricsButton");
   auto* const seekStepButton =
       requiredChild<QToolButton>(harness.window, "keyboardSeekStepButton");
   auto* const playbackRateButton =
@@ -1822,10 +2042,10 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
       requiredChild<QToolButton>(harness.window, "playbackModeButton");
   auto* const playlistView =
       requiredChild<QListView>(harness.window, "playlistView");
-  const std::array<QWidget*, 9> timelineControls{
-      previousButton, playPauseButton,    nextButton,
-      stopButton,     volumeButton,       playbackRateButton,
-      seekStepButton, playbackModeButton, fullScreenButton,
+  const std::array<QWidget*, 10> timelineControls{
+      previousButton,     playPauseButton,  nextButton,         stopButton,
+      volumeButton,       lyricsButton,     playbackRateButton, seekStepButton,
+      playbackModeButton, fullScreenButton,
   };
   QVERIFY(harness.window.rect().contains(
       geometryInsideWindow(*openButton, harness.window)));
