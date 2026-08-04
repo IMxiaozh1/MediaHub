@@ -141,6 +141,10 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/player_view_state.h
         apps/gui/playlist_model.cpp
         apps/gui/playlist_model.h
+        apps/gui/seek_slider.cpp
+        apps/gui/seek_slider.h
+        apps/gui/shutdown_watchdog.cpp
+        apps/gui/shutdown_watchdog.h
         apps/gui/video_output_widget.cpp
         apps/gui/video_output_widget.h
     )
