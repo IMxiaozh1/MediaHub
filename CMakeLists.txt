@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MEDIAHUB_BUILD_TESTS "Build MediaHub automated tests" ON)
 option(MEDIAHUB_CORE_ONLY "Build only the dependency-free core library and unit tests" OFF)
+option(MEDIAHUB_PACKAGE_RELEASE "Enable the Windows Release installation rules" OFF)
 
 set(MEDIAHUB_VLC_ROOT "" CACHE PATH "Path to an extracted VLC win64 archive")
 
@@ -166,6 +167,70 @@ if(NOT MEDIAHUB_CORE_ONLY)
     mediahub_enable_warnings(mediahub_gui)
     mediahub_deploy_qt(mediahub_gui)
     mediahub_deploy_vlc(mediahub_gui)
+
+    if(MEDIAHUB_PACKAGE_RELEASE)
+        if(NOT WIN32)
+            message(FATAL_ERROR "MEDIAHUB_PACKAGE_RELEASE currently supports Windows only.")
+        endif()
+
+        get_filename_component(MEDIAHUB_QT_PREFIX_DIR "${MEDIAHUB_QT_BIN_DIR}" DIRECTORY)
+        get_filename_component(MEDIAHUB_QT_VERSION_DIR "${MEDIAHUB_QT_PREFIX_DIR}" DIRECTORY)
+        set(MEDIAHUB_QT_LICENSE_DIR "${MEDIAHUB_QT_VERSION_DIR}/Src" CACHE PATH
+            "Directory containing Qt LICENSE.LGPLv3 and LICENSE.GPLv3")
+
+        foreach(qtLicenseName IN ITEMS LICENSE.LGPLv3 LICENSE.GPLv3)
+            if(NOT EXISTS "${MEDIAHUB_QT_LICENSE_DIR}/${qtLicenseName}")
+                message(FATAL_ERROR
+                    "Release packaging requires ${MEDIAHUB_QT_LICENSE_DIR}/${qtLicenseName}. "
+                    "Install the matching Qt sources or set MEDIAHUB_QT_LICENSE_DIR.")
+            endif()
+        endforeach()
+        if(NOT EXISTS "${MEDIAHUB_VLC_ROOT}/COPYING.txt")
+            message(FATAL_ERROR
+                "Release packaging requires ${MEDIAHUB_VLC_ROOT}/COPYING.txt from the VLC archive.")
+        endif()
+
+        install(TARGETS mediahub_gui RUNTIME DESTINATION .)
+        install(FILES
+            "${MEDIAHUB_QT_LICENSE_DIR}/LICENSE.LGPLv3"
+            DESTINATION licenses
+            RENAME Qt-LGPL-3.0.txt
+        )
+        install(FILES
+            "${MEDIAHUB_QT_LICENSE_DIR}/LICENSE.GPLv3"
+            DESTINATION licenses
+            RENAME Qt-GPL-3.0.txt
+        )
+        install(FILES
+            "${MEDIAHUB_VLC_ROOT}/COPYING.txt"
+            DESTINATION licenses
+            RENAME VLC-COPYING.txt
+        )
+        install(FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/licenses/THIRD-PARTY-NOTICES.md"
+            DESTINATION licenses
+        )
+        install(DIRECTORY "${MEDIAHUB_VLC_PLUGIN_DIR}/" DESTINATION plugins)
+        install(FILES
+            "${MEDIAHUB_VLC_RUNTIME}"
+            "${MEDIAHUB_VLC_CORE_RUNTIME}"
+            DESTINATION .
+        )
+        install(CODE "
+            execute_process(
+                COMMAND \"${MEDIAHUB_WINDEPLOYQT_EXECUTABLE}\"
+                    --release
+                    --no-translations
+                    --no-compiler-runtime
+                    \"\${CMAKE_INSTALL_PREFIX}/MediaHub.exe\"
+                RESULT_VARIABLE mediahubWindeployqtResult
+            )
+            if(NOT mediahubWindeployqtResult EQUAL 0)
+                message(FATAL_ERROR
+                    \"windeployqt failed with exit code \${mediahubWindeployqtResult}.\")
+            endif()
+        ")
+    endif()
 
     add_executable(mediahub_vlc_probe tools/vlc_probe/main.cpp)
     set_target_properties(mediahub_vlc_probe PROPERTIES OUTPUT_NAME MediaHubVlcProbe)

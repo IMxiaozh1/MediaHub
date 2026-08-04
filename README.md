@@ -2,9 +2,10 @@
 
 一个使用 C++20 和 Qt 5.14.2 开发的 Windows 桌面媒体播放器。
 
-> **当前状态：阶段 11 与在线歌词增量已封存；歌词按钮、同步显示、精确版本匹配、
-> 单曲时间校准和全屏响应式显示已完成自动化与实机验收。下一阶段为阶段 12：
-> v0.1 Release 交付。**
+> **当前状态：阶段 11 与在线歌词增量已封存；阶段 12 v0.1 Release 交付进行中。
+> 空目录 Debug/Release 构建、双配置全量测试、干净发布目录和隔离播放已通过，实际
+> 无开发环境机器与 Windows 系统级 125%/150% 缩放验收仍待完成；强制 125%/150%
+> 缩放已完成自动化、隔离播放和人眼验收。**
 
 ## 这是什么
 
@@ -135,6 +136,28 @@ MP3 内嵌歌词，再按酷狗、网易云、LRCLIB、TheAudioDB 的顺序在�
 轻按右方向键按当前跳转值快进一次，长按则临时
 以固定 2.0× 播放并显示 2.0×，松开后恢复用户原先选择的速度。
 
+### 生成发布目录
+
+阶段 12 使用单独的 Release 配置生成干净发布目录。目标 Qt 安装必须包含匹配版本的
+源码许可证文件；目标机器需预先安装 Microsoft Visual C++ 2015-2022
+Redistributable（x64）。发布前缀应使用新的空目录：
+
+```powershell
+cmake -S . -B cmake-build-stage12-release -G Ninja ^
+      -DCMAKE_BUILD_TYPE=Release ^
+      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" ^
+      -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" ^
+      -DMEDIAHUB_PACKAGE_RELEASE=ON
+cmake --build cmake-build-stage12-release
+cmake --install cmake-build-stage12-release --config Release ^
+      --prefix dist/MediaHub-0.1.0-win64
+cmake -DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.1.0-win64 ^
+      -P tools/validate_release_package.cmake
+```
+
+发布目录和构建目录均被 `.gitignore` 排除。隔离启动与依赖来源检查见
+`tools/stage12_isolated_smoke.ps1`。
+
 “打开文件”按钮位于播放列表底部。列表支持拖放、双击播放以及右键播放、置顶、上移、
 下移、移出列表和仅修改列表显示名的重命名；重命名不会改动电脑中的原文件名。
 按住 `Ctrl` 可选择多个独立项目，按住 `Shift` 可连续选择；多选右键时只允许移出列表，
@@ -155,6 +178,8 @@ MP3 内嵌歌词，再按酷狗、网易云、LRCLIB、TheAudioDB 的顺序在�
 - [docs/测试/阶段10测试.md](docs/测试/阶段10测试.md) — 阶段 10 覆盖补强与测试数据工具
 - [docs/测试/阶段11测试.md](docs/测试/阶段11测试.md) — 阶段 11 真实验收与交互增强记录
 - [docs/测试/在线歌词增量测试.md](docs/测试/在线歌词增量测试.md) — 歌词源、缓存、自动化与人工验收记录
+- [docs/测试/阶段12测试.md](docs/测试/阶段12测试.md) — Release 发布包、隔离运行与交付进度
+- [docs/交付/v0.1.0最终交付清单.md](docs/交付/v0.1.0最终交付清单.md) — v0.1.0 交付候选结论与限制
 
 按主题：
 
