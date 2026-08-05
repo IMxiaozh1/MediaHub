@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QCursor>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -14,6 +15,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSlider>
 #include <QTest>
@@ -1064,6 +1066,15 @@ void MainWindowTest::routesVolumeAndMuteWithoutChangingPlaybackState() {
   QCOMPARE(popupGlobal.center().x(), buttonGlobal.center().x() - 16);
   QCOMPARE(popupGlobal.bottom(), buttonGlobal.top() + 3);
 
+  harness.window.resize(harness.window.width() + 120, harness.window.height());
+  QCoreApplication::processEvents();
+  QTRY_COMPARE(
+      volumePopup->mapToGlobal(volumePopup->rect().center()).x(),
+      volumeButton->mapToGlobal(volumeButton->rect().center()).x() - 16);
+  QTRY_COMPARE(
+      volumePopup->mapToGlobal(volumePopup->rect().bottomLeft()).y(),
+      volumeButton->mapToGlobal(volumeButton->rect().topLeft()).y() + 3);
+
   QEvent buttonLeaveForPopup(QEvent::Leave);
   QEvent popupEnter(QEvent::Enter);
   QApplication::sendEvent(volumeButton, &buttonLeaveForPopup);
@@ -2077,8 +2088,10 @@ void MainWindowTest::togglesLyricsBesideVolumeAndTracksSynchronizedLine() {
            QStringLiteral("来源 · 网易云音乐"));
   auto* const timingControls =
       requiredChild<QWidget>(harness.window, "lyricsTimingControls");
-  auto* const timingLaterButton =
-      requiredChild<QToolButton>(harness.window, "lyricsTimingLaterButton");
+  auto* const timingSlowButton =
+      requiredChild<QToolButton>(harness.window, "lyricsTimingSlowButton");
+  auto* const timingFastButton =
+      requiredChild<QToolButton>(harness.window, "lyricsTimingFastButton");
   auto* const timingResetButton =
       requiredChild<QToolButton>(harness.window, "lyricsTimingResetButton");
   QVERIFY(timingControls->isVisible());
@@ -2094,18 +2107,18 @@ void MainWindowTest::togglesLyricsBesideVolumeAndTracksSynchronizedLine() {
       QStringLiteral("第三句"));
 
   harness.engine.emitPositionChanged(
-      core::PlaybackPosition{20100ms, 120s, true});
-  QTRY_COMPARE(
-      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
-      QStringLiteral("第三句"));
-  QTest::mouseClick(timingLaterButton, Qt::LeftButton);
-  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 500);
-  QCOMPARE(
-      requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")->text(),
-      QStringLiteral("歌词延后 0.5 秒"));
+      core::PlaybackPosition{19600ms, 120s, true});
   QTRY_COMPARE(
       requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
       QStringLiteral("第二句"));
+  QTest::mouseClick(timingFastButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 500);
+  QCOMPARE(
+      requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")->text(),
+      QStringLiteral("歌词快 0.5 秒"));
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第三句"));
 
   lyricsView->setResult(result);
   QCOMPARE(lyricsView->timingOffsetMilliseconds(), 500);
@@ -2113,7 +2126,59 @@ void MainWindowTest::togglesLyricsBesideVolumeAndTracksSynchronizedLine() {
   QCOMPARE(lyricsView->timingOffsetMilliseconds(), 0);
   QTRY_COMPARE(
       requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第二句"));
+
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{20100ms, 120s, true});
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
       QStringLiteral("第三句"));
+  QTest::mouseClick(timingSlowButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), -500);
+  QCOMPARE(
+      requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")->text(),
+      QStringLiteral("歌词慢 0.5 秒"));
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第二句"));
+  QTest::mouseClick(timingResetButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 0);
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第三句"));
+
+  const QByteArray legacyIdentity =
+      QStringLiteral("%1|%2|%3")
+          .arg(QStringLiteral("周杰伦 - 晴天.mp3"), result.title, result.artist)
+          .toUtf8();
+  const QString identityHash = QString::fromLatin1(
+      QCryptographicHash::hash(legacyIdentity, QCryptographicHash::Sha256)
+          .toHex());
+  const QString offsetKey =
+      QStringLiteral("lyrics/timingOffsets/%1").arg(identityHash);
+  const QString versionKey =
+      QStringLiteral("lyrics/timingOffsetVersions/%1").arg(identityHash);
+  const QString organization = QCoreApplication::organizationName().isEmpty()
+                                   ? QStringLiteral("MediaHub")
+                                   : QCoreApplication::organizationName();
+  const QString application = QCoreApplication::applicationName().isEmpty()
+                                  ? QStringLiteral("MediaHub")
+                                  : QCoreApplication::applicationName();
+  QSettings legacySettings(QSettings::IniFormat, QSettings::UserScope,
+                           organization, application);
+  legacySettings.setValue(offsetKey, 500);
+  legacySettings.remove(versionKey);
+  legacySettings.sync();
+  lyricsView->setResult(result);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), -500);
+  QCOMPARE(
+      requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")->text(),
+      QStringLiteral("歌词慢 0.5 秒"));
+  QTRY_COMPARE(
+      requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")->text(),
+      QStringLiteral("第二句"));
+  QTest::mouseClick(timingResetButton, Qt::LeftButton);
+  QCOMPARE(lyricsView->timingOffsetMilliseconds(), 0);
 
   lyricsView->setFixedSize(1600, 1040);
   QTRY_VERIFY(requiredChild<QLabel>(harness.window, "synchronizedLyricLine2")
@@ -2134,8 +2199,8 @@ void MainWindowTest::togglesLyricsBesideVolumeAndTracksSynchronizedLine() {
   QTRY_VERIFY(requiredChild<QLabel>(harness.window, "lyricsTimingOffsetLabel")
                   ->styleSheet()
                   .contains(QStringLiteral("font-size: 27px")));
-  QCOMPARE(timingLaterButton->minimumHeight(), 51);
-  QVERIFY(timingLaterButton->styleSheet().contains(
+  QCOMPARE(timingFastButton->minimumHeight(), 51);
+  QVERIFY(timingFastButton->styleSheet().contains(
       QStringLiteral("font-size: 27px")));
 
   QTest::mouseClick(lyricsButton, Qt::LeftButton);

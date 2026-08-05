@@ -22,6 +22,7 @@ constexpr int kVisibleLineCount = 5;
 constexpr int kCurrentLineOffset = 2;
 constexpr qint64 kTimingStepMilliseconds = 500;
 constexpr qint64 kMaximumTimingOffsetMilliseconds = 10000;
+constexpr int kTimingOffsetSemanticsVersion = 2;
 
 std::unique_ptr<QSettings> createTimingSettings() {
   const QString organization = QCoreApplication::organizationName().isEmpty()
@@ -103,29 +104,28 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
   timingLayout->setSpacing(6);
   timingOffsetLabel_ = new QLabel(timingControls_);
   timingOffsetLabel_->setObjectName(QStringLiteral("lyricsTimingOffsetLabel"));
-  timingEarlierButton_ = new QToolButton(timingControls_);
-  timingEarlierButton_->setObjectName(
-      QStringLiteral("lyricsTimingEarlierButton"));
-  timingEarlierButton_->setText(QStringLiteral("-0.5s"));
-  timingEarlierButton_->setAccessibleName(QStringLiteral("歌词提前 0.5 秒"));
-  timingLaterButton_ = new QToolButton(timingControls_);
-  timingLaterButton_->setObjectName(QStringLiteral("lyricsTimingLaterButton"));
-  timingLaterButton_->setText(QStringLiteral("+0.5s"));
-  timingLaterButton_->setAccessibleName(QStringLiteral("歌词延后 0.5 秒"));
+  timingSlowButton_ = new QToolButton(timingControls_);
+  timingSlowButton_->setObjectName(QStringLiteral("lyricsTimingSlowButton"));
+  timingSlowButton_->setText(QStringLiteral("-0.5s"));
+  timingSlowButton_->setAccessibleName(QStringLiteral("歌词慢 0.5 秒"));
+  timingFastButton_ = new QToolButton(timingControls_);
+  timingFastButton_->setObjectName(QStringLiteral("lyricsTimingFastButton"));
+  timingFastButton_->setText(QStringLiteral("+0.5s"));
+  timingFastButton_->setAccessibleName(QStringLiteral("歌词快 0.5 秒"));
   timingResetButton_ = new QToolButton(timingControls_);
   timingResetButton_->setObjectName(QStringLiteral("lyricsTimingResetButton"));
   timingResetButton_->setText(QStringLiteral("重置"));
   timingResetButton_->setAccessibleName(QStringLiteral("重置歌词同步"));
   timingLayout->addWidget(timingOffsetLabel_);
-  timingLayout->addWidget(timingEarlierButton_);
-  timingLayout->addWidget(timingLaterButton_);
+  timingLayout->addWidget(timingSlowButton_);
+  timingLayout->addWidget(timingFastButton_);
   timingLayout->addWidget(timingResetButton_);
   rootLayout->addWidget(timingControls_, 0, Qt::AlignRight);
 
-  connect(timingEarlierButton_, &QToolButton::clicked, this, [this] {
+  connect(timingSlowButton_, &QToolButton::clicked, this, [this] {
     setTimingOffset(timingOffsetMilliseconds_ - kTimingStepMilliseconds, true);
   });
-  connect(timingLaterButton_, &QToolButton::clicked, this, [this] {
+  connect(timingFastButton_, &QToolButton::clicked, this, [this] {
     setTimingOffset(timingOffsetMilliseconds_ + kTimingStepMilliseconds, true);
   });
   connect(timingResetButton_, &QToolButton::clicked, this,
@@ -227,8 +227,8 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
           font-weight: 700;
           padding: 0 4px;
       }
-      QToolButton#lyricsTimingEarlierButton,
-      QToolButton#lyricsTimingLaterButton,
+      QToolButton#lyricsTimingSlowButton,
+      QToolButton#lyricsTimingFastButton,
       QToolButton#lyricsTimingResetButton {
           color: #245b56;
           background: #f7faf7;
@@ -239,8 +239,8 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
           font-size: 11px;
           font-weight: 700;
       }
-      QToolButton#lyricsTimingEarlierButton:hover,
-      QToolButton#lyricsTimingLaterButton:hover,
+      QToolButton#lyricsTimingSlowButton:hover,
+      QToolButton#lyricsTimingFastButton:hover,
       QToolButton#lyricsTimingResetButton:hover {
           background: #f4d8c9;
           border-color: #d4a78e;
@@ -267,6 +267,7 @@ void LyricsView::clearLyrics() {
   positionMilliseconds_ = 0;
   timingOffsetMilliseconds_ = 0;
   timingSettingsKey_.clear();
+  timingSettingsVersionKey_.clear();
   timingControls_->hide();
   sourceLabel_->clear();
   sourceLabel_->hide();
@@ -353,7 +354,7 @@ void LyricsView::updateSynchronizedLines() {
   }
 
   const qint64 adjustedPosition =
-      std::max<qint64>(positionMilliseconds_ - timingOffsetMilliseconds_, 0);
+      std::max<qint64>(positionMilliseconds_ + timingOffsetMilliseconds_, 0);
   const auto nextLine = std::upper_bound(
       synchronizedLines_.cbegin(), synchronizedLines_.cend(), adjustedPosition,
       [](const qint64 position, const LyricLine& line) {
@@ -387,14 +388,23 @@ void LyricsView::loadTimingOffset(const LyricsResult& result) {
       QStringLiteral("%1|%2|%3")
           .arg(mediaNameLabel_->text(), result.title, result.artist)
           .toUtf8();
+  const QString identityHash = QString::fromLatin1(
+      QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
   timingSettingsKey_ =
-      QStringLiteral("lyrics/timingOffsets/%1")
-          .arg(QString::fromLatin1(
-              QCryptographicHash::hash(identity, QCryptographicHash::Sha256)
-                  .toHex()));
+      QStringLiteral("lyrics/timingOffsets/%1").arg(identityHash);
+  timingSettingsVersionKey_ =
+      QStringLiteral("lyrics/timingOffsetVersions/%1").arg(identityHash);
   const auto settings = createTimingSettings();
-  const qint64 savedOffset =
-      settings->value(timingSettingsKey_, 0).toLongLong();
+  qint64 savedOffset = settings->value(timingSettingsKey_, 0).toLongLong();
+  if (settings->contains(timingSettingsKey_) &&
+      settings->value(timingSettingsVersionKey_, 1).toInt() <
+          kTimingOffsetSemanticsVersion) {
+    savedOffset = -savedOffset;
+    settings->setValue(timingSettingsKey_, savedOffset);
+    settings->setValue(timingSettingsVersionKey_,
+                       kTimingOffsetSemanticsVersion);
+    settings->sync();
+  }
   setTimingOffset(savedOffset, false);
 }
 
@@ -407,8 +417,11 @@ void LyricsView::setTimingOffset(const qint64 offsetMilliseconds,
     const auto settings = createTimingSettings();
     if (timingOffsetMilliseconds_ == 0) {
       settings->remove(timingSettingsKey_);
+      settings->remove(timingSettingsVersionKey_);
     } else {
       settings->setValue(timingSettingsKey_, timingOffsetMilliseconds_);
+      settings->setValue(timingSettingsVersionKey_,
+                         kTimingOffsetSemanticsVersion);
     }
     settings->sync();
   }
@@ -426,8 +439,8 @@ void LyricsView::updateTimingOffsetLabel() {
     return;
   }
   const QString direction = timingOffsetMilliseconds_ > 0
-                                ? QStringLiteral("歌词延后")
-                                : QStringLiteral("歌词提前");
+                                ? QStringLiteral("歌词快")
+                                : QStringLiteral("歌词慢");
   timingOffsetLabel_->setText(
       QStringLiteral("%1 %2 秒")
           .arg(direction)
@@ -465,11 +478,11 @@ void LyricsView::updateSynchronizedStyles() {
       QStringLiteral("font-size: %1px; padding: 0 %2px;")
           .arg(fontSizes.controls)
           .arg(std::max(7, qRound(fontSizes.controls * 0.55)));
-  timingEarlierButton_->setStyleSheet(timingButtonStyle);
-  timingLaterButton_->setStyleSheet(timingButtonStyle);
+  timingSlowButton_->setStyleSheet(timingButtonStyle);
+  timingFastButton_->setStyleSheet(timingButtonStyle);
   timingResetButton_->setStyleSheet(timingButtonStyle);
-  timingEarlierButton_->setMinimumHeight(timingButtonHeight);
-  timingLaterButton_->setMinimumHeight(timingButtonHeight);
+  timingSlowButton_->setMinimumHeight(timingButtonHeight);
+  timingFastButton_->setMinimumHeight(timingButtonHeight);
   timingResetButton_->setMinimumHeight(timingButtonHeight);
 }
 

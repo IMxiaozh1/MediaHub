@@ -282,7 +282,10 @@ class HoverOptionButton final : public QToolButton {
     connect(&hoverMonitorTimer_, &QTimer::timeout, this, [this] {
       if (hoverPopup_ == nullptr || !hoverPopup_->isVisible()) {
         hoverMonitorTimer_.stop();
-      } else if (containsCursor()) {
+        return;
+      }
+      positionPopupAbove();
+      if (containsCursor()) {
         closeTimer_.stop();
       } else if (!closeTimer_.isActive()) {
         closeTimer_.start();
@@ -377,6 +380,16 @@ class HoverOptionButton final : public QToolButton {
       return;
     }
     closeTimer_.stop();
+    positionPopupAbove();
+    hoverPopup_->show();
+    hoverPopup_->raise();
+    hoverMonitorTimer_.start();
+  }
+
+  void positionPopupAbove() {
+    if (hoverPopup_ == nullptr) {
+      return;
+    }
     hoverPopup_->ensurePolished();
     hoverPopup_->adjustSize();
     const QSize popupSize = hoverPopup_->size();
@@ -387,10 +400,9 @@ class HoverOptionButton final : public QToolButton {
                       : buttonTopLeft.x() + width() - popupSize.width();
     const QPoint popupPosition(
         popupX, buttonTopLeft.y() - popupSize.height() - popupGap_);
-    hoverPopup_->move(popupPosition);
-    hoverPopup_->show();
-    hoverPopup_->raise();
-    hoverMonitorTimer_.start();
+    if (hoverPopup_->pos() != popupPosition) {
+      hoverPopup_->move(popupPosition);
+    }
   }
 
   [[nodiscard]] bool containsCursor() const {

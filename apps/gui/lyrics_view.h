@@ -44,8 +44,8 @@ class LyricsView final : public QWidget {
   QLabel* messageDetailLabel_{nullptr};
   QWidget* timingControls_{nullptr};
   QLabel* timingOffsetLabel_{nullptr};
-  QToolButton* timingEarlierButton_{nullptr};
-  QToolButton* timingLaterButton_{nullptr};
+  QToolButton* timingSlowButton_{nullptr};
+  QToolButton* timingFastButton_{nullptr};
   QToolButton* timingResetButton_{nullptr};
   QTextBrowser* plainLyricsBrowser_{nullptr};
   QStackedLayout* contentStack_{nullptr};
@@ -57,6 +57,7 @@ class LyricsView final : public QWidget {
   qint64 positionMilliseconds_{0};
   qint64 timingOffsetMilliseconds_{0};
   QString timingSettingsKey_;
+  QString timingSettingsVersionKey_;
   int currentLineIndex_{-1};
 };
 
