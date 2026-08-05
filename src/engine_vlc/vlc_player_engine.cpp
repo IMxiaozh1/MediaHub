@@ -34,6 +34,8 @@ constexpr auto kShutdownPollInterval = 10ms;
 constexpr float kWarmUnityPlaybackRate = 1.001F;
 constexpr unsigned kWaveformSampleRate = 48'000;
 constexpr char kVideoFileCachingOption[] = ":file-caching=30";
+constexpr char kNetworkCachingOption[] = ":network-caching=1000";
+constexpr char kLiveCachingOption[] = ":live-caching=1000";
 
 constexpr std::array<libvlc_event_type_t, 11> kPlayerEvents{
     libvlc_MediaPlayerNothingSpecial, libvlc_MediaPlayerOpening,
@@ -136,10 +138,12 @@ core::AudioWaveform audioWaveformFromPcm(const std::int16_t* const samples,
   return waveform;
 }
 
-float playbackRateForLibVlc(const double rate) {
+float playbackRateForLibVlc(const double rate, const bool keepsUnityWarm) {
   const float boundedRate = static_cast<float>(std::clamp(rate, 0.25, 4.0));
-  return std::abs(boundedRate - 1.0F) < 0.0005F ? kWarmUnityPlaybackRate
-                                                : boundedRate;
+  if (std::abs(boundedRate - 1.0F) >= 0.0005F) {
+    return boundedRate;
+  }
+  return keepsUnityWarm ? kWarmUnityPlaybackRate : 1.0F;
 }
 
 std::string displayNameFor(const core::MediaItem& item) {
@@ -239,9 +243,37 @@ class VlcPlayerEngine::Impl {
   void open(core::MediaItem item) {
     clearCurrentMedia(displayNameFor(item));
     if (item.kind == core::MediaSourceKind::NetworkStream) {
-      reportError(core::PlaybackErrorKind::UnsupportedFormat,
-                  "Network input is disabled in MediaHub v0.1",
-                  "当前版本暂不支持播放网络地址。");
+      if (core::validateNetworkUrl(item.source) !=
+          core::NetworkUrlValidationError::None) {
+        reportError(core::PlaybackErrorKind::UnsupportedFormat,
+                    "Network input failed URL validation",
+                    "网络地址格式无效或协议暂不受支持。");
+        return;
+      }
+
+      VlcMediaPtr newMedia(
+          libvlc_media_new_location(instance_.get(), item.source.c_str()));
+      if (!newMedia) {
+        reportError(core::PlaybackErrorKind::SourceUnreadable,
+                    "libVLC could not create a network media descriptor",
+                    "无法打开网络媒体“" + displayNameFor(item) + "”。");
+        return;
+      }
+
+      // 网络连接由 libVLC 播放线程执行；这里仅集中配置直播缓存并提交媒体描述。
+      libvlc_media_add_option(newMedia.get(), kNetworkCachingOption);
+      libvlc_media_add_option(newMedia.get(), kLiveCachingOption);
+      libvlc_media_player_set_media(player_.get(), newMedia.get());
+      libvlc_media_player_set_media(analysisPlayer_.get(), nullptr);
+      static_cast<void>(libvlc_media_player_set_rate(player_.get(), 1.0F));
+      media_ = std::move(newMedia);
+      {
+        const std::lock_guard lock(mutex_);
+        isAudioOnlyMedia_ = false;
+        isNetworkMedia_ = true;
+        currentDisplayName_ = displayNameFor(item);
+      }
+      updateState(core::PlaybackState::Opening);
       return;
     }
 
@@ -328,6 +360,7 @@ class VlcPlayerEngine::Impl {
     {
       const std::lock_guard lock(mutex_);
       isAudioOnlyMedia_ = audioOnlyMedia;
+      isNetworkMedia_ = false;
       currentDisplayName_ = displayNameFor(item);
     }
     updateState(core::PlaybackState::Opening);
@@ -410,9 +443,16 @@ class VlcPlayerEngine::Impl {
       return;
     }
 
-    if (!isAudioOnlyMedia_) {
+    bool isAudioOnlyMedia = false;
+    bool isNetworkMedia = false;
+    {
+      const std::lock_guard lock(mutex_);
+      isAudioOnlyMedia = isAudioOnlyMedia_;
+      isNetworkMedia = isNetworkMedia_;
+    }
+    if (!isAudioOnlyMedia) {
       static_cast<void>(libvlc_media_player_set_rate(
-          player_.get(), playbackRateForLibVlc(rate)));
+          player_.get(), playbackRateForLibVlc(rate, !isNetworkMedia)));
       return;
     }
 
@@ -421,9 +461,9 @@ class VlcPlayerEngine::Impl {
     const libvlc_state_t currentState =
         libvlc_media_player_get_state(player_.get());
     const int result = libvlc_media_player_set_rate(
-        player_.get(), playbackRateForLibVlc(rate));
+        player_.get(), playbackRateForLibVlc(rate, true));
     static_cast<void>(libvlc_media_player_set_rate(
-        analysisPlayer_.get(), playbackRateForLibVlc(rate)));
+        analysisPlayer_.get(), playbackRateForLibVlc(rate, true)));
     if (result == 0 && currentTime >= 0 &&
         (currentState == libvlc_Playing || currentState == libvlc_Paused)) {
       // VLC 3 改倍率后会清空旧倍率的排队音频并补静音。
@@ -823,6 +863,7 @@ class VlcPlayerEngine::Impl {
     {
       const std::lock_guard lock(mutex_);
       isAudioOnlyMedia_ = false;
+      isNetworkMedia_ = false;
       currentDisplayName_ = std::move(displayName);
       position_ = {};
       lastPositionNotification_ = {};
@@ -882,6 +923,7 @@ class VlcPlayerEngine::Impl {
   libvlc_event_manager_t* eventManager_{nullptr};
   std::size_t attachedEventCount_{0};
   bool isAudioOnlyMedia_{false};
+  bool isNetworkMedia_{false};
 
   mutable std::mutex mutex_;
   std::mutex waveformAnalysisMutex_;

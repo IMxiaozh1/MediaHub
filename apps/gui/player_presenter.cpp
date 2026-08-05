@@ -71,6 +71,44 @@ std::string errorKindName(const core::PlaybackErrorKind kind) {
   return "unknown";
 }
 
+std::string networkUrlErrorName(const core::NetworkUrlValidationError error) {
+  switch (error) {
+    case core::NetworkUrlValidationError::None:
+      return "none";
+    case core::NetworkUrlValidationError::Empty:
+      return "empty";
+    case core::NetworkUrlValidationError::ContainsWhitespace:
+      return "contains_whitespace";
+    case core::NetworkUrlValidationError::MissingScheme:
+      return "missing_scheme";
+    case core::NetworkUrlValidationError::UnsupportedScheme:
+      return "unsupported_scheme";
+    case core::NetworkUrlValidationError::MissingTarget:
+      return "missing_target";
+  }
+  return "unknown";
+}
+
+QString networkUrlErrorMessage(const core::NetworkUrlValidationError error) {
+  switch (error) {
+    case core::NetworkUrlValidationError::None:
+      return {};
+    case core::NetworkUrlValidationError::Empty:
+      return QStringLiteral("请输入直播地址。");
+    case core::NetworkUrlValidationError::ContainsWhitespace:
+      return QStringLiteral("直播地址不能包含空格或换行。");
+    case core::NetworkUrlValidationError::MissingScheme:
+      return QStringLiteral(
+          "请输入包含协议的完整地址，例如 https://example.com/live.m3u8。");
+    case core::NetworkUrlValidationError::UnsupportedScheme:
+      return QStringLiteral(
+          "暂不支持该协议。可使用 HTTP、HTTPS、RTSP、RTMP、UDP、RTP 或 SRT。");
+    case core::NetworkUrlValidationError::MissingTarget:
+      return QStringLiteral("直播地址缺少有效的主机或接收目标。");
+  }
+  return QStringLiteral("直播地址格式无效。");
+}
+
 std::string utf8String(const QString& text) {
   const QByteArray encoded = text.toUtf8();
   return std::string(encoded.constData(),
@@ -181,6 +219,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
   window_.setPlaylistModel(&playlistModel_);
   connect(&window_, &MainWindow::localFilesSelected, this,
           &PlayerPresenter::addLocalFiles);
+  connect(&window_, &MainWindow::networkUrlSelected, this,
+          &PlayerPresenter::openNetworkUrl);
   connect(&window_, &MainWindow::playRequested, this,
           &PlayerPresenter::requestPlay);
   connect(&window_, &MainWindow::pauseRequested, this,
@@ -290,6 +330,38 @@ void PlayerPresenter::addLocalFiles(const QStringList& filePaths) {
   openCurrentPlaylistItem();
 }
 
+void PlayerPresenter::openNetworkUrl(const QString& url) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+
+  const QString normalizedUrl = url.trimmed();
+  const std::string source = utf8String(normalizedUrl);
+  const auto validationError = core::validateNetworkUrl(source);
+  if (validationError != core::NetworkUrlValidationError::None) {
+    window_.showPlaybackError(networkUrlErrorMessage(validationError));
+    if (logger_ != nullptr) {
+      logger_->log(logging::LogLevel::Warning, "presenter",
+                   "network_url_rejected",
+                   {{"reason", networkUrlErrorName(validationError)}});
+    }
+    return;
+  }
+
+  core::MediaItem item = core::makeMediaItem(source);
+  const std::string displayName = item.displayName;
+  const std::size_t newIndex = playlist_.size();
+  playlist_.add(std::move(item));
+  static_cast<void>(playlist_.select(newIndex));
+  playlistModel_.refresh();
+  if (logger_ != nullptr) {
+    logger_->log(logging::LogLevel::Info, "presenter",
+                 "network_media_added", {{"media", displayName}});
+  }
+  openCurrentPlaylistItem();
+}
+
 void PlayerPresenter::openCurrentPlaylistItem() {
   const auto* const item = playlist_.currentItem();
   if (item == nullptr) {
@@ -307,8 +379,11 @@ void PlayerPresenter::openCurrentPlaylistItem() {
   isSeeking_ = false;
   seekPreviewPosition_.reset();
   position_ = {};
-  isVideoMedia_ = !isAudioFile(QString::fromUtf8(
-      item->source.data(), static_cast<int>(item->source.size())));
+  isNetworkMedia_ = item->kind == core::MediaSourceKind::NetworkStream;
+  isVideoMedia_ =
+      isNetworkMedia_ ||
+      !isAudioFile(QString::fromUtf8(item->source.data(),
+                                     static_cast<int>(item->source.size())));
   isPreparingMedia_ = true;
   pendingRestartPosition_.reset();
   isRestartPlayRequested_ = false;
@@ -758,6 +833,11 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
   }
 
   if (state == core::PlaybackState::Playing) {
+    if (isNetworkMedia_) {
+      // 网络音频输出可能在连接完成后才创建，进入 Playing 后同步一次界面状态。
+      engine_.setVolume(volume_);
+      engine_.setMuted(isMuted_);
+    }
     const double effectiveRate = isTemporaryFastPlayback_ ? 2.0 : playbackRate_;
     applyPlaybackRate(effectiveRate);
     hasCurrentMediaStarted_ = true;

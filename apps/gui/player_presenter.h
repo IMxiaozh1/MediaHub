@@ -36,6 +36,8 @@ class PlayerPresenter final : public QObject {
   void openLocalFile(const QString& filePath);
   // 调用线程：GUI 主线程。保持输入顺序追加文件并播放本批次第一项。
   void addLocalFiles(const QStringList& filePaths);
+  // 调用线程：GUI 主线程。校验用户提供的直播地址后加入列表并播放。
+  void openNetworkUrl(const QString& url);
   // 调用线程：GUI 主线程。可重复调用，用于关闭窗口时断开事件并停止内核。
   void shutdown() noexcept;
 
@@ -104,6 +106,7 @@ class PlayerPresenter final : public QObject {
   bool isLyricsLoading_{false};
   bool hasLyricsResult_{false};
   bool isVideoMedia_{false};
+  bool isNetworkMedia_{false};
   bool isPreparingMedia_{false};
   bool isRestartPlayRequested_{false};
   bool isTemporaryFastPlayback_{false};

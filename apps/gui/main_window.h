@@ -59,6 +59,7 @@ class MainWindow final : public QMainWindow {
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
+  void networkUrlSelected(const QString& url);
   void playRequested();
   void pauseRequested();
   void playbackToggleRequested();
@@ -97,6 +98,7 @@ class MainWindow final : public QMainWindow {
 
  private:
   void chooseLocalFile();
+  void chooseNetworkUrl();
   void toggleFullScreen();
   void exitFullScreen();
   void updateFullScreenText();
@@ -107,9 +109,12 @@ class MainWindow final : public QMainWindow {
   void selectPlaylistRow(int row);
 
   QAction* openAction_{nullptr};
+  QAction* openNetworkAction_{nullptr};
   QAction* fullScreenAction_{nullptr};
   QPushButton* openButton_{nullptr};
   QAction* playlistPlayAction_{nullptr};
+  QAction* playlistPauseAction_{nullptr};
+  QAction* playlistStopAction_{nullptr};
   QAction* playlistRenameAction_{nullptr};
   QAction* playlistMoveUpAction_{nullptr};
   QAction* playlistMoveDownAction_{nullptr};
@@ -144,8 +149,12 @@ class MainWindow final : public QMainWindow {
   QList<QWidget*> fullScreenChrome_;
   QList<int> playlistContextRows_;
   int keyboardSeekStepSeconds_{5};
+  int currentPlaylistIndex_{-1};
   bool isPlaylistExpanded_{true};
   bool canEditPlaylist_{false};
+  bool canPlayCurrentItem_{false};
+  bool canPauseCurrentItem_{false};
+  bool canStopCurrentItem_{false};
   bool isRightKeyPressed_{false};
   bool isRightKeyHoldActive_{false};
 };

@@ -14,6 +14,16 @@ enum class MediaSourceKind {
   NetworkStream,
 };
 
+// 网络地址只做可安全交给播放内核的语法检查，不探测地址是否在线。
+enum class NetworkUrlValidationError {
+  None,
+  Empty,
+  ContainsWhitespace,
+  MissingScheme,
+  UnsupportedScheme,
+  MissingTarget,
+};
+
 // 可拷贝的媒体描述。source 和 displayName 均使用 UTF-8。
 struct MediaItem {
   std::string source;
@@ -83,6 +93,10 @@ enum class PlaybackMode {
 
 // 按 URI 语法集中识别来源，避免界面和播放列表重复判断。
 [[nodiscard]] MediaSourceKind classifyMediaSource(
+    std::string_view source) noexcept;
+
+// 校验 v0.2 支持的绝对网络地址。允许 http(s)、rtsp、rtmp(s)、udp、rtp 和 srt。
+[[nodiscard]] NetworkUrlValidationError validateNetworkUrl(
     std::string_view source) noexcept;
 
 // 创建媒体项；displayName 为空时从路径或 URL 的最后一段推导显示名称。

@@ -27,6 +27,37 @@ TEST(MediaSourceClassificationTest, RejectsMalformedUriSchemes) {
     EXPECT_EQ(classifyMediaSource("://example.test/live"), MediaSourceKind::LocalFile);
 }
 
+TEST(NetworkUrlValidationTest, AcceptsEverySupportedStreamingScheme) {
+    constexpr std::array<std::string_view, 8> kAddresses{
+        "http://example.test/live.m3u8", "HTTPS://example.test/live.m3u8",
+        "rtsp://example.test/camera", "rtmp://example.test/live/channel",
+        "rtmps://example.test/live/channel", "udp://@239.0.0.1:1234",
+        "rtp://@:5004", "srt://example.test:9000?mode=caller",
+    };
+    for (const auto address : kAddresses) {
+        EXPECT_EQ(validateNetworkUrl(address), NetworkUrlValidationError::None)
+            << address;
+    }
+}
+
+TEST(NetworkUrlValidationTest, RejectsUnsafeOrIncompleteAddresses) {
+    EXPECT_EQ(validateNetworkUrl(""), NetworkUrlValidationError::Empty);
+    EXPECT_EQ(validateNetworkUrl(" https://example.test/live"),
+              NetworkUrlValidationError::ContainsWhitespace);
+    EXPECT_EQ(validateNetworkUrl("https://example.test/live stream"),
+              NetworkUrlValidationError::ContainsWhitespace);
+    EXPECT_EQ(validateNetworkUrl("C:/Media/live.m3u8"),
+              NetworkUrlValidationError::MissingScheme);
+    EXPECT_EQ(validateNetworkUrl("file:///C:/Media/live.m3u8"),
+              NetworkUrlValidationError::UnsupportedScheme);
+    EXPECT_EQ(validateNetworkUrl("custom://example.test/live"),
+              NetworkUrlValidationError::UnsupportedScheme);
+    EXPECT_EQ(validateNetworkUrl("https:///live.m3u8"),
+              NetworkUrlValidationError::MissingTarget);
+    EXPECT_EQ(validateNetworkUrl("udp://@:not-a-port"),
+              NetworkUrlValidationError::MissingTarget);
+}
+
 TEST(MediaItemTest, InfersDisplayNameWithoutLosingSourceKind) {
     const auto localItem = makeMediaItem(R"(C:\Media\song.mp3)");
     EXPECT_EQ(localItem.source, R"(C:\Media\song.mp3)");
@@ -46,7 +77,7 @@ TEST(MediaItemTest, PreservesExplicitDisplayName) {
 TEST(MediaItemTest, KeepsStableNamesForRootQueriesAndTrailingSeparators) {
     const auto rootStream = makeMediaItem("https://example.test/?token=private#live");
     EXPECT_EQ(rootStream.kind, MediaSourceKind::NetworkStream);
-    EXPECT_EQ(rootStream.displayName, rootStream.source);
+    EXPECT_EQ(rootStream.displayName, "example.test");
 
     const auto trailingLocal = makeMediaItem(R"(C:\Media\)");
     EXPECT_EQ(trailingLocal.kind, MediaSourceKind::LocalFile);
@@ -55,6 +86,20 @@ TEST(MediaItemTest, KeepsStableNamesForRootQueriesAndTrailingSeparators) {
     const auto emptySource = makeMediaItem("");
     EXPECT_EQ(emptySource.kind, MediaSourceKind::LocalFile);
     EXPECT_TRUE(emptySource.displayName.empty());
+}
+
+TEST(MediaItemTest, RemovesCredentialsAndPrivateUrlPartsFromNetworkName) {
+    const auto root = makeMediaItem(
+        "https://user:password@example.test:8443/?token=private#live");
+    EXPECT_EQ(root.source,
+              "https://user:password@example.test:8443/?token=private#live");
+    EXPECT_EQ(root.displayName, "example.test:8443");
+
+    const auto channel = makeMediaItem(
+        "https://user:password@example.test/live/channel.m3u8?token=private");
+    EXPECT_EQ(channel.displayName, "channel.m3u8");
+    EXPECT_EQ(channel.displayName.find("password"), std::string::npos);
+    EXPECT_EQ(channel.displayName.find("token"), std::string::npos);
 }
 
 }  // namespace

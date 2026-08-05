@@ -314,6 +314,16 @@ class HoverOptionButton final : public QToolButton {
 
   void setClickOpensMenu(const bool enabled) { clickOpensMenu_ = enabled; }
 
+  void setCenteredPopupPlacement(const int gap, const int horizontalOffset) {
+    centersPopup_ = true;
+    popupGap_ = gap;
+    popupHorizontalOffset_ = horizontalOffset;
+  }
+
+  void setCloseDelay(const int milliseconds) {
+    closeTimer_.setInterval(std::max(milliseconds, 0));
+  }
+
  protected:
   void enterEvent(QEvent* const event) override {
     pointerInsideButton_ = true;
@@ -368,10 +378,15 @@ class HoverOptionButton final : public QToolButton {
     }
     closeTimer_.stop();
     hoverPopup_->ensurePolished();
-    const QSize popupSize = hoverPopup_->sizeHint();
+    hoverPopup_->adjustSize();
+    const QSize popupSize = hoverPopup_->size();
     const QPoint buttonTopLeft = mapToGlobal(QPoint(0, 0));
-    const QPoint popupPosition(buttonTopLeft.x() + width() - popupSize.width(),
-                               buttonTopLeft.y() - popupSize.height() - 6);
+    const int popupX =
+        centersPopup_ ? buttonTopLeft.x() + (width() - popupSize.width()) / 2 +
+                            popupHorizontalOffset_
+                      : buttonTopLeft.x() + width() - popupSize.width();
+    const QPoint popupPosition(
+        popupX, buttonTopLeft.y() - popupSize.height() - popupGap_);
     hoverPopup_->move(popupPosition);
     hoverPopup_->show();
     hoverPopup_->raise();
@@ -389,6 +404,9 @@ class HoverOptionButton final : public QToolButton {
   QTimer closeTimer_;
   QTimer hoverMonitorTimer_;
   bool clickOpensMenu_{false};
+  bool centersPopup_{false};
+  int popupGap_{6};
+  int popupHorizontalOffset_{0};
   bool pointerInsideButton_{false};
   bool pointerInsidePopup_{false};
 };
@@ -475,6 +493,11 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   openAction_ = fileMenu->addAction(QStringLiteral("打开媒体文件(&O)..."));
   openAction_->setObjectName(QStringLiteral("openFileAction"));
   openAction_->setShortcut(QKeySequence::Open);
+  openNetworkAction_ =
+      fileMenu->addAction(QStringLiteral("打开网络地址(&N)..."));
+  openNetworkAction_->setObjectName(QStringLiteral("openNetworkAction"));
+  openNetworkAction_->setShortcut(
+      QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_L)));
   fileMenu->addSeparator();
   auto* const exitAction = fileMenu->addAction(QStringLiteral("退出(&X)"));
   exitAction->setShortcut(QKeySequence::Quit);
@@ -579,6 +602,12 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   playlistContextMenu_->setObjectName(QStringLiteral("playlistContextMenu"));
   playlistPlayAction_ = playlistContextMenu_->addAction(QStringLiteral("播放"));
   playlistPlayAction_->setObjectName(QStringLiteral("playlistPlayAction"));
+  playlistPauseAction_ =
+      playlistContextMenu_->addAction(QStringLiteral("暂停"));
+  playlistPauseAction_->setObjectName(QStringLiteral("playlistPauseAction"));
+  playlistStopAction_ = playlistContextMenu_->addAction(QStringLiteral("停止"));
+  playlistStopAction_->setObjectName(QStringLiteral("playlistStopAction"));
+  playlistContextMenu_->addSeparator();
   playlistRenameAction_ =
       playlistContextMenu_->addAction(QStringLiteral("重命名此文件"));
   playlistRenameAction_->setObjectName(QStringLiteral("playlistRenameAction"));
@@ -697,7 +726,11 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   volumeSlider_->setToolTip(QStringLiteral("上下滑动调节音量"));
   volumeLayout->addWidget(volumeLabel_);
   volumeLayout->addWidget(volumeSlider_, 1, Qt::AlignHCenter);
-  static_cast<HoverOptionButton*>(volumeButton_)->setHoverPopup(volumePopup);
+  auto* const volumeHoverButton =
+      static_cast<HoverOptionButton*>(volumeButton_);
+  volumeHoverButton->setHoverPopup(volumePopup);
+  volumeHoverButton->setCenteredPopupPlacement(-4, -16);
+  volumeHoverButton->setCloseDelay(500);
 
   lyricsButton_ = new QToolButton(transportPanel);
   lyricsButton_->setObjectName(QStringLiteral("lyricsButton"));
@@ -1101,6 +1134,8 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     )"));
 
   connect(openAction_, &QAction::triggered, this, &MainWindow::chooseLocalFile);
+  connect(openNetworkAction_, &QAction::triggered, this,
+          &MainWindow::chooseNetworkUrl);
   connect(openButton_, &QPushButton::clicked, this,
           &MainWindow::chooseLocalFile);
   connect(playPauseButton_, &QToolButton::clicked, this,
@@ -1146,9 +1181,18 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
           &MainWindow::showPlaylistContextMenu);
   connect(playlistPlayAction_, &QAction::triggered, this, [this] {
     if (playlistContextRows_.size() == 1) {
-      emit playlistItemActivated(playlistContextRows_.front());
+      const int row = playlistContextRows_.front();
+      if (row == currentPlaylistIndex_) {
+        emit playRequested();
+      } else {
+        emit playlistItemActivated(row);
+      }
     }
   });
+  connect(playlistPauseAction_, &QAction::triggered, this,
+          &MainWindow::pauseRequested);
+  connect(playlistStopAction_, &QAction::triggered, this,
+          &MainWindow::stopRequested);
   connect(playlistRenameAction_, &QAction::triggered, this,
           &MainWindow::renameContextPlaylistItem);
   connect(playlistMoveTopAction_, &QAction::triggered, this, [this] {
@@ -1199,6 +1243,7 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   const QSignalBlocker volumeBlocker(volumeSlider_);
   const QSignalBlocker lyricsBlocker(lyricsButton_);
   openAction_->setEnabled(viewState.canOpen);
+  openNetworkAction_->setEnabled(viewState.canOpen);
   openButton_->setEnabled(viewState.canOpen);
   playPauseButton_->setEnabled(viewState.canPlay || viewState.canPause);
   const bool showsPause = viewState.canPause;
@@ -1212,8 +1257,14 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   previousButton_->setEnabled(viewState.canGoPrevious);
   nextButton_->setEnabled(viewState.canGoNext);
   canEditPlaylist_ = viewState.canRemovePlaylistItem;
+  currentPlaylistIndex_ = viewState.currentPlaylistIndex;
+  canPlayCurrentItem_ = viewState.canPlay;
+  canPauseCurrentItem_ = viewState.canPause;
+  canStopCurrentItem_ = viewState.canStop;
   if (!canEditPlaylist_) {
     playlistPlayAction_->setEnabled(false);
+    playlistPauseAction_->setEnabled(false);
+    playlistStopAction_->setEnabled(false);
     playlistRenameAction_->setEnabled(false);
     playlistMoveTopAction_->setEnabled(false);
     playlistMoveUpAction_->setEnabled(false);
@@ -1327,7 +1378,14 @@ void MainWindow::showPlaylistContextMenu(const QPoint& position) {
   const bool hasSingleItem = playlistContextRows_.size() == 1;
   const int clickedRow = clickedIndex.row();
   const int itemCount = playlistView_->model()->rowCount();
-  playlistPlayAction_->setEnabled(canEditPlaylist_ && hasSingleItem);
+  const bool targetsCurrentItem =
+      hasSingleItem && clickedRow == currentPlaylistIndex_;
+  playlistPlayAction_->setEnabled(canEditPlaylist_ && hasSingleItem &&
+                                  (!targetsCurrentItem || canPlayCurrentItem_));
+  playlistPauseAction_->setEnabled(canEditPlaylist_ && targetsCurrentItem &&
+                                   canPauseCurrentItem_);
+  playlistStopAction_->setEnabled(canEditPlaylist_ && targetsCurrentItem &&
+                                  canStopCurrentItem_);
   playlistRenameAction_->setEnabled(canEditPlaylist_ && hasSingleItem);
   playlistMoveTopAction_->setEnabled(canEditPlaylist_ && hasSingleItem &&
                                      clickedRow > 0);
@@ -1437,6 +1495,18 @@ void MainWindow::chooseLocalFile() {
           "*.avi *.mov *.webm);;所有文件 (*.*)"));
   if (!filePaths.isEmpty()) {
     emit localFilesSelected(filePaths);
+  }
+}
+
+void MainWindow::chooseNetworkUrl() {
+  bool wasAccepted = false;
+  const QString address =
+      QInputDialog::getText(this, QStringLiteral("打开网络地址"),
+                            QStringLiteral("输入直播 URL："), QLineEdit::Normal,
+                            {}, &wasAccepted)
+          .trimmed();
+  if (wasAccepted) {
+    emit networkUrlSelected(address);
   }
 }
 

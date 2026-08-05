@@ -157,6 +157,11 @@ class RecordingListener final : public core::PlayerEventListener {
     return errors_.back();
   }
 
+  [[nodiscard]] std::size_t errorCount() const {
+    const std::lock_guard lock(mutex_);
+    return errors_.size();
+  }
+
   [[nodiscard]] std::size_t endCount() const {
     const std::lock_guard lock(mutex_);
     return endCount_;
@@ -250,12 +255,27 @@ TEST(VlcPlayerEngineTest, ReportsMissingLocalFileWithoutLeakingFullPath) {
   EXPECT_EQ(error.userMessage.find(missingSource), std::string::npos);
 }
 
-TEST(VlcPlayerEngineTest, RejectsNetworkSourceWithoutOpeningIt) {
+TEST(VlcPlayerEngineTest, CreatesNetworkDescriptorWithoutAccessingFileSystem) {
   RecordingListener listener;
   VlcPlayerEngine engine(testOptions());
   engine.setEventListener(&listener);
 
-  engine.open(core::MediaItem{"https://example.invalid/live",
+  engine.open(core::makeMediaItem(
+      "https://user:secret@example.invalid/live.m3u8?token=private"));
+
+  EXPECT_EQ(engine.state(), core::PlaybackState::Opening);
+  EXPECT_EQ(listener.stateCount(core::PlaybackState::Opening), 1U);
+  EXPECT_EQ(listener.errorCount(), 0U);
+}
+
+TEST(VlcPlayerEngineTest, RejectsInvalidNetworkDescriptorWithoutLeakingUrl) {
+  RecordingListener listener;
+  VlcPlayerEngine engine(testOptions());
+  engine.setEventListener(&listener);
+  const std::string invalidAddress =
+      "custom://user:secret@example.invalid/live?token=private";
+
+  engine.open(core::MediaItem{invalidAddress,
                               core::MediaSourceKind::NetworkStream,
                               "测试直播"});
 
@@ -263,6 +283,10 @@ TEST(VlcPlayerEngineTest, RejectsNetworkSourceWithoutOpeningIt) {
   EXPECT_EQ(engine.state(), core::PlaybackState::Failed);
   EXPECT_EQ(listener.lastError().kind,
             core::PlaybackErrorKind::UnsupportedFormat);
+  EXPECT_EQ(listener.lastError().engineDetail.find(invalidAddress),
+            std::string::npos);
+  EXPECT_EQ(listener.lastError().userMessage.find(invalidAddress),
+            std::string::npos);
 }
 
 TEST(VlcPlayerEngineTest, FailedOpenDoesNotLeavePreviousMediaLoaded) {

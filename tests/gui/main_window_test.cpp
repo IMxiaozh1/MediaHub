@@ -150,6 +150,8 @@ class MainWindowTest final : public QObject {
   void selectsKugouNestedAudioVersionAndDecodesLyrics();
   void publishesNativeSurfaceOnlyAfterWindowIsShown();
   void opensUtf8LocalFileAndStartsAfterOpeningEvent();
+  void opensValidatedNetworkUrlWithoutLoggingPrivateParts();
+  void rejectsInvalidNetworkUrlBeforeCallingEngine();
   void routesPauseResumeAndStopThroughPresenter();
   void rendersBufferingAsNonInteractiveWait();
   void allowsReplayAfterNaturalEnd();
@@ -176,6 +178,7 @@ class MainWindowTest final : public QObject {
   void appliesBurstPositionEventsOnGuiThread();
   void addsMultipleFilesAndActivatesRequestedItem();
   void usesPlaylistContextMenuForSingleItemActions();
+  void enablesPlaylistContextPlaybackActionsBySelectedItemState();
   void supportsCtrlShiftMultiSelectionAndOnlyAllowsRemoval();
   void acceptsDroppedLocalFilesInOrder();
   void exposesPlaylistModelRolesAndSelectionMarker();
@@ -203,6 +206,8 @@ void MainWindowTest::hasFormalInitialLayout() {
   QVERIFY(!harness.window.isVisible());
   QVERIFY(
       requiredChild<QAction>(harness.window, "openFileAction")->isEnabled());
+  QVERIFY(
+      requiredChild<QAction>(harness.window, "openNetworkAction")->isEnabled());
   QVERIFY(requiredChild<QPushButton>(harness.window, "openFileButton")
               ->isEnabled());
   auto* const playPauseButton =
@@ -392,6 +397,79 @@ void MainWindowTest::opensUtf8LocalFileAndStartsAfterOpeningEvent() {
   QCOMPARE(statusText(harness), QStringLiteral("正在打开..."));
   QVERIFY(
       requiredChild<QToolButton>(harness.window, "stopButton")->isEnabled());
+}
+
+void MainWindowTest::opensValidatedNetworkUrlWithoutLoggingPrivateParts() {
+  GuiHarness harness;
+  const QString address = QStringLiteral(
+      "https://user:secret@example.test/live/channel.m3u8?token=private#main");
+
+  harness.presenter.openNetworkUrl(address);
+  const auto commands = harness.engine.commands();
+  QCOMPARE(static_cast<int>(commands.size()), 1);
+  QVERIFY(commands.front().kind == test::FakeEngineCommandKind::Open);
+  QVERIFY(commands.front().media.has_value());
+  QVERIFY(commands.front().media->kind == core::MediaSourceKind::NetworkStream);
+  QCOMPARE(commands.front().media->source, address.toUtf8().toStdString());
+  QCOMPARE(commands.front().media->displayName, std::string("channel.m3u8"));
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+  QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("channel.m3u8"));
+  const std::string logs = harness.logOutput.str();
+  QVERIFY(logs.find("network_media_added") != std::string::npos);
+  QVERIFY(logs.find("channel.m3u8") != std::string::npos);
+  QVERIFY(logs.find("user:secret") == std::string::npos);
+  QVERIFY(logs.find("token=private") == std::string::npos);
+
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetVolume),
+               1);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted), 1);
+  const auto playingCommands = harness.engine.commands();
+  const auto volumeCommand = std::find_if(
+      playingCommands.begin(), playingCommands.end(), [](const auto& command) {
+        return command.kind == test::FakeEngineCommandKind::SetVolume;
+      });
+  const auto muteCommand = std::find_if(
+      playingCommands.begin(), playingCommands.end(), [](const auto& command) {
+        return command.kind == test::FakeEngineCommandKind::SetMuted;
+      });
+  QVERIFY(volumeCommand != playingCommands.end());
+  QVERIFY(muteCommand != playingCommands.end());
+  QCOMPARE(volumeCommand->volume, 100);
+  QVERIFY(!muteCommand->flag);
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{5s, std::nullopt, false});
+  QTRY_COMPARE(requiredChild<QLabel>(harness.window, "positionLabel")->text(),
+               QStringLiteral("00:05 / --:--"));
+  QVERIFY(
+      !requiredChild<QSlider>(harness.window, "progressSlider")->isEnabled());
+}
+
+void MainWindowTest::rejectsInvalidNetworkUrlBeforeCallingEngine() {
+  GuiHarness harness;
+
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("file:///C:/private/live.m3u8"));
+
+  QCOMPARE(static_cast<int>(harness.engine.commands().size()), 0);
+  QCOMPARE(requiredChild<QListView>(harness.window, "playlistView")
+               ->model()
+               ->rowCount(),
+           0);
+  auto* const errorLabel =
+      requiredChild<QLabel>(harness.window, "playbackErrorLabel");
+  QVERIFY(!errorLabel->isHidden());
+  QVERIFY(errorLabel->text().contains(QStringLiteral("暂不支持")));
+  QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+  const std::string logs = harness.logOutput.str();
+  QVERIFY(logs.find("network_url_rejected") != std::string::npos);
+  QVERIFY(logs.find("C:/private") == std::string::npos);
 }
 
 void MainWindowTest::routesPauseResumeAndStopThroughPresenter() {
@@ -979,8 +1057,19 @@ void MainWindowTest::routesVolumeAndMuteWithoutChangingPlaybackState() {
   QEvent volumeEnter(QEvent::Enter);
   QApplication::sendEvent(volumeButton, &volumeEnter);
   QTRY_VERIFY(volumePopup->isVisible());
-  QVERIFY(volumePopup->geometry().bottom() <
-          volumeButton->mapToGlobal(QPoint(0, 0)).y());
+  const QRect buttonGlobal(volumeButton->mapToGlobal(QPoint(0, 0)),
+                           volumeButton->size());
+  const QRect popupGlobal(volumePopup->mapToGlobal(QPoint(0, 0)),
+                          volumePopup->size());
+  QCOMPARE(popupGlobal.center().x(), buttonGlobal.center().x() - 16);
+  QCOMPARE(popupGlobal.bottom(), buttonGlobal.top() + 3);
+
+  QEvent buttonLeaveForPopup(QEvent::Leave);
+  QEvent popupEnter(QEvent::Enter);
+  QApplication::sendEvent(volumeButton, &buttonLeaveForPopup);
+  QApplication::sendEvent(volumePopup, &popupEnter);
+  QTest::qWait(320);
+  QVERIFY(volumePopup->isVisible());
 
   volumeSlider->setValue(64);
   QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetVolume),
@@ -1394,6 +1483,10 @@ void MainWindowTest::usesPlaylistContextMenuForSingleItemActions() {
       requiredChild<QMenu>(harness.window, "playlistContextMenu");
   auto* const playAction =
       requiredChild<QAction>(harness.window, "playlistPlayAction");
+  auto* const pauseAction =
+      requiredChild<QAction>(harness.window, "playlistPauseAction");
+  auto* const stopAction =
+      requiredChild<QAction>(harness.window, "playlistStopAction");
   auto* const renameAction =
       requiredChild<QAction>(harness.window, "playlistRenameAction");
   auto* const moveTopAction =
@@ -1407,6 +1500,8 @@ void MainWindowTest::usesPlaylistContextMenuForSingleItemActions() {
 
   QVERIFY(requestPlaylistContextMenu(*playlistView, 2));
   QVERIFY(playAction->isEnabled());
+  QVERIFY(!pauseAction->isEnabled());
+  QVERIFY(!stopAction->isEnabled());
   QVERIFY(renameAction->isEnabled());
   QVERIFY(moveTopAction->isEnabled());
   QVERIFY(moveUpAction->isEnabled());
@@ -1459,6 +1554,73 @@ void MainWindowTest::usesPlaylistContextMenuForSingleItemActions() {
            QStringLiteral("列表里的新名字").toUtf8().toStdString());
 }
 
+void MainWindowTest::
+    enablesPlaylistContextPlaybackActionsBySelectedItemState() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  const QStringList paths{QStringLiteral("C:/menu/current.mp3"),
+                          QStringLiteral("C:/menu/other.mp3")};
+  harness.presenter.addLocalFiles(paths);
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto* const menu =
+      requiredChild<QMenu>(harness.window, "playlistContextMenu");
+  auto* const playAction =
+      requiredChild<QAction>(harness.window, "playlistPlayAction");
+  auto* const pauseAction =
+      requiredChild<QAction>(harness.window, "playlistPauseAction");
+  auto* const stopAction =
+      requiredChild<QAction>(harness.window, "playlistStopAction");
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 0));
+  QVERIFY(!playAction->isEnabled());
+  QVERIFY(pauseAction->isEnabled());
+  QVERIFY(stopAction->isEnabled());
+  menu->hide();
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 1));
+  QVERIFY(playAction->isEnabled());
+  QVERIFY(!pauseAction->isEnabled());
+  QVERIFY(!stopAction->isEnabled());
+  menu->hide();
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 0));
+  menu->hide();
+  pauseAction->trigger();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Paused);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("已暂停"));
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 0));
+  QVERIFY(playAction->isEnabled());
+  QVERIFY(!pauseAction->isEnabled());
+  QVERIFY(stopAction->isEnabled());
+  menu->hide();
+  playAction->trigger();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 2);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 0));
+  menu->hide();
+  stopAction->trigger();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Stop), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Stopped);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("已停止"));
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 0));
+  QVERIFY(playAction->isEnabled());
+  QVERIFY(!pauseAction->isEnabled());
+  QVERIFY(!stopAction->isEnabled());
+  menu->hide();
+}
+
 void MainWindowTest::supportsCtrlShiftMultiSelectionAndOnlyAllowsRemoval() {
   GuiHarness harness;
   harness.window.show();
@@ -1491,6 +1653,10 @@ void MainWindowTest::supportsCtrlShiftMultiSelectionAndOnlyAllowsRemoval() {
   QVERIFY(requestPlaylistContextMenu(*playlistView, 1));
   QCOMPARE(playlistView->selectionModel()->selectedRows().size(), 3);
   QVERIFY(!requiredChild<QAction>(harness.window, "playlistPlayAction")
+               ->isEnabled());
+  QVERIFY(!requiredChild<QAction>(harness.window, "playlistPauseAction")
+               ->isEnabled());
+  QVERIFY(!requiredChild<QAction>(harness.window, "playlistStopAction")
                ->isEnabled());
   QVERIFY(!requiredChild<QAction>(harness.window, "playlistRenameAction")
                ->isEnabled());
