@@ -114,6 +114,12 @@ void FakePlayerEngine::emitDurationChanged(
   }
 }
 
+void FakePlayerEngine::emitBufferingChanged(const int percentage) {
+  if (auto* const currentListener = listener()) {
+    currentListener->onBufferingChanged(percentage);
+  }
+}
+
 void FakePlayerEngine::emitAudioWaveformChanged(core::AudioWaveform waveform) {
   if (auto* const currentListener = listener()) {
     currentListener->onAudioWaveformChanged(std::move(waveform));

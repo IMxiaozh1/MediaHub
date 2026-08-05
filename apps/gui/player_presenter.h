@@ -17,6 +17,8 @@
 #include "player_view_state.h"
 #include "playlist_model.h"
 
+class QTimer;
+
 namespace mediahub::gui {
 
 class MainWindow;
@@ -74,10 +76,12 @@ class PlayerPresenter final : public QObject {
   void handleStateChanged(core::PlaybackState state);
   void handlePositionChanged(core::PlaybackPosition position);
   void handleDurationChanged(OptionalDuration duration);
+  void handleBufferingChanged(int percentage);
   void handleAudioWaveformChanged(core::AudioWaveform waveform);
   void handleLyricsResult(LyricsResult result);
   void handleEndReached();
   void handleError(core::PlaybackError error);
+  void handleNetworkOpenTimeout();
   void openCurrentPlaylistItem();
   void render();
   [[nodiscard]] PlayerViewState makeViewState() const;
@@ -88,6 +92,7 @@ class PlayerPresenter final : public QObject {
   logging::Logger* logger_{nullptr};
   std::unique_ptr<LyricsService> ownedLyricsService_;
   LyricsService* lyricsService_{nullptr};
+  QTimer* networkOpenTimeoutTimer_{nullptr};
   core::PlaybackStateMachine stateMachine_;
   core::Playlist playlist_;
   PlaylistModel playlistModel_;
@@ -97,6 +102,7 @@ class PlayerPresenter final : public QObject {
   QString mediaName_{QStringLiteral("未选择媒体")};
   QString currentSourcePath_;
   int volume_{100};
+  int bufferingPercentage_{0};
   double playbackRate_{1.0};
   double lastAppliedPlaybackRate_{1.0};
   bool isAutoPlayPending_{false};
@@ -107,6 +113,10 @@ class PlayerPresenter final : public QObject {
   bool hasLyricsResult_{false};
   bool isVideoMedia_{false};
   bool isNetworkMedia_{false};
+  bool isNetworkOpenPending_{false};
+  bool isNetworkOpenCancelled_{false};
+  bool isNetworkOpenTimedOut_{false};
+  bool ignoresCancelledNetworkEvents_{false};
   bool isPreparingMedia_{false};
   bool isRestartPlayRequested_{false};
   bool isTemporaryFastPlayback_{false};

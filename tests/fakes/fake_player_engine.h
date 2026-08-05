@@ -60,6 +60,8 @@ class FakePlayerEngine final : public core::PlayerEngine {
   // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitDurationChanged(std::optional<std::chrono::milliseconds> duration);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
+  void emitBufferingChanged(int percentage);
+  // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitAudioWaveformChanged(core::AudioWaveform waveform);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitEndReached();

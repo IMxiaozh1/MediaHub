@@ -23,4 +23,6 @@ enum class VlcPlaybackEvent {
 [[nodiscard]] bool isBufferingInProgress(
     float cachePercentage, core::PlaybackState currentState) noexcept;
 
+[[nodiscard]] int bufferingPercentage(float cachePercentage) noexcept;
+
 }  // namespace mediahub::engine_vlc

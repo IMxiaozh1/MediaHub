@@ -17,6 +17,7 @@ class PlayerEventListener {
   virtual void onPositionChanged(PlaybackPosition position) noexcept = 0;
   virtual void onDurationChanged(
       std::optional<std::chrono::milliseconds> duration) noexcept = 0;
+  virtual void onBufferingChanged(int percentage) noexcept = 0;
   virtual void onAudioWaveformChanged(AudioWaveform waveform) noexcept = 0;
   virtual void onEndReached() noexcept = 0;
   virtual void onError(PlaybackError error) noexcept = 0;

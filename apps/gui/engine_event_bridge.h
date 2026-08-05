@@ -30,6 +30,8 @@ class EngineEventBridge final : public QObject,
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onDurationChanged(OptionalDuration duration) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
+  void onBufferingChanged(int percentage) noexcept override;
+  // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onAudioWaveformChanged(core::AudioWaveform waveform) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onEndReached() noexcept override;
@@ -40,6 +42,7 @@ class EngineEventBridge final : public QObject,
   void stateChanged(core::PlaybackState state);
   void positionChanged(core::PlaybackPosition position);
   void durationChanged(mediahub::gui::OptionalDuration duration);
+  void bufferingChanged(int percentage);
   void audioWaveformChanged(core::AudioWaveform waveform);
   void endReached();
   void errorOccurred(core::PlaybackError error);

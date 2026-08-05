@@ -36,6 +36,12 @@ void EngineEventBridge::onDurationChanged(OptionalDuration duration) noexcept {
   }
 }
 
+void EngineEventBridge::onBufferingChanged(const int percentage) noexcept {
+  if (isActive_.load(std::memory_order_acquire)) {
+    emit bufferingChanged(percentage);
+  }
+}
+
 void EngineEventBridge::onAudioWaveformChanged(
     core::AudioWaveform waveform) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {

@@ -1,5 +1,8 @@
 #include "vlc_event_mapping.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace mediahub::engine_vlc {
 
 core::PlaybackState mapPlaybackState(const VlcPlaybackEvent event) noexcept {
@@ -31,6 +34,13 @@ bool isBufferingInProgress(const float cachePercentage,
       currentState == core::PlaybackState::Playing ||
       currentState == core::PlaybackState::Paused;
   return cachePercentage < 100.0F && !hasStablePlaybackState;
+}
+
+int bufferingPercentage(const float cachePercentage) noexcept {
+  if (!std::isfinite(cachePercentage)) {
+    return 0;
+  }
+  return std::clamp(static_cast<int>(std::lround(cachePercentage)), 0, 100);
 }
 
 }  // namespace mediahub::engine_vlc

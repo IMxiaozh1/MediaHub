@@ -9,8 +9,10 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -236,11 +238,86 @@ class VlcPlayerEngine::Impl {
     libvlc_audio_set_format(analysisPlayer_.get(), "S16N", kWaveformSampleRate,
                             1);
     attachEvents();
+    try {
+      commandWorker_ = std::thread(&Impl::runCommandWorker, this);
+    } catch (...) {
+      detachEvents();
+      throw;
+    }
   }
 
   ~Impl() { shutdown(); }
 
+  // libVLC 3 在断流时的 stop/set_media 可能等待网络读取，所有控制命令
+  // 串行放到工作线程，让 GUI 调用立即返回。
   void open(core::MediaItem item) {
+    enqueueCommand(
+        [this, item = std::move(item)]() mutable { openNow(std::move(item)); });
+  }
+
+  void play() {
+    enqueueCommand([this] { playNow(); });
+  }
+
+  void pause() {
+    enqueueCommand([this] { pauseNow(); });
+  }
+
+  void stop() {
+    enqueueCommand([this] { stopNow(); });
+  }
+
+  void seek(const std::chrono::milliseconds position) {
+    enqueueCommand([this, position] { seekNow(position); });
+  }
+
+  void setVolume(const int volume) {
+    enqueueCommand([this, volume] { setVolumeNow(volume); });
+  }
+
+  void setMuted(const bool isMuted) {
+    enqueueCommand([this, isMuted] { setMutedNow(isMuted); });
+  }
+
+  void setPlaybackRate(const double rate) {
+    enqueueCommand([this, rate] { setPlaybackRateNow(rate); });
+  }
+
+  void setVideoSurface(void* const nativeHandle) {
+    enqueueCommand([this, nativeHandle] { setVideoSurfaceNow(nativeHandle); });
+  }
+
+  core::PlaybackState state() const {
+    const std::lock_guard lock(mutex_);
+    return state_;
+  }
+
+  core::PlaybackPosition position() const {
+    const std::lock_guard lock(mutex_);
+    return position_;
+  }
+
+  std::optional<std::chrono::milliseconds> duration() const {
+    const std::lock_guard lock(mutex_);
+    return position_.total;
+  }
+
+  bool isSeekable() const {
+    const std::lock_guard lock(mutex_);
+    return position_.isSeekable;
+  }
+
+  void setEventListener(core::PlayerEventListener* const listener) {
+    std::unique_lock lock(mutex_);
+    listener_ = nullptr;
+    callbacksDrained_.wait(lock, [this] { return activeCallbacks_ == 0; });
+    if (!isShuttingDown_) {
+      listener_ = listener;
+    }
+  }
+
+ private:
+  void openNow(core::MediaItem item) {
     clearCurrentMedia(displayNameFor(item));
     if (item.kind == core::MediaSourceKind::NetworkStream) {
       if (core::validateNetworkUrl(item.source) !=
@@ -366,7 +443,7 @@ class VlcPlayerEngine::Impl {
     updateState(core::PlaybackState::Opening);
   }
 
-  void play() {
+  void playNow() {
     if (!media_) {
       reportError(core::PlaybackErrorKind::EngineNotInitialized,
                   "Play was requested without loaded media",
@@ -392,7 +469,7 @@ class VlcPlayerEngine::Impl {
     }
   }
 
-  void pause() {
+  void pauseNow() {
     if (media_) {
       libvlc_media_player_set_pause(player_.get(), 1);
       if (isAudioOnlyMedia_) {
@@ -401,15 +478,32 @@ class VlcPlayerEngine::Impl {
     }
   }
 
-  void stop() {
-    if (media_) {
+  void stopNow() {
+    if (!media_) {
+      return;
+    }
+
+    bool isNetworkMedia = false;
+    {
+      const std::lock_guard lock(mutex_);
+      isNetworkMedia = isNetworkMedia_;
+    }
+    if (isNetworkMedia) {
+      replacePrimaryPlayer(true);
+      {
+        const std::lock_guard lock(mutex_);
+        position_ = {};
+        lastPositionNotification_ = {};
+      }
+      updateState(core::PlaybackState::Stopped);
+    } else {
       libvlc_media_player_stop(player_.get());
       stopAudioAnalysis();
-      resetWaveform();
     }
+    resetWaveform();
   }
 
-  void seek(std::chrono::milliseconds position) {
+  void seekNow(std::chrono::milliseconds position) {
     if (!media_) {
       return;
     }
@@ -429,16 +523,16 @@ class VlcPlayerEngine::Impl {
     updatePosition(position, true);
   }
 
-  void setVolume(const int volume) {
+  void setVolumeNow(const int volume) {
     const int boundedVolume = std::clamp(volume, 0, 100);
     static_cast<void>(libvlc_audio_set_volume(player_.get(), boundedVolume));
   }
 
-  void setMuted(const bool isMuted) {
+  void setMutedNow(const bool isMuted) {
     libvlc_audio_set_mute(player_.get(), isMuted ? 1 : 0);
   }
 
-  void setPlaybackRate(const double rate) {
+  void setPlaybackRateNow(const double rate) {
     if (!media_ || !std::isfinite(rate) || rate <= 0.0) {
       return;
     }
@@ -474,40 +568,71 @@ class VlcPlayerEngine::Impl {
     }
   }
 
-  void setVideoSurface(void* const nativeHandle) {
+  void setVideoSurfaceNow(void* const nativeHandle) {
+    videoSurface_ = nativeHandle;
     libvlc_media_player_set_hwnd(player_.get(), nativeHandle);
   }
 
-  core::PlaybackState state() const {
-    const std::lock_guard lock(mutex_);
-    return state_;
+  void enqueueCommand(std::function<void()> command) {
+    {
+      const std::lock_guard lock(commandMutex_);
+      if (commandWorkerStopping_) {
+        return;
+      }
+      commands_.push_back(std::move(command));
+    }
+    commandReady_.notify_one();
   }
 
-  core::PlaybackPosition position() const {
-    const std::lock_guard lock(mutex_);
-    return position_;
-  }
+  void runCommandWorker() noexcept {
+    for (;;) {
+      std::function<void()> command;
+      {
+        std::unique_lock lock(commandMutex_);
+        commandReady_.wait(lock, [this] {
+          return commandWorkerStopping_ || !commands_.empty();
+        });
+        if (commands_.empty()) {
+          if (commandWorkerStopping_) {
+            return;
+          }
+          continue;
+        }
+        command = std::move(commands_.front());
+        commands_.pop_front();
+      }
 
-  std::optional<std::chrono::milliseconds> duration() const {
-    const std::lock_guard lock(mutex_);
-    return position_.total;
-  }
-
-  bool isSeekable() const {
-    const std::lock_guard lock(mutex_);
-    return position_.isSeekable;
-  }
-
-  void setEventListener(core::PlayerEventListener* const listener) {
-    std::unique_lock lock(mutex_);
-    listener_ = nullptr;
-    callbacksDrained_.wait(lock, [this] { return activeCallbacks_ == 0; });
-    if (!isShuttingDown_) {
-      listener_ = listener;
+      try {
+        command();
+      } catch (const std::exception& error) {
+        try {
+          reportError(core::PlaybackErrorKind::Unknown,
+                      std::string("Player command failed: ") + error.what(),
+                      "播放内核执行操作失败，请重试。");
+        } catch (...) {
+        }
+      } catch (...) {
+        try {
+          reportError(core::PlaybackErrorKind::Unknown,
+                      "Player command failed with an unknown exception",
+                      "播放内核执行操作失败，请重试。");
+        } catch (...) {
+        }
+      }
     }
   }
 
- private:
+  void stopCommandWorker() noexcept {
+    {
+      const std::lock_guard lock(commandMutex_);
+      commandWorkerStopping_ = true;
+    }
+    commandReady_.notify_one();
+    if (commandWorker_.joinable()) {
+      commandWorker_.join();
+    }
+  }
+
   template <typename Callback>
   void dispatch(Callback&& callback) noexcept {
     core::PlayerEventListener* listener = nullptr;
@@ -671,10 +796,15 @@ class VlcPlayerEngine::Impl {
   // 调用线程：libVLC 事件线程，只更新快照并向监听器发送值类型事件。
   void handleEvent(const libvlc_event_t& event) noexcept {
     if (const auto playbackEvent = playbackEventFromLibVlc(event.type)) {
-      if (*playbackEvent == VlcPlaybackEvent::Buffering &&
-          !isBufferingInProgress(event.u.media_player_buffering.new_cache,
-                                 state())) {
-        return;
+      if (*playbackEvent == VlcPlaybackEvent::Buffering) {
+        const float cachePercentage = event.u.media_player_buffering.new_cache;
+        const int percentage = bufferingPercentage(cachePercentage);
+        dispatch([percentage](core::PlayerEventListener& listener) noexcept {
+          listener.onBufferingChanged(percentage);
+        });
+        if (!isBufferingInProgress(cachePercentage, state())) {
+          return;
+        }
       }
       const auto nextState = mapPlaybackState(*playbackEvent);
       if (*playbackEvent == VlcPlaybackEvent::Stopped) {
@@ -792,22 +922,27 @@ class VlcPlayerEngine::Impl {
                                  core::PlaybackErrorKind::UnsupportedFormat,
                              const bool updateFailedState = true) {
     std::string displayName;
+    bool isNetworkMedia = false;
     {
       const std::lock_guard lock(mutex_);
       displayName =
           currentDisplayName_.empty() ? "所选媒体" : currentDisplayName_;
+      isNetworkMedia = isNetworkMedia_;
     }
     if (updateFailedState) {
       updateState(core::PlaybackState::Failed);
     }
-    dispatch(
-        [error =
-             core::PlaybackError{kind, detail,
-                                 "无法播放媒体“" + displayName +
-                                     "”，文件内容可能损坏或格式不受支持。"}](
-            core::PlayerEventListener& listener) mutable noexcept {
-          listener.onError(std::move(error));
-        });
+    const auto resolvedKind =
+        isNetworkMedia ? core::PlaybackErrorKind::SourceUnreadable : kind;
+    const std::string userMessage =
+        isNetworkMedia ? "无法连接网络媒体“" + displayName +
+                             "”，请检查地址、网络或服务状态。"
+                       : "无法播放媒体“" + displayName +
+                             "”，文件内容可能损坏或格式不受支持。";
+    dispatch([error = core::PlaybackError{resolvedKind, detail, userMessage}](
+                 core::PlayerEventListener& listener) mutable noexcept {
+      listener.onError(std::move(error));
+    });
   }
 
   void reportError(const core::PlaybackErrorKind kind, std::string detail,
@@ -846,6 +981,46 @@ class VlcPlayerEngine::Impl {
     callbacksDrained_.wait(lock, [this] { return activeAudioCallbacks_ == 0; });
   }
 
+  void retirePrimaryPlayer(VlcPlayerPtr player) noexcept {
+    if (!player) {
+      return;
+    }
+
+    auto* const rawPlayer = player.release();
+    auto* const retainedInstance = instance_.get();
+    libvlc_retain(retainedInstance);
+    try {
+      std::thread([rawPlayer, retainedInstance] {
+        libvlc_media_player_release(rawPlayer);
+        libvlc_release(retainedInstance);
+      }).detach();
+    } catch (...) {
+      // 宁可在极端的线程创建失败中留给进程回收，也不能让 GUI 重新阻塞。
+    }
+  }
+
+  void replacePrimaryPlayer(const bool preserveMedia) {
+    VlcPlayerPtr replacement(libvlc_media_player_new(instance_.get()));
+    if (!replacement) {
+      throw std::runtime_error("无法重建 libVLC 播放器。");
+    }
+    libvlc_media_player_set_hwnd(replacement.get(), videoSurface_);
+    if (preserveMedia && media_) {
+      libvlc_media_player_set_media(replacement.get(), media_.get());
+    }
+
+    detachEvents();
+    auto retiredPlayer = std::move(player_);
+    player_ = std::move(replacement);
+    try {
+      attachEvents();
+    } catch (...) {
+      retirePrimaryPlayer(std::move(retiredPlayer));
+      throw;
+    }
+    retirePrimaryPlayer(std::move(retiredPlayer));
+  }
+
   void stopCurrentMedia() {
     if (media_ &&
         !isTerminalState(libvlc_media_player_get_state(player_.get()))) {
@@ -855,7 +1030,17 @@ class VlcPlayerEngine::Impl {
   }
 
   void clearCurrentMedia(std::string displayName) {
-    stopCurrentMedia();
+    bool wasNetworkMedia = false;
+    {
+      const std::lock_guard lock(mutex_);
+      wasNetworkMedia = isNetworkMedia_;
+    }
+    if (wasNetworkMedia) {
+      replacePrimaryPlayer(false);
+      stopAudioAnalysis();
+    } else {
+      stopCurrentMedia();
+    }
     libvlc_media_player_set_media(player_.get(), nullptr);
     libvlc_media_player_set_media(analysisPlayer_.get(), nullptr);
     media_.reset();
@@ -890,7 +1075,8 @@ class VlcPlayerEngine::Impl {
       listener_ = nullptr;
     }
 
-    // 释放顺序固定：先断开事件，再停止并等待，最后依次释放播放器、媒体和实例。
+    // 先等已提交的控制命令退出，再断开事件和释放 libVLC 对象。
+    stopCommandWorker();
     detachEvents();
     stopAudioAnalysis();
     {
@@ -924,6 +1110,13 @@ class VlcPlayerEngine::Impl {
   std::size_t attachedEventCount_{0};
   bool isAudioOnlyMedia_{false};
   bool isNetworkMedia_{false};
+  void* videoSurface_{nullptr};
+
+  std::mutex commandMutex_;
+  std::condition_variable commandReady_;
+  std::deque<std::function<void()>> commands_;
+  std::thread commandWorker_;
+  bool commandWorkerStopping_{false};
 
   mutable std::mutex mutex_;
   std::mutex waveformAnalysisMutex_;

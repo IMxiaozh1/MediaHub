@@ -20,6 +20,7 @@ enum class ObservedEventKind {
   State,
   Position,
   Duration,
+  Buffering,
   Waveform,
   End,
   Error,
@@ -44,6 +45,11 @@ class RecordingListener final : public core::PlayerEventListener {
     lastDuration = duration;
   }
 
+  void onBufferingChanged(const int percentage) noexcept override {
+    events.push_back(ObservedEventKind::Buffering);
+    lastBufferingPercentage = percentage;
+  }
+
   void onAudioWaveformChanged(core::AudioWaveform waveform) noexcept override {
     events.push_back(ObservedEventKind::Waveform);
     lastWaveform = std::move(waveform);
@@ -62,6 +68,7 @@ class RecordingListener final : public core::PlayerEventListener {
   core::PlaybackState lastState{core::PlaybackState::Idle};
   core::PlaybackPosition lastPosition;
   std::optional<std::chrono::milliseconds> lastDuration;
+  int lastBufferingPercentage{0};
   core::AudioWaveform lastWaveform;
   core::PlaybackError lastError;
 };
@@ -79,6 +86,7 @@ class StateMachineListener final : public core::PlayerEventListener {
   void onPositionChanged(core::PlaybackPosition) noexcept override {}
   void onDurationChanged(
       std::optional<std::chrono::milliseconds>) noexcept override {}
+  void onBufferingChanged(int) noexcept override {}
   void onAudioWaveformChanged(core::AudioWaveform) noexcept override {}
   void onEndReached() noexcept override {}
   void onError(core::PlaybackError) noexcept override {}
@@ -144,18 +152,21 @@ TEST(FakePlayerEngineTest, EmitsEventsInExactCallerControlledOrder) {
   engine.emitStateChanged(core::PlaybackState::Opening);
   engine.emitPositionChanged(position);
   engine.emitDurationChanged(8000ms);
+  engine.emitBufferingChanged(37);
   engine.emitAudioWaveformChanged(waveform);
   engine.emitEndReached();
   engine.emitError(error);
 
   const std::vector expectedEvents{
       ObservedEventKind::State,    ObservedEventKind::Position,
-      ObservedEventKind::Duration, ObservedEventKind::Waveform,
-      ObservedEventKind::End,      ObservedEventKind::Error};
+      ObservedEventKind::Duration, ObservedEventKind::Buffering,
+      ObservedEventKind::Waveform, ObservedEventKind::End,
+      ObservedEventKind::Error};
   EXPECT_EQ(listener.events, expectedEvents);
   EXPECT_EQ(listener.lastState, core::PlaybackState::Opening);
   EXPECT_EQ(listener.lastPosition, position);
   EXPECT_EQ(listener.lastDuration, 8000ms);
+  EXPECT_EQ(listener.lastBufferingPercentage, 37);
   EXPECT_EQ(listener.lastWaveform, waveform);
   EXPECT_EQ(listener.lastError, error);
   EXPECT_EQ(engine.state(), core::PlaybackState::Opening);

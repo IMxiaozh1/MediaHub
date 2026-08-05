@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -44,6 +45,12 @@ class RecordingListener final : public core::PlayerEventListener {
     const std::lock_guard lock(mutex_);
     duration_ = duration;
     hasDurationEvent_ = true;
+    changed_.notify_all();
+  }
+
+  void onBufferingChanged(const int percentage) noexcept override {
+    const std::lock_guard lock(mutex_);
+    bufferingPercentage_ = percentage;
     changed_.notify_all();
   }
 
@@ -185,6 +192,7 @@ class RecordingListener final : public core::PlayerEventListener {
   std::vector<std::pair<core::PlaybackState, std::thread::id>> stateThreads_;
   core::PlaybackPosition position_;
   std::optional<std::chrono::milliseconds> duration_;
+  int bufferingPercentage_{0};
   bool hasDurationEvent_{false};
   core::AudioWaveform waveform_;
   std::size_t waveformCount_{0};
@@ -220,6 +228,11 @@ TEST(VlcEventMappingTest, MapsEveryPlaybackEventToCoreState) {
   EXPECT_FALSE(isBufferingInProgress(101.0F, core::PlaybackState::Opening));
   EXPECT_FALSE(isBufferingInProgress(25.0F, core::PlaybackState::Playing));
   EXPECT_FALSE(isBufferingInProgress(25.0F, core::PlaybackState::Paused));
+  EXPECT_EQ(bufferingPercentage(-1.0F), 0);
+  EXPECT_EQ(bufferingPercentage(36.6F), 37);
+  EXPECT_EQ(bufferingPercentage(100.4F), 100);
+  EXPECT_EQ(bufferingPercentage(std::numeric_limits<float>::quiet_NaN()), 0);
+  EXPECT_EQ(bufferingPercentage(std::numeric_limits<float>::infinity()), 0);
 }
 
 TEST(VlcPlayerEngineTest, InitializesWithStableEmptySnapshots) {
@@ -263,9 +276,30 @@ TEST(VlcPlayerEngineTest, CreatesNetworkDescriptorWithoutAccessingFileSystem) {
   engine.open(core::makeMediaItem(
       "https://user:secret@example.invalid/live.m3u8?token=private"));
 
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
   EXPECT_EQ(engine.state(), core::PlaybackState::Opening);
   EXPECT_EQ(listener.stateCount(core::PlaybackState::Opening), 1U);
   EXPECT_EQ(listener.errorCount(), 0U);
+}
+
+TEST(VlcPlayerEngineTest, QueuesNetworkControlsWithoutBlockingCaller) {
+  RecordingListener listener;
+  VlcPlayerEngine engine(testOptions());
+  engine.setEventListener(&listener);
+
+  const auto startedAt = std::chrono::steady_clock::now();
+  engine.open(core::MediaItem{"http://127.0.0.1:1/slow.ts",
+                              core::MediaSourceKind::NetworkStream, "slow.ts"});
+  engine.play();
+  engine.stop();
+
+  EXPECT_LT(std::chrono::steady_clock::now() - startedAt, 250ms);
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Stopped, 1));
+
+  engine.open(core::MediaItem{"https://example.invalid/retry.m3u8",
+                              core::MediaSourceKind::NetworkStream,
+                              "retry.m3u8"});
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
 }
 
 TEST(VlcPlayerEngineTest, RejectsInvalidNetworkDescriptorWithoutLeakingUrl) {
@@ -275,9 +309,8 @@ TEST(VlcPlayerEngineTest, RejectsInvalidNetworkDescriptorWithoutLeakingUrl) {
   const std::string invalidAddress =
       "custom://user:secret@example.invalid/live?token=private";
 
-  engine.open(core::MediaItem{invalidAddress,
-                              core::MediaSourceKind::NetworkStream,
-                              "测试直播"});
+  engine.open(core::MediaItem{
+      invalidAddress, core::MediaSourceKind::NetworkStream, "测试直播"});
 
   ASSERT_TRUE(listener.waitForError());
   EXPECT_EQ(engine.state(), core::PlaybackState::Failed);
