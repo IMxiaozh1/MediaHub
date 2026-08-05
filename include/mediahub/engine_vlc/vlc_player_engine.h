@@ -40,6 +40,8 @@ class VlcPlayerEngine final : public core::PlayerEngine {
   [[nodiscard]] std::optional<std::chrono::milliseconds> duration()
       const override;
   [[nodiscard]] bool isSeekable() const override;
+  [[nodiscard]] std::optional<core::NetworkStreamActivity>
+  networkStreamActivity() const override;
   void setEventListener(core::PlayerEventListener* listener) override;
 
  private:

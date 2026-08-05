@@ -1512,14 +1512,29 @@ void MainWindow::chooseLocalFile() {
 
 void MainWindow::chooseNetworkUrl() {
   bool wasAccepted = false;
-  const QString address =
-      QInputDialog::getText(this, QStringLiteral("打开网络地址"),
-                            QStringLiteral("输入直播 URL："), QLineEdit::Normal,
-                            {}, &wasAccepted)
-          .trimmed();
+  QString address;
+  if (recentNetworkUrls_.isEmpty()) {
+    address = QInputDialog::getText(this, QStringLiteral("打开网络地址"),
+                                    QStringLiteral("输入直播 URL："),
+                                    QLineEdit::Normal, {}, &wasAccepted);
+  } else {
+    address = QInputDialog::getItem(
+        this, QStringLiteral("打开网络地址"),
+        QStringLiteral("输入或选择本次会话使用过的直播 URL："),
+        recentNetworkUrls_, 0, true, &wasAccepted);
+  }
+  address = address.trimmed();
   if (wasAccepted) {
     emit networkUrlSelected(address);
   }
+}
+
+void MainWindow::setRecentNetworkUrls(const QStringList& urls) {
+  recentNetworkUrls_ = urls;
+}
+
+const QStringList& MainWindow::recentNetworkUrls() const noexcept {
+  return recentNetworkUrls_;
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* const event) {

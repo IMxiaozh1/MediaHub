@@ -180,6 +180,11 @@ TEST(FakePlayerEngineTest, SupportsUnknownDurationAndListenerRemoval) {
   RecordingListener listener;
   engine.setEventListener(&listener);
 
+  EXPECT_EQ(engine.networkStreamActivity(), std::nullopt);
+  const core::NetworkStreamActivity activity{1024, 900, 10, 20, 8, 18};
+  engine.setNetworkStreamActivity(activity);
+  EXPECT_EQ(engine.networkStreamActivity(), activity);
+
   engine.emitPositionChanged(
       core::PlaybackPosition{250ms, std::nullopt, false});
   EXPECT_EQ(engine.duration(), std::nullopt);

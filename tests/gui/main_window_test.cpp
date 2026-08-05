@@ -156,6 +156,10 @@ class MainWindowTest final : public QObject {
   void rejectsInvalidNetworkUrlBeforeCallingEngine();
   void rendersNetworkBufferingAndStopsTimeoutAfterPlaying();
   void cancelsAndTimesOutNetworkOpeningWithoutAcceptingLateEvents();
+  void reconnectsInterruptedNetworkWithBoundedBackoff();
+  void reconnectsNetworkWhenActivityStallsWithoutTerminalEvent();
+  void cancelsPendingNetworkReconnectWhenStoppedOrSwitchingMedia();
+  void remembersRecentNetworkUrlsForCurrentSession();
   void routesPauseResumeAndStopThroughPresenter();
   void rendersBufferingAsNonInteractiveWait();
   void allowsReplayAfterNaturalEnd();
@@ -551,6 +555,237 @@ void MainWindowTest::
     QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 2);
     QCOMPARE(statusText(harness), QStringLiteral("正在连接..."));
   }
+}
+
+void MainWindowTest::reconnectsInterruptedNetworkWithBoundedBackoff() {
+  GuiHarness harness;
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/reconnect.m3u8?token=private"));
+  auto* const reconnectTimer =
+      harness.presenter.findChild<QTimer*>("networkReconnectTimer");
+  auto* const openTimeoutTimer =
+      harness.presenter.findChild<QTimer*>("networkOpenTimeoutTimer");
+  QVERIFY(reconnectTimer != nullptr);
+  QVERIFY(openTimeoutTimer != nullptr);
+  const int normalOpenTimeoutInterval = openTimeoutTimer->interval();
+  QVERIFY(!reconnectTimer->isActive());
+
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  harness.engine.emitBufferingChanged(24);
+  harness.engine.emitStateChanged(core::PlaybackState::Buffering);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在缓冲 24%"));
+  QVERIFY(!reconnectTimer->isActive());
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+
+  harness.engine.emitStateChanged(core::PlaybackState::Failed);
+  QTRY_VERIFY(reconnectTimer->isActive());
+  QCOMPARE(reconnectTimer->interval(), 1000);
+  QCOMPARE(statusText(harness),
+           QStringLiteral("直播已断开，1 秒后重连（1/3）"));
+  QVERIFY(
+      requiredChild<QLabel>(harness.window, "playbackErrorLabel")->isHidden());
+
+  reconnectTimer->start(1);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 2);
+  QCOMPARE(statusText(harness), QStringLiteral("正在重连（1/3）..."));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 2);
+  openTimeoutTimer->start(1);
+  QTRY_VERIFY(reconnectTimer->isActive());
+  openTimeoutTimer->setInterval(normalOpenTimeoutInterval);
+  QCOMPARE(reconnectTimer->interval(), 2000);
+  QCOMPARE(statusText(harness),
+           QStringLiteral("直播已断开，2 秒后重连（2/3）"));
+
+  reconnectTimer->start(1);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 3);
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 3);
+  harness.engine.emitStateChanged(core::PlaybackState::Failed);
+  QTRY_VERIFY(reconnectTimer->isActive());
+  QCOMPARE(reconnectTimer->interval(), 4000);
+  QCOMPARE(statusText(harness),
+           QStringLiteral("直播已断开，4 秒后重连（3/3）"));
+
+  reconnectTimer->start(1);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 4);
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 4);
+  harness.engine.emitStateChanged(core::PlaybackState::Failed);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("自动重连失败"));
+  QVERIFY(!reconnectTimer->isActive());
+  QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")
+              ->text()
+              .contains(QStringLiteral("3 次自动重连")));
+  harness.engine.emitError(
+      {core::PlaybackErrorKind::SourceUnreadable, "late engine error",
+       "无法连接网络媒体，普通错误不应覆盖重连耗尽提示。"});
+  QCoreApplication::processEvents();
+  QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")
+              ->text()
+              .contains(QStringLiteral("3 次自动重连")));
+  QVERIFY(requiredChild<QToolButton>(harness.window, "playPauseButton")
+              ->isEnabled());
+  QVERIFY(harness.logOutput.str().find("network_reconnect_scheduled") !=
+          std::string::npos);
+  QVERIFY(harness.logOutput.str().find("network_reconnect_exhausted") !=
+          std::string::npos);
+  QVERIFY(harness.logOutput.str().find("token=private") == std::string::npos);
+
+  QTest::mouseClick(
+      requiredChild<QToolButton>(harness.window, "playPauseButton"),
+      Qt::LeftButton);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 5);
+  QCOMPARE(statusText(harness), QStringLiteral("正在连接..."));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 5);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  harness.engine.emitStateChanged(core::PlaybackState::Failed);
+  QTRY_COMPARE(statusText(harness),
+               QStringLiteral("直播已断开，1 秒后重连（1/3）"));
+}
+
+void MainWindowTest::reconnectsNetworkWhenActivityStallsWithoutTerminalEvent() {
+  GuiHarness harness;
+  harness.engine.setNetworkStreamActivity(
+      core::NetworkStreamActivity{1000, 900, 30, 40, 25, 35});
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("http://127.0.0.1:18767/live.ts"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  auto* const activityPollTimer =
+      harness.presenter.findChild<QTimer*>("networkActivityPollTimer");
+  auto* const activityWatchdogTimer =
+      harness.presenter.findChild<QTimer*>("networkActivityWatchdogTimer");
+  auto* const reconnectTimer =
+      harness.presenter.findChild<QTimer*>("networkReconnectTimer");
+  QVERIFY(activityPollTimer != nullptr);
+  QVERIFY(activityWatchdogTimer != nullptr);
+  QVERIFY(reconnectTimer != nullptr);
+  QVERIFY(activityPollTimer->isActive());
+  QVERIFY(activityWatchdogTimer->isActive());
+  QCOMPARE(activityWatchdogTimer->interval(), 6000);
+
+  harness.engine.setNetworkStreamActivity(
+      core::NetworkStreamActivity{2000, 1900, 60, 80, 55, 75});
+  QVERIFY(QMetaObject::invokeMethod(activityWatchdogTimer, "timeout",
+                                    Qt::DirectConnection));
+  QVERIFY(!reconnectTimer->isActive());
+  QVERIFY(activityWatchdogTimer->isActive());
+  QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  QVERIFY(QMetaObject::invokeMethod(activityWatchdogTimer, "timeout",
+                                    Qt::DirectConnection));
+  QTRY_VERIFY(reconnectTimer->isActive());
+  QVERIFY(!activityPollTimer->isActive());
+  QVERIFY(!activityWatchdogTimer->isActive());
+  QCOMPARE(statusText(harness),
+           QStringLiteral("直播已断开，1 秒后重连（1/3）"));
+  QVERIFY(harness.logOutput.str().find("network_activity_stalled") !=
+          std::string::npos);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+
+  GuiHarness unsupportedHarness;
+  unsupportedHarness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/no-stats.m3u8"));
+  unsupportedHarness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(
+      commandCount(unsupportedHarness, test::FakeEngineCommandKind::Play), 1);
+  unsupportedHarness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(unsupportedHarness), QStringLiteral("正在播放"));
+  auto* const unsupportedWatchdog =
+      unsupportedHarness.presenter.findChild<QTimer*>(
+          "networkActivityWatchdogTimer");
+  auto* const unsupportedReconnect =
+      unsupportedHarness.presenter.findChild<QTimer*>("networkReconnectTimer");
+  QVERIFY(unsupportedWatchdog != nullptr);
+  QVERIFY(unsupportedReconnect != nullptr);
+  QVERIFY(!unsupportedWatchdog->isActive());
+  QVERIFY(QMetaObject::invokeMethod(unsupportedWatchdog, "timeout",
+                                    Qt::DirectConnection));
+  QVERIFY(!unsupportedReconnect->isActive());
+  QCOMPARE(statusText(unsupportedHarness), QStringLiteral("正在播放"));
+}
+
+void MainWindowTest::
+    cancelsPendingNetworkReconnectWhenStoppedOrSwitchingMedia() {
+  {
+    GuiHarness harness;
+    harness.presenter.openNetworkUrl(
+        QStringLiteral("https://example.test/live/stop-reconnect.m3u8"));
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    harness.engine.emitStateChanged(core::PlaybackState::Playing);
+    harness.engine.emitStateChanged(core::PlaybackState::Failed);
+    auto* const reconnectTimer =
+        harness.presenter.findChild<QTimer*>("networkReconnectTimer");
+    QTRY_VERIFY(reconnectTimer->isActive());
+
+    QTest::mouseClick(requiredChild<QToolButton>(harness.window, "stopButton"),
+                      Qt::LeftButton);
+    QVERIFY(!reconnectTimer->isActive());
+    QCOMPARE(statusText(harness), QStringLiteral("已取消连接"));
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Stop), 1);
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+  }
+
+  {
+    GuiHarness harness;
+    harness.presenter.openNetworkUrl(
+        QStringLiteral("https://example.test/live/switch-reconnect.m3u8"));
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    harness.engine.emitStateChanged(core::PlaybackState::Playing);
+    harness.engine.emitEndReached();
+    auto* const reconnectTimer =
+        harness.presenter.findChild<QTimer*>("networkReconnectTimer");
+    QTRY_VERIFY(reconnectTimer->isActive());
+
+    harness.presenter.openLocalFile(QStringLiteral("C:/media/local.mp3"));
+    QVERIFY(!reconnectTimer->isActive());
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 2);
+    const auto commands = harness.engine.commands();
+    QVERIFY(commands.back().media.has_value());
+    QVERIFY(commands.back().media->kind == core::MediaSourceKind::LocalFile);
+  }
+}
+
+void MainWindowTest::remembersRecentNetworkUrlsForCurrentSession() {
+  GuiHarness harness;
+  QVERIFY(harness.window.recentNetworkUrls().isEmpty());
+
+  harness.presenter.openNetworkUrl(QStringLiteral("not-a-network-url"));
+  QVERIFY(harness.window.recentNetworkUrls().isEmpty());
+
+  QStringList addresses;
+  for (int index = 0; index < 12; ++index) {
+    const QString address =
+        QStringLiteral("https://example.test/live/%1.m3u8?token=%2")
+            .arg(index)
+            .arg(index);
+    addresses.append(address);
+    harness.presenter.openNetworkUrl(address);
+  }
+
+  QStringList expected;
+  for (int index = 11; index >= 2; --index) {
+    expected.append(addresses.at(index));
+  }
+  QCOMPARE(harness.window.recentNetworkUrls(), expected);
+
+  harness.presenter.openNetworkUrl(addresses.at(5));
+  expected.removeAll(addresses.at(5));
+  expected.prepend(addresses.at(5));
+  QCOMPARE(harness.window.recentNetworkUrls(), expected);
+
+  GuiHarness newSession;
+  QVERIFY(newSession.window.recentNetworkUrls().isEmpty());
 }
 
 void MainWindowTest::routesPauseResumeAndStopThroughPresenter() {

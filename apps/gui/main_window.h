@@ -56,6 +56,9 @@ class MainWindow final : public QMainWindow {
   void clearPlaybackError();
   // 调用线程：GUI 主线程。model 由 presenter 持有且生命周期覆盖本窗口。
   void setPlaylistModel(QAbstractItemModel* model);
+  // 调用线程：GUI 主线程。完整地址只保留在当前窗口内，用于下次输入时选择。
+  void setRecentNetworkUrls(const QStringList& urls);
+  [[nodiscard]] const QStringList& recentNetworkUrls() const noexcept;
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
@@ -148,6 +151,7 @@ class MainWindow final : public QMainWindow {
   QTimer* rightKeyHoldTimer_{nullptr};
   QList<QWidget*> fullScreenChrome_;
   QList<int> playlistContextRows_;
+  QStringList recentNetworkUrls_;
   int keyboardSeekStepSeconds_{5};
   int currentPlaylistIndex_{-1};
   bool isPlaylistExpanded_{true};
