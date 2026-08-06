@@ -20,6 +20,8 @@ set(mediahubRequiredFiles
     libvlc.dll
     libvlccore.dll
     opengl32sw.dll
+    icons/taskbar.png
+    icons/window.jpg
     bearer/qgenericbearer.dll
     iconengines/qsvgicon.dll
     imageformats/qjpeg.dll
