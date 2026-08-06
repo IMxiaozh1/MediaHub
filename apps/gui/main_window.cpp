@@ -30,11 +30,13 @@
 #include <QPixmap>
 #include <QPolygonF>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
 #include <QStackedLayout>
+#include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
@@ -45,6 +47,7 @@
 #include <initializer_list>
 
 #include "lyrics_view.h"
+#include "playlist_model.h"
 #include "seek_slider.h"
 #include "video_output_widget.h"
 
@@ -490,8 +493,10 @@ QStringList localFilePaths(const QMimeData* const mimeData) {
 
 }  // namespace
 
-MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
+MainWindow::MainWindow(QWidget* const parent)
+    : QMainWindow(parent), windowIconManager_(this) {
   setWindowTitle(QStringLiteral("MediaHub"));
+  windowIconManager_.apply();
   resize(960, 720);
   setMinimumSize(760, 640);
   setAcceptDrops(true);
@@ -613,12 +618,42 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   auto* const playlistTitle =
       new QLabel(QStringLiteral("播放列表"), playlistPanel_);
   playlistTitle->setObjectName(QStringLiteral("playlistTitleLabel"));
+  playlistKindTabs_ = new QTabBar(playlistPanel_);
+  playlistKindTabs_->setObjectName(QStringLiteral("playlistKindTabs"));
+  playlistKindTabs_->setAccessibleName(QStringLiteral("播放列表类型"));
+  playlistKindTabs_->setDocumentMode(true);
+  playlistKindTabs_->setExpanding(true);
+  playlistKindTabs_->addTab(QStringLiteral("本地播放列表"));
+  playlistKindTabs_->addTab(QStringLiteral("直播列表"));
+  livePlaylistUrlEdit_ = new QLineEdit(playlistPanel_);
+  livePlaylistUrlEdit_->setObjectName(QStringLiteral("livePlaylistUrlEdit"));
+  livePlaylistUrlEdit_->setAccessibleName(QStringLiteral("远程直播清单 URL"));
+  livePlaylistUrlEdit_->setPlaceholderText(
+      QStringLiteral("https://example.com/list.m3u"));
+  livePlaylistUrlEdit_->setClearButtonEnabled(true);
+  livePlaylistLoadButton_ =
+      new QPushButton(QStringLiteral("载入 / 刷新清单"), playlistPanel_);
+  livePlaylistLoadButton_->setObjectName(
+      QStringLiteral("livePlaylistLoadButton"));
+  livePlaylistLoadButton_->setProperty("primary", true);
+  livePlaylistLocateButton_ =
+      new QPushButton(QStringLiteral("定位正在播放"), playlistPanel_);
+  livePlaylistLocateButton_->setObjectName(
+      QStringLiteral("livePlaylistLocateButton"));
+  livePlaylistLocateButton_->setToolTip(
+      QStringLiteral("滚动并选中当前正在播放的直播源"));
+  livePlaylistStatusLabel_ =
+      new QLabel(QStringLiteral("输入远程 M3U/M3U8 清单 URL"), playlistPanel_);
+  livePlaylistStatusLabel_->setObjectName(
+      QStringLiteral("livePlaylistStatusLabel"));
+  livePlaylistStatusLabel_->setWordWrap(true);
   playlistView_ = new QListView(playlistPanel_);
   playlistView_->setObjectName(QStringLiteral("playlistView"));
   playlistView_->setAccessibleName(QStringLiteral("播放列表"));
   playlistView_->setSelectionMode(QAbstractItemView::ExtendedSelection);
   playlistView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
   playlistView_->setContextMenuPolicy(Qt::CustomContextMenu);
+  playlistView_->viewport()->installEventFilter(this);
   openButton_ = new QPushButton(QStringLiteral("打开文件"), playlistPanel_);
   openButton_->setObjectName(QStringLiteral("openFileButton"));
   openButton_->setProperty("primary", true);
@@ -653,7 +688,31 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   playlistRemoveAction_ = playlistContextMenu_->addAction(
       QStringLiteral("删除此文件（仅移出列表）"));
   playlistRemoveAction_->setObjectName(QStringLiteral("playlistRemoveAction"));
+  livePlaylistContextMenu_ = new QMenu(this);
+  livePlaylistContextMenu_->setObjectName(
+      QStringLiteral("livePlaylistContextMenu"));
+  livePlaylistPlaybackAction_ =
+      livePlaylistContextMenu_->addAction(QStringLiteral("播放"));
+  livePlaylistPlaybackAction_->setObjectName(
+      QStringLiteral("livePlaylistPlaybackAction"));
+  livePlaylistStopAction_ =
+      livePlaylistContextMenu_->addAction(QStringLiteral("停止"));
+  livePlaylistStopAction_->setObjectName(
+      QStringLiteral("livePlaylistStopAction"));
+  livePlaylistMarkAction_ =
+      livePlaylistContextMenu_->addAction(QStringLiteral("标记"));
+  livePlaylistMarkAction_->setObjectName(
+      QStringLiteral("livePlaylistMarkAction"));
+  livePlaylistFavoriteAction_ =
+      livePlaylistContextMenu_->addAction(QStringLiteral("收藏"));
+  livePlaylistFavoriteAction_->setObjectName(
+      QStringLiteral("livePlaylistFavoriteAction"));
   playlistLayout->addWidget(playlistTitle);
+  playlistLayout->addWidget(playlistKindTabs_);
+  playlistLayout->addWidget(livePlaylistUrlEdit_);
+  playlistLayout->addWidget(livePlaylistLoadButton_);
+  playlistLayout->addWidget(livePlaylistLocateButton_);
+  playlistLayout->addWidget(livePlaylistStatusLabel_);
   playlistLayout->addWidget(playlistView_, 1);
   playlistLayout->addWidget(openButton_);
   mediaWorkspace->addWidget(playlistPanel_, 1);
@@ -956,6 +1015,41 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
             font-size: 15px;
             font-weight: 700;
         }
+        QTabBar#playlistKindTabs::tab {
+            background: #e9eee8;
+            border: 1px solid #c7d1ca;
+            color: #48645f;
+            min-width: 80px;
+            padding: 7px 4px;
+        }
+        QTabBar#playlistKindTabs::tab:first {
+            border-top-left-radius: 5px;
+            border-bottom-left-radius: 5px;
+        }
+        QTabBar#playlistKindTabs::tab:last {
+            border-top-right-radius: 5px;
+            border-bottom-right-radius: 5px;
+        }
+        QTabBar#playlistKindTabs::tab:selected {
+            background: #1f7770;
+            border-color: #1f7770;
+            color: #fffdf7;
+            font-weight: 700;
+        }
+        QLineEdit#livePlaylistUrlEdit {
+            background: #f7f4eb;
+            border: 1px solid #b6c8c0;
+            border-radius: 5px;
+            color: #173c3a;
+            padding: 7px 8px;
+        }
+        QLineEdit#livePlaylistUrlEdit:focus {
+            border-color: #1f7770;
+        }
+        QLabel#livePlaylistStatusLabel {
+            color: #667973;
+            font-size: 12px;
+        }
         QListView#playlistView {
             background: #f7f4eb;
             border: 1px solid #d9d4c8;
@@ -971,6 +1065,11 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
         QListView#playlistView::item:selected {
             background: #dce7df;
             color: #174f4b;
+        }
+        QListView#playlistView::item:disabled {
+            background: #fff0e8;
+            color: #9b2f1f;
+            font-weight: 700;
         }
         QToolButton[optionSelector="true"] {
             background: #edf3ee;
@@ -1169,6 +1268,27 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
           &MainWindow::chooseNetworkUrl);
   connect(openButton_, &QPushButton::clicked, this,
           &MainWindow::chooseLocalFile);
+  connect(playlistKindTabs_, &QTabBar::currentChanged, this,
+          [this](const int kindIndex) {
+            showPlaylistKind(kindIndex);
+            emit playlistKindSelected(kindIndex);
+          });
+  const auto requestLivePlaylistLoad = [this] {
+    emit livePlaylistLoadRequested(livePlaylistUrlEdit_->text().trimmed());
+  };
+  connect(livePlaylistLoadButton_, &QPushButton::clicked, this,
+          requestLivePlaylistLoad);
+  connect(livePlaylistUrlEdit_, &QLineEdit::returnPressed, this,
+          requestLivePlaylistLoad);
+  connect(livePlaylistLocateButton_, &QPushButton::clicked, this, [this] {
+    if (!isLivePlaylistActive_ || currentLivePlaybackIndex_ < 0) {
+      return;
+    }
+    selectPlaylistRow(currentLivePlaybackIndex_);
+    playlistView_->scrollTo(
+        playlistView_->model()->index(currentLivePlaybackIndex_, 0),
+        QAbstractItemView::PositionAtCenter);
+  });
   connect(playPauseButton_, &QToolButton::clicked, this,
           &MainWindow::playbackToggleRequested);
   connect(stopButton_, &QToolButton::clicked, this, &MainWindow::stopRequested);
@@ -1251,8 +1371,57 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
     }
   });
   connect(playlistRemoveAction_, &QAction::triggered, this, [this] {
-    if (!playlistContextRows_.isEmpty()) {
+    if (!isLivePlaylistActive_ && !playlistContextRows_.isEmpty()) {
       emit playlistItemsRemoveRequested(playlistContextRows_);
+    }
+  });
+  connect(livePlaylistPlaybackAction_, &QAction::triggered, this, [this] {
+    if (!isLivePlaylistActive_ || playlistContextRows_.size() != 1) {
+      return;
+    }
+    const int row = playlistContextRows_.front();
+    const bool pausesCurrent = isCurrentPlaybackInActivePlaylist_ &&
+                               row == currentPlaylistIndex_ &&
+                               canPauseCurrentItem_;
+    if (pausesCurrent) {
+      emit pauseRequested();
+    } else {
+      emit playlistItemActivated(row);
+    }
+  });
+  connect(livePlaylistStopAction_, &QAction::triggered, this, [this] {
+    if (!isLivePlaylistActive_ || playlistContextRows_.size() != 1) {
+      return;
+    }
+    const int row = playlistContextRows_.front();
+    if (isCurrentPlaybackInActivePlaylist_ && row == currentPlaylistIndex_ &&
+        canStopCurrentItem_) {
+      emit stopRequested();
+    }
+  });
+  // Qt 可能在数据角色刷新时把视图滚回当前索引，因此动作结束后显式恢复位置。
+  const auto restoreLivePlaylistScroll = [this](const int scrollPosition) {
+    playlistView_->verticalScrollBar()->setValue(scrollPosition);
+    QTimer::singleShot(0, playlistView_, [this, scrollPosition] {
+      if (isLivePlaylistActive_) {
+        playlistView_->verticalScrollBar()->setValue(scrollPosition);
+      }
+    });
+  };
+  connect(livePlaylistMarkAction_, &QAction::triggered, this,
+          [this, restoreLivePlaylistScroll] {
+    if (isLivePlaylistActive_ && playlistContextRows_.size() == 1) {
+      const int scrollPosition = playlistView_->verticalScrollBar()->value();
+      emit livePlaylistMarkToggled(playlistContextRows_.front());
+      restoreLivePlaylistScroll(scrollPosition);
+    }
+  });
+  connect(livePlaylistFavoriteAction_, &QAction::triggered, this,
+          [this, restoreLivePlaylistScroll] {
+    if (isLivePlaylistActive_ && playlistContextRows_.size() == 1) {
+      const int scrollPosition = playlistView_->verticalScrollBar()->value();
+      emit livePlaylistFavoriteToggled(playlistContextRows_.front());
+      restoreLivePlaylistScroll(scrollPosition);
     }
   });
   connect(playlistToggleButton_, &QToolButton::clicked, this,
@@ -1279,7 +1448,14 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   const QSignalBlocker lyricsBlocker(lyricsButton_);
   openAction_->setEnabled(viewState.canOpen);
   openNetworkAction_->setEnabled(viewState.canOpen);
+  showPlaylistKind(viewState.isLivePlaylistActive ? 1 : 0);
   openButton_->setEnabled(viewState.canOpen);
+  livePlaylistUrlEdit_->setEnabled(!viewState.isLivePlaylistLoading);
+  livePlaylistLoadButton_->setEnabled(!viewState.isLivePlaylistLoading);
+  livePlaylistLoadButton_->setText(viewState.isLivePlaylistLoading
+                                       ? QStringLiteral("正在载入...")
+                                       : QStringLiteral("载入 / 刷新清单"));
+  livePlaylistStatusLabel_->setText(viewState.livePlaylistStatusText);
   playPauseButton_->setEnabled(viewState.canPlay || viewState.canPause);
   const bool showsPause = viewState.canPause;
   playPauseButton_->setIcon(
@@ -1293,11 +1469,16 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   networkRefreshButton_->setEnabled(viewState.canRefreshNetwork);
   previousButton_->setEnabled(viewState.canGoPrevious);
   nextButton_->setEnabled(viewState.canGoNext);
-  canEditPlaylist_ = viewState.canRemovePlaylistItem;
+  canEditPlaylist_ =
+      viewState.isPlaylistEditable && viewState.canRemovePlaylistItem;
   currentPlaylistIndex_ = viewState.currentPlaylistIndex;
   canPlayCurrentItem_ = viewState.canPlay;
   canPauseCurrentItem_ = viewState.canPause;
   canStopCurrentItem_ = viewState.canStop;
+  isCurrentPlaybackInActivePlaylist_ =
+      viewState.isCurrentPlaybackInActivePlaylist;
+  currentLivePlaybackIndex_ = viewState.currentLivePlaybackIndex;
+  livePlaylistLocateButton_->setEnabled(currentLivePlaybackIndex_ >= 0);
   if (!canEditPlaylist_) {
     playlistPlayAction_->setEnabled(false);
     playlistPauseAction_->setEnabled(false);
@@ -1395,6 +1576,34 @@ void MainWindow::showPlaylistContextMenu(const QPoint& position) {
     return;
   }
 
+  if (isLivePlaylistActive_) {
+    playlistContextRows_ = {clickedIndex.row()};
+    const bool isMarked =
+        clickedIndex.data(PlaylistModel::kMarkedRole).toBool();
+    const bool isFavorite =
+        clickedIndex.data(PlaylistModel::kFavoriteRole).toBool();
+    const bool targetsCurrentItem =
+        isCurrentPlaybackInActivePlaylist_ &&
+        clickedIndex.row() == currentPlaylistIndex_;
+    const bool showsPause = targetsCurrentItem && canPauseCurrentItem_;
+    livePlaylistPlaybackAction_->setText(
+        showsPause ? QStringLiteral("暂停") : QStringLiteral("播放"));
+    livePlaylistPlaybackAction_->setEnabled(
+        !isMarked &&
+        (showsPause || !targetsCurrentItem || canPlayCurrentItem_));
+    livePlaylistStopAction_->setEnabled(
+        !isMarked && targetsCurrentItem && canStopCurrentItem_);
+    livePlaylistMarkAction_->setText(
+        isMarked ? QStringLiteral("取消标记") : QStringLiteral("标记"));
+    livePlaylistMarkAction_->setEnabled(true);
+    livePlaylistFavoriteAction_->setText(
+        isFavorite ? QStringLiteral("取消收藏") : QStringLiteral("收藏"));
+    livePlaylistFavoriteAction_->setEnabled(true);
+    livePlaylistContextMenu_->popup(
+        playlistView_->viewport()->mapToGlobal(position));
+    return;
+  }
+
   auto* const selection = playlistView_->selectionModel();
   if (!selection->isSelected(clickedIndex)) {
     selection->setCurrentIndex(
@@ -1416,7 +1625,8 @@ void MainWindow::showPlaylistContextMenu(const QPoint& position) {
   const int clickedRow = clickedIndex.row();
   const int itemCount = playlistView_->model()->rowCount();
   const bool targetsCurrentItem =
-      hasSingleItem && clickedRow == currentPlaylistIndex_;
+      hasSingleItem && isCurrentPlaybackInActivePlaylist_ &&
+      clickedRow == currentPlaylistIndex_;
   playlistPlayAction_->setEnabled(canEditPlaylist_ && hasSingleItem &&
                                   (!targetsCurrentItem || canPlayCurrentItem_));
   playlistPauseAction_->setEnabled(canEditPlaylist_ && targetsCurrentItem &&
@@ -1472,8 +1682,35 @@ void MainWindow::selectPlaylistRow(const int row) {
   playlistView_->scrollTo(index);
 }
 
-void MainWindow::setPlaylistModel(QAbstractItemModel* const model) {
-  playlistView_->setModel(model);
+void MainWindow::setPlaylistModels(QAbstractItemModel* const localModel,
+                                   QAbstractItemModel* const liveModel) {
+  localPlaylistModel_ = localModel;
+  livePlaylistModel_ = liveModel;
+  showPlaylistKind(isLivePlaylistActive_ ? 1 : 0);
+}
+
+void MainWindow::showPlaylistKind(const int kindIndex) {
+  const bool showsLivePlaylist = kindIndex == 1;
+  isLivePlaylistActive_ = showsLivePlaylist;
+  const QSignalBlocker blocker(playlistKindTabs_);
+  playlistKindTabs_->setCurrentIndex(showsLivePlaylist ? 1 : 0);
+  QAbstractItemModel* const model =
+      showsLivePlaylist ? livePlaylistModel_ : localPlaylistModel_;
+  if (playlistView_->model() != model) {
+    playlistView_->setModel(model);
+  }
+  playlistView_->setAccessibleName(showsLivePlaylist
+                                       ? QStringLiteral("直播列表")
+                                       : QStringLiteral("本地播放列表"));
+  playlistView_->setSelectionMode(showsLivePlaylist
+                                      ? QAbstractItemView::SingleSelection
+                                      : QAbstractItemView::ExtendedSelection);
+  playlistView_->setContextMenuPolicy(Qt::CustomContextMenu);
+  livePlaylistUrlEdit_->setVisible(showsLivePlaylist);
+  livePlaylistLoadButton_->setVisible(showsLivePlaylist);
+  livePlaylistLocateButton_->setVisible(showsLivePlaylist);
+  livePlaylistStatusLabel_->setVisible(showsLivePlaylist);
+  openButton_->setVisible(!showsLivePlaylist);
 }
 
 void MainWindow::closeEvent(QCloseEvent* const event) {
@@ -1489,7 +1726,14 @@ void MainWindow::changeEvent(QEvent* const event) {
 }
 
 bool MainWindow::eventFilter(QObject* const watched, QEvent* const event) {
-  Q_UNUSED(watched);
+  if (playlistView_ != nullptr && watched == playlistView_->viewport() &&
+      event->type() == QEvent::MouseButtonDblClick) {
+    const auto* const mouseEvent = static_cast<QMouseEvent*>(event);
+    if (mouseEvent->button() == Qt::RightButton) {
+      showPlaylistContextMenu(mouseEvent->pos());
+      return true;
+    }
+  }
   if (event->type() != QEvent::KeyPress &&
       event->type() != QEvent::KeyRelease) {
     return QMainWindow::eventFilter(watched, event);
@@ -1539,13 +1783,14 @@ void MainWindow::chooseNetworkUrl() {
   bool wasAccepted = false;
   QString address;
   if (recentNetworkUrls_.isEmpty()) {
-    address = QInputDialog::getText(this, QStringLiteral("打开网络地址"),
-                                    QStringLiteral("输入直播 URL："),
-                                    QLineEdit::Normal, {}, &wasAccepted);
+    address = QInputDialog::getText(
+        this, QStringLiteral("打开网络地址"),
+        QStringLiteral("输入直播流或 M3U/M3U8 清单 URL："), QLineEdit::Normal,
+        {}, &wasAccepted);
   } else {
     address = QInputDialog::getItem(
         this, QStringLiteral("打开网络地址"),
-        QStringLiteral("输入或选择本次会话使用过的直播 URL："),
+        QStringLiteral("输入或选择直播流、M3U/M3U8 清单 URL："),
         recentNetworkUrls_, 0, true, &wasAccepted);
   }
   address = address.trimmed();
@@ -1560,6 +1805,10 @@ void MainWindow::setRecentNetworkUrls(const QStringList& urls) {
 
 const QStringList& MainWindow::recentNetworkUrls() const noexcept {
   return recentNetworkUrls_;
+}
+
+void MainWindow::setLivePlaylistUrl(const QString& url) {
+  livePlaylistUrlEdit_->setText(url);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* const event) {

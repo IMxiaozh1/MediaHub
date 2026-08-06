@@ -1,0 +1,5 @@
+#include <windows.h>
+#include "resource.h"
+
+IDI_MEDIAHUB_APP_ICON ICON "app_icon.ico"
+IDI_MEDIAHUB_WINDOW_ICON ICON "window_icon.ico"

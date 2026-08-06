@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -22,6 +23,23 @@ constexpr std::array<double, 6> kPlaybackRates{0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
 constexpr auto kNetworkOpenTimeout = std::chrono::seconds(15);
 constexpr int kMaxSessionNetworkUrls = 10;
 
+bool isPlaylistAddress(const QString &address) {
+  const QUrl url(address, QUrl::StrictMode);
+  const QString scheme = url.scheme().toLower();
+  if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https")) {
+    return false;
+  }
+  const QString path = url.path().toLower();
+  return path.endsWith(QStringLiteral(".m3u")) ||
+         path.endsWith(QStringLiteral(".m3u8"));
+}
+
+bool isAmbiguousHlsAddress(const QString &address) {
+  return QUrl(address, QUrl::StrictMode)
+      .path()
+      .endsWith(QStringLiteral(".m3u8"), Qt::CaseInsensitive);
+}
+
 std::optional<double> normalizedPlaybackRate(const double requestedRate) {
   const auto match =
       std::find_if(kPlaybackRates.begin(), kPlaybackRates.end(),
@@ -36,93 +54,93 @@ std::optional<double> normalizedPlaybackRate(const double requestedRate) {
 
 std::string stateName(const core::PlaybackState state) {
   switch (state) {
-    case core::PlaybackState::Idle:
-      return "idle";
-    case core::PlaybackState::Opening:
-      return "opening";
-    case core::PlaybackState::Buffering:
-      return "buffering";
-    case core::PlaybackState::Playing:
-      return "playing";
-    case core::PlaybackState::Paused:
-      return "paused";
-    case core::PlaybackState::Stopped:
-      return "stopped";
-    case core::PlaybackState::Ended:
-      return "ended";
-    case core::PlaybackState::Failed:
-      return "failed";
+  case core::PlaybackState::Idle:
+    return "idle";
+  case core::PlaybackState::Opening:
+    return "opening";
+  case core::PlaybackState::Buffering:
+    return "buffering";
+  case core::PlaybackState::Playing:
+    return "playing";
+  case core::PlaybackState::Paused:
+    return "paused";
+  case core::PlaybackState::Stopped:
+    return "stopped";
+  case core::PlaybackState::Ended:
+    return "ended";
+  case core::PlaybackState::Failed:
+    return "failed";
   }
   return "unknown";
 }
 
 std::string errorKindName(const core::PlaybackErrorKind kind) {
   switch (kind) {
-    case core::PlaybackErrorKind::SourceNotFound:
-      return "source_not_found";
-    case core::PlaybackErrorKind::SourceUnreadable:
-      return "source_unreadable";
-    case core::PlaybackErrorKind::UnsupportedFormat:
-      return "unsupported_format";
-    case core::PlaybackErrorKind::AudioDeviceUnavailable:
-      return "audio_device_unavailable";
-    case core::PlaybackErrorKind::EngineNotInitialized:
-      return "engine_not_initialized";
-    case core::PlaybackErrorKind::Unknown:
-      return "unknown";
+  case core::PlaybackErrorKind::SourceNotFound:
+    return "source_not_found";
+  case core::PlaybackErrorKind::SourceUnreadable:
+    return "source_unreadable";
+  case core::PlaybackErrorKind::UnsupportedFormat:
+    return "unsupported_format";
+  case core::PlaybackErrorKind::AudioDeviceUnavailable:
+    return "audio_device_unavailable";
+  case core::PlaybackErrorKind::EngineNotInitialized:
+    return "engine_not_initialized";
+  case core::PlaybackErrorKind::Unknown:
+    return "unknown";
   }
   return "unknown";
 }
 
 std::string networkUrlErrorName(const core::NetworkUrlValidationError error) {
   switch (error) {
-    case core::NetworkUrlValidationError::None:
-      return "none";
-    case core::NetworkUrlValidationError::Empty:
-      return "empty";
-    case core::NetworkUrlValidationError::ContainsWhitespace:
-      return "contains_whitespace";
-    case core::NetworkUrlValidationError::MissingScheme:
-      return "missing_scheme";
-    case core::NetworkUrlValidationError::UnsupportedScheme:
-      return "unsupported_scheme";
-    case core::NetworkUrlValidationError::MissingTarget:
-      return "missing_target";
+  case core::NetworkUrlValidationError::None:
+    return "none";
+  case core::NetworkUrlValidationError::Empty:
+    return "empty";
+  case core::NetworkUrlValidationError::ContainsWhitespace:
+    return "contains_whitespace";
+  case core::NetworkUrlValidationError::MissingScheme:
+    return "missing_scheme";
+  case core::NetworkUrlValidationError::UnsupportedScheme:
+    return "unsupported_scheme";
+  case core::NetworkUrlValidationError::MissingTarget:
+    return "missing_target";
   }
   return "unknown";
 }
 
 QString networkUrlErrorMessage(const core::NetworkUrlValidationError error) {
   switch (error) {
-    case core::NetworkUrlValidationError::None:
-      return {};
-    case core::NetworkUrlValidationError::Empty:
-      return QStringLiteral("请输入直播地址。");
-    case core::NetworkUrlValidationError::ContainsWhitespace:
-      return QStringLiteral("直播地址不能包含空格或换行。");
-    case core::NetworkUrlValidationError::MissingScheme:
-      return QStringLiteral(
-          "请输入包含协议的完整地址，例如 https://example.com/live.m3u8。");
-    case core::NetworkUrlValidationError::UnsupportedScheme:
-      return QStringLiteral(
-          "暂不支持该协议。可使用 HTTP、HTTPS、RTSP、RTMP、UDP、RTP 或 SRT。");
-    case core::NetworkUrlValidationError::MissingTarget:
-      return QStringLiteral("直播地址缺少有效的主机或接收目标。");
+  case core::NetworkUrlValidationError::None:
+    return {};
+  case core::NetworkUrlValidationError::Empty:
+    return QStringLiteral("请输入直播地址。");
+  case core::NetworkUrlValidationError::ContainsWhitespace:
+    return QStringLiteral("直播地址不能包含空格或换行。");
+  case core::NetworkUrlValidationError::MissingScheme:
+    return QStringLiteral(
+        "请输入包含协议的完整地址，例如 https://example.com/live.m3u8。");
+  case core::NetworkUrlValidationError::UnsupportedScheme:
+    return QStringLiteral(
+        "暂不支持该协议。可使用 HTTP、HTTPS、RTSP、RTMP、UDP、RTP 或 SRT。");
+  case core::NetworkUrlValidationError::MissingTarget:
+    return QStringLiteral("直播地址缺少有效的主机或接收目标。");
   }
   return QStringLiteral("直播地址格式无效。");
 }
 
-std::string utf8String(const QString& text) {
+std::string utf8String(const QString &text) {
   const QByteArray encoded = text.toUtf8();
   return std::string(encoded.constData(),
                      static_cast<std::size_t>(encoded.size()));
 }
 
-QString fromUtf8(const std::string& text) {
+QString fromUtf8(const std::string &text) {
   return QString::fromUtf8(text.data(), static_cast<int>(text.size()));
 }
 
-bool isAudioFile(const QString& filePath) {
+bool isAudioFile(const QString &filePath) {
   const QString suffix = QFileInfo(filePath).suffix().toLower();
   return suffix == QStringLiteral("mp3") || suffix == QStringLiteral("wav") ||
          suffix == QStringLiteral("flac") || suffix == QStringLiteral("aac") ||
@@ -147,9 +165,9 @@ QString formatTime(const std::chrono::milliseconds value) {
       .arg(static_cast<qlonglong>(seconds), 2, 10, QLatin1Char('0'));
 }
 
-std::chrono::milliseconds boundedPosition(
-    const std::chrono::milliseconds current,
-    const std::optional<std::chrono::milliseconds> total) {
+std::chrono::milliseconds
+boundedPosition(const std::chrono::milliseconds current,
+                const std::optional<std::chrono::milliseconds> total) {
   auto bounded = std::max(current, std::chrono::milliseconds::zero());
   if (total.has_value()) {
     bounded =
@@ -177,8 +195,9 @@ int progressValue(const std::chrono::milliseconds current,
                     kProgressMaximum);
 }
 
-std::chrono::milliseconds positionFromProgress(
-    const int value, const std::optional<std::chrono::milliseconds> total) {
+std::chrono::milliseconds
+positionFromProgress(const int value,
+                     const std::optional<std::chrono::milliseconds> total) {
   if (!total.has_value() || total->count() <= 0) {
     return std::chrono::milliseconds::zero();
   }
@@ -189,7 +208,7 @@ std::chrono::milliseconds positionFromProgress(
       static_cast<std::chrono::milliseconds::rep>(target));
 }
 
-bool isSeekAvailable(const core::PlaybackPosition& position,
+bool isSeekAvailable(const core::PlaybackPosition &position,
                      const core::PlaybackState state) {
   if (!position.total.has_value() || position.total->count() <= 0) {
     return false;
@@ -201,24 +220,93 @@ bool isSeekAvailable(const core::PlaybackPosition& position,
                                  state == core::PlaybackState::Paused);
 }
 
-}  // namespace
+QString livePlaylistErrorMessage(const LivePlaylistLoadError error) {
+  switch (error) {
+  case LivePlaylistLoadError::InvalidUrl:
+    return QStringLiteral("请输入完整的 HTTP 或 HTTPS 清单 URL。");
+  case LivePlaylistLoadError::NetworkFailure:
+    return QStringLiteral("清单读取失败，请检查网络或服务状态后重试。");
+  case LivePlaylistLoadError::Timeout:
+    return QStringLiteral("清单读取超过 10 秒，已停止等待。");
+  case LivePlaylistLoadError::TooManyRedirects:
+    return QStringLiteral("清单重定向次数过多，已停止载入。");
+  case LivePlaylistLoadError::UnsafeRedirect:
+    return QStringLiteral("清单跳转到不安全地址，已拒绝载入。");
+  case LivePlaylistLoadError::ResponseTooLarge:
+    return QStringLiteral("清单内容超过 2 MiB，未替换当前直播列表。");
+  case LivePlaylistLoadError::InvalidUtf8:
+    return QStringLiteral("清单不是有效的 UTF-8 文本。");
+  case LivePlaylistLoadError::InvalidFormat:
+    return QStringLiteral("链接内容不是有效的 M3U/M3U8 清单。");
+  case LivePlaylistLoadError::HlsMediaManifest:
+    return QStringLiteral(
+        "该链接是单路 HLS 媒体清单，请使用“打开网络地址”播放。");
+  case LivePlaylistLoadError::TooManyEntries:
+    return QStringLiteral("清单超过 5000 项，未替换当前直播列表。");
+  case LivePlaylistLoadError::NoPlayableEntries:
+    return QStringLiteral("清单中没有可显示的有效直播条目。");
+  }
+  return QStringLiteral("清单载入失败，当前直播列表保持不变。");
+}
 
-PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
-                                 EngineEventBridge& eventBridge,
-                                 MainWindow& window, QObject* const parent,
-                                 logging::Logger* const logger,
-                                 LyricsService* const lyricsService)
-    : QObject(parent),
-      engine_(engine),
-      eventBridge_(eventBridge),
-      window_(window),
-      logger_(logger),
+std::string livePlaylistErrorName(const LivePlaylistLoadError error) {
+  switch (error) {
+  case LivePlaylistLoadError::InvalidUrl:
+    return "invalid_url";
+  case LivePlaylistLoadError::NetworkFailure:
+    return "network_failure";
+  case LivePlaylistLoadError::Timeout:
+    return "timeout";
+  case LivePlaylistLoadError::TooManyRedirects:
+    return "too_many_redirects";
+  case LivePlaylistLoadError::UnsafeRedirect:
+    return "unsafe_redirect";
+  case LivePlaylistLoadError::ResponseTooLarge:
+    return "response_too_large";
+  case LivePlaylistLoadError::InvalidUtf8:
+    return "invalid_utf8";
+  case LivePlaylistLoadError::InvalidFormat:
+    return "invalid_format";
+  case LivePlaylistLoadError::HlsMediaManifest:
+    return "hls_media_manifest";
+  case LivePlaylistLoadError::TooManyEntries:
+    return "too_many_entries";
+  case LivePlaylistLoadError::NoPlayableEntries:
+    return "no_playable_entries";
+  }
+  return "unknown";
+}
+
+} // namespace
+
+PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
+                                 EngineEventBridge &eventBridge,
+                                 MainWindow &window, QObject *const parent,
+                                 logging::Logger *const logger,
+                                 LyricsService *const lyricsService,
+                                 LivePlaylistService *const livePlaylistService)
+    : QObject(parent), engine_(engine), eventBridge_(eventBridge),
+      window_(window), logger_(logger),
       ownedLyricsService_(lyricsService == nullptr
                               ? std::make_unique<OnlineLyricsService>()
                               : nullptr),
       lyricsService_(lyricsService == nullptr ? ownedLyricsService_.get()
                                               : lyricsService),
-      playlistModel_(playlist_) {
+      ownedLivePlaylistService_(livePlaylistService == nullptr
+                                    ? std::make_unique<LivePlaylistService>()
+                                    : nullptr),
+      livePlaylistService_(livePlaylistService == nullptr
+                               ? ownedLivePlaylistService_.get()
+                               : livePlaylistService),
+      localPlaylistModel_(localPlaylist_), livePlaylistModel_(livePlaylist_) {
+  livePlaylistModel_.setMarkedPredicate(
+      [this](const core::MediaItem& item) {
+        return markedLiveSources_.contains(item.source);
+      });
+  livePlaylistModel_.setFavoritePredicate(
+      [this](const core::MediaItem& item) {
+        return favoriteLiveSources_.contains(item.source);
+      });
   networkOpenTimeoutTimer_ = new QTimer(this);
   networkOpenTimeoutTimer_->setObjectName(
       QStringLiteral("networkOpenTimeoutTimer"));
@@ -227,11 +315,15 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
       static_cast<int>(kNetworkOpenTimeout.count() * 1000));
   connect(networkOpenTimeoutTimer_, &QTimer::timeout, this,
           &PlayerPresenter::handleNetworkOpenTimeout);
-  window_.setPlaylistModel(&playlistModel_);
+  window_.setPlaylistModels(&localPlaylistModel_, &livePlaylistModel_);
   connect(&window_, &MainWindow::localFilesSelected, this,
           &PlayerPresenter::addLocalFiles);
   connect(&window_, &MainWindow::networkUrlSelected, this,
           &PlayerPresenter::openNetworkUrl);
+  connect(&window_, &MainWindow::livePlaylistLoadRequested, this,
+          &PlayerPresenter::requestLivePlaylistLoad);
+  connect(&window_, &MainWindow::playlistKindSelected, this,
+          &PlayerPresenter::changePlaylistKind);
   connect(&window_, &MainWindow::playRequested, this,
           &PlayerPresenter::requestPlay);
   connect(&window_, &MainWindow::pauseRequested, this,
@@ -270,6 +362,10 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
           &PlayerPresenter::activatePlaylistItem);
   connect(&window_, &MainWindow::playlistItemsRemoveRequested, this,
           &PlayerPresenter::removePlaylistItems);
+  connect(&window_, &MainWindow::livePlaylistMarkToggled, this,
+          &PlayerPresenter::toggleLivePlaylistMark);
+  connect(&window_, &MainWindow::livePlaylistFavoriteToggled, this,
+          &PlayerPresenter::toggleLivePlaylistFavorite);
   connect(&window_, &MainWindow::playlistItemMoveRequested, this,
           &PlayerPresenter::movePlaylistItem);
   connect(&window_, &MainWindow::playlistItemRenameRequested, this,
@@ -297,6 +393,10 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
           &PlayerPresenter::handleError, Qt::QueuedConnection);
   connect(lyricsService_, &LyricsService::resultReady, this,
           &PlayerPresenter::handleLyricsResult);
+  connect(livePlaylistService_, &LivePlaylistService::loadSucceeded, this,
+          &PlayerPresenter::handleLivePlaylistLoaded);
+  connect(livePlaylistService_, &LivePlaylistService::loadFailed, this,
+          &PlayerPresenter::handleLivePlaylistFailure);
 
   engine_.setEventListener(&eventBridge_);
   if (logger_ != nullptr) {
@@ -307,11 +407,11 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
 
 PlayerPresenter::~PlayerPresenter() { shutdown(); }
 
-void PlayerPresenter::openLocalFile(const QString& filePath) {
+void PlayerPresenter::openLocalFile(const QString &filePath) {
   addLocalFiles(QStringList{filePath});
 }
 
-void PlayerPresenter::addLocalFiles(const QStringList& filePaths) {
+void PlayerPresenter::addLocalFiles(const QStringList &filePaths) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_ || filePaths.isEmpty()) {
     return;
@@ -319,7 +419,7 @@ void PlayerPresenter::addLocalFiles(const QStringList& filePaths) {
 
   std::vector<core::MediaItem> items;
   items.reserve(static_cast<std::size_t>(filePaths.size()));
-  for (const auto& filePath : filePaths) {
+  for (const auto &filePath : filePaths) {
     if (filePath.isEmpty()) {
       continue;
     }
@@ -334,18 +434,19 @@ void PlayerPresenter::addLocalFiles(const QStringList& filePaths) {
   }
 
   const auto addedCount = items.size();
-  const std::size_t firstNewIndex = playlist_.size();
-  playlist_.add(std::move(items));
-  static_cast<void>(playlist_.select(firstNewIndex));
-  playlistModel_.refresh();
+  const std::size_t firstNewIndex = localPlaylist_.size();
+  localPlaylist_.add(std::move(items));
+  static_cast<void>(localPlaylist_.select(firstNewIndex));
+  activePlaylistKind_ = PlaylistKind::Local;
+  localPlaylistModel_.refresh();
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "media_batch_added",
                  {{"count", std::to_string(addedCount)}});
   }
-  openCurrentPlaylistItem();
+  openCurrentPlaylistItem(PlaylistKind::Local);
 }
 
-void PlayerPresenter::openNetworkUrl(const QString& url) {
+void PlayerPresenter::openNetworkUrl(const QString &url) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_) {
     return;
@@ -364,28 +465,144 @@ void PlayerPresenter::openNetworkUrl(const QString& url) {
     return;
   }
 
+  rememberNetworkUrl(normalizedUrl);
+  if (isPlaylistAddress(normalizedUrl)) {
+    window_.setLivePlaylistUrl(normalizedUrl);
+    startLivePlaylistLoad(normalizedUrl, isAmbiguousHlsAddress(normalizedUrl));
+    return;
+  }
+
+  if (isLivePlaylistLoading_) {
+    livePlaylistService_->cancel();
+    isLivePlaylistLoading_ = false;
+  }
+  pendingPlaylistProbeUrl_.clear();
+  openDirectNetworkUrl(normalizedUrl);
+}
+
+void PlayerPresenter::openDirectNetworkUrl(const QString &normalizedUrl) {
+  const std::string source = utf8String(normalizedUrl);
   core::MediaItem item = core::makeMediaItem(source);
   const std::string displayName = item.displayName;
-  rememberNetworkUrl(normalizedUrl);
-  const std::size_t newIndex = playlist_.size();
-  playlist_.add(std::move(item));
-  static_cast<void>(playlist_.select(newIndex));
-  playlistModel_.refresh();
+  const std::size_t newIndex = livePlaylist_.size();
+  livePlaylist_.add(std::move(item));
+  static_cast<void>(livePlaylist_.select(newIndex));
+  activePlaylistKind_ = PlaylistKind::Live;
+  livePlaylistModel_.refresh();
+  livePlaylistStatusText_ =
+      QStringLiteral("直播列表共 %1 项")
+          .arg(static_cast<qulonglong>(livePlaylist_.size()));
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "network_media_added",
                  {{"media", displayName}});
   }
-  openCurrentPlaylistItem();
+  openCurrentPlaylistItem(PlaylistKind::Live);
 }
 
-void PlayerPresenter::openCurrentPlaylistItem(const bool isNetworkRefresh) {
-  const auto* const item = playlist_.currentItem();
+void PlayerPresenter::requestLivePlaylistLoad(const QString &playlistUrl) {
+  startLivePlaylistLoad(playlistUrl, false);
+}
+
+void PlayerPresenter::startLivePlaylistLoad(
+    const QString &playlistUrl, const bool fallsBackToDirectPlayback) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+  activePlaylistKind_ = PlaylistKind::Live;
+  pendingPlaylistProbeUrl_ =
+      fallsBackToDirectPlayback ? playlistUrl : QString{};
+  isLivePlaylistLoading_ = true;
+  livePlaylistStatusText_ = QStringLiteral("正在读取并解析直播清单...");
+  render();
+  livePlaylistService_->load(playlistUrl);
+}
+
+void PlayerPresenter::handleLivePlaylistLoaded(LivePlaylistLoadResult result) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+  pendingPlaylistProbeUrl_.clear();
+
+  std::vector<core::MediaItem> items;
+  items.reserve(result.library.channels.size());
+  for (auto &channel : result.library.channels) {
+    items.push_back(core::makeMediaItem(std::move(channel.streamUrl),
+                                        std::move(channel.name)));
+  }
+  core::Playlist replacement;
+  replacement.setMode(livePlaylist_.mode());
+  replacement.add(std::move(items));
+  livePlaylist_ = std::move(replacement);
+  isLivePlaylistLoading_ = false;
+  livePlaylistModel_.refresh();
+  livePlaylistStatusText_ =
+      QStringLiteral("已载入 %1 项 · 重复 %2 项 · 跳过 %3 项")
+          .arg(static_cast<qulonglong>(livePlaylist_.size()))
+          .arg(static_cast<qulonglong>(result.duplicateChannelCount))
+          .arg(static_cast<qulonglong>(result.skippedChannelCount));
+  if (logger_ != nullptr) {
+    logger_->log(logging::LogLevel::Info, "presenter", "live_playlist_loaded",
+                 {{"accepted", std::to_string(livePlaylist_.size())},
+                  {"duplicates", std::to_string(result.duplicateChannelCount)},
+                  {"skipped", std::to_string(result.skippedChannelCount)}});
+  }
+  render();
+}
+
+void PlayerPresenter::handleLivePlaylistFailure(
+    const LivePlaylistLoadError error) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+  isLivePlaylistLoading_ = false;
+  if (error == LivePlaylistLoadError::HlsMediaManifest &&
+      !pendingPlaylistProbeUrl_.isEmpty()) {
+    const QString directUrl = std::exchange(pendingPlaylistProbeUrl_, {});
+    openDirectNetworkUrl(directUrl);
+    return;
+  }
+  pendingPlaylistProbeUrl_.clear();
+  livePlaylistStatusText_ = livePlaylistErrorMessage(error);
+  if (logger_ != nullptr) {
+    logger_->log(logging::LogLevel::Warning, "presenter",
+                 "live_playlist_load_failed",
+                 {{"reason", livePlaylistErrorName(error)}});
+  }
+  render();
+}
+
+void PlayerPresenter::changePlaylistKind(const int kindIndex) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+  activePlaylistKind_ =
+      kindIndex == 1 ? PlaylistKind::Live : PlaylistKind::Local;
+  render();
+}
+
+void PlayerPresenter::openCurrentPlaylistItem(const PlaylistKind playlistKind,
+                                              const bool isNetworkRefresh) {
+  const auto *const item = playlist(playlistKind).currentItem();
   if (item == nullptr) {
     return;
   }
+  currentPlaybackItem_ = *item;
+  currentPlaybackKind_ = playlistKind;
+  openCurrentPlaybackItem(isNetworkRefresh);
+}
 
-  mediaName_ = fromUtf8(item->displayName);
-  currentSourcePath_ = fromUtf8(item->source);
+void PlayerPresenter::openCurrentPlaybackItem(const bool isNetworkRefresh) {
+  if (!currentPlaybackItem_.has_value()) {
+    return;
+  }
+  const auto &item = *currentPlaybackItem_;
+
+  mediaName_ = fromUtf8(item.displayName);
+  currentSourcePath_ = fromUtf8(item.source);
   lyricsService_->cancel();
   isLyricsVisible_ = false;
   isLyricsLoading_ = false;
@@ -395,7 +612,7 @@ void PlayerPresenter::openCurrentPlaylistItem(const bool isNetworkRefresh) {
   isSeeking_ = false;
   seekPreviewPosition_.reset();
   position_ = {};
-  isNetworkMedia_ = item->kind == core::MediaSourceKind::NetworkStream;
+  isNetworkMedia_ = item.kind == core::MediaSourceKind::NetworkStream;
   networkOpenTimeoutTimer_->stop();
   bufferingPercentage_ = 0;
   isNetworkOpenPending_ = isNetworkMedia_;
@@ -406,8 +623,8 @@ void PlayerPresenter::openCurrentPlaylistItem(const bool isNetworkRefresh) {
   isNetworkDisconnected_ = false;
   isVideoMedia_ =
       isNetworkMedia_ ||
-      !isAudioFile(QString::fromUtf8(item->source.data(),
-                                     static_cast<int>(item->source.size())));
+      !isAudioFile(QString::fromUtf8(item.source.data(),
+                                     static_cast<int>(item.source.size())));
   isPreparingMedia_ = true;
   pendingRestartPosition_.reset();
   isRestartPlayRequested_ = false;
@@ -416,13 +633,13 @@ void PlayerPresenter::openCurrentPlaylistItem(const bool isNetworkRefresh) {
   window_.clearPlaybackError();
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "media_open_requested",
-                 {{"media", item->displayName}});
+                 {{"media", item.displayName}});
   }
   render();
   if (isNetworkOpenPending_) {
     networkOpenTimeoutTimer_->start();
   }
-  engine_.open(*item);
+  engine_.open(item);
 }
 
 void PlayerPresenter::shutdown() noexcept {
@@ -441,6 +658,7 @@ void PlayerPresenter::shutdown() noexcept {
   isRestartPlayRequested_ = false;
   hasCurrentMediaStarted_ = false;
   seekPreviewPosition_.reset();
+  livePlaylistService_->cancel();
   lyricsService_->cancel();
   isLyricsLoading_ = false;
   eventBridge_.deactivate();
@@ -462,7 +680,7 @@ void PlayerPresenter::shutdown() noexcept {
   }
 }
 
-void PlayerPresenter::attachVideoSurface(void* const nativeHandle) {
+void PlayerPresenter::attachVideoSurface(void *const nativeHandle) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (!isShuttingDown_) {
     engine_.setVideoSurface(nativeHandle);
@@ -475,7 +693,7 @@ void PlayerPresenter::requestPlay() {
     return;
   }
   if (isNetworkMedia_ && (isNetworkOpenCancelled_ || isNetworkOpenTimedOut_)) {
-    openCurrentPlaylistItem();
+    openCurrentPlaybackItem();
     return;
   }
   if (makeViewState().canPlay) {
@@ -545,9 +763,11 @@ void PlayerPresenter::requestStop() {
 
 void PlayerPresenter::requestNetworkRefresh() {
   Q_ASSERT(QThread::currentThread() == thread());
-  const auto* const item = playlist_.currentItem();
-  if (isShuttingDown_ || !isNetworkMedia_ || item == nullptr ||
-      item->kind != core::MediaSourceKind::NetworkStream) {
+  if (isShuttingDown_ || !isNetworkMedia_ ||
+      !currentPlaybackItem_.has_value() ||
+      currentPlaybackItem_->kind != core::MediaSourceKind::NetworkStream ||
+      (currentPlaybackKind_ == PlaylistKind::Live &&
+       markedLiveSources_.contains(currentPlaybackItem_->source))) {
     return;
   }
 
@@ -555,7 +775,7 @@ void PlayerPresenter::requestNetworkRefresh() {
     logger_->log(logging::LogLevel::Info, "presenter",
                  "network_refresh_requested");
   }
-  openCurrentPlaylistItem(true);
+  openCurrentPlaybackItem(true);
 }
 
 void PlayerPresenter::beginSeek() {
@@ -606,8 +826,7 @@ void PlayerPresenter::submitSeek(const std::chrono::milliseconds target) {
                  {{"position_ms", std::to_string(position_.current.count())}});
   }
   if (shouldRestart) {
-    const auto* const item = playlist_.currentItem();
-    if (item == nullptr) {
+    if (!currentPlaybackItem_.has_value()) {
       render();
       return;
     }
@@ -625,7 +844,7 @@ void PlayerPresenter::submitSeek(const std::chrono::milliseconds target) {
       }
       lastAppliedPlaybackRate_ = 1.0;
       render();
-      engine_.open(*item);
+      engine_.open(*currentPlaybackItem_);
     } else {
       render();
     }
@@ -751,39 +970,47 @@ void PlayerPresenter::toggleLyrics() {
 
 void PlayerPresenter::requestPrevious() {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (!isShuttingDown_ && playlist_.selectPrevious()) {
-    playlistModel_.refresh();
-    openCurrentPlaylistItem();
+  if (!isShuttingDown_ &&
+      selectAdjacentPlaylistItem(activePlaylistKind_, false)) {
+    playlistModel(activePlaylistKind_).refresh();
+    openCurrentPlaylistItem(activePlaylistKind_);
   }
 }
 
 void PlayerPresenter::requestNext() {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (!isShuttingDown_ && playlist_.selectNext()) {
-    playlistModel_.refresh();
-    openCurrentPlaylistItem();
+  if (!isShuttingDown_ &&
+      selectAdjacentPlaylistItem(activePlaylistKind_, true)) {
+    playlistModel(activePlaylistKind_).refresh();
+    openCurrentPlaylistItem(activePlaylistKind_);
   }
 }
 
 void PlayerPresenter::activatePlaylistItem(const int row) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (!isShuttingDown_ && row >= 0 &&
-      playlist_.select(static_cast<std::size_t>(row))) {
-    playlistModel_.refresh();
-    openCurrentPlaylistItem();
+  auto &activePlaylist = playlist(activePlaylistKind_);
+  const bool isMarkedLiveItem =
+      activePlaylistKind_ == PlaylistKind::Live && row >= 0 &&
+      isLivePlaylistItemMarked(static_cast<std::size_t>(row));
+  if (!isShuttingDown_ && !isMarkedLiveItem && row >= 0 &&
+      activePlaylist.select(static_cast<std::size_t>(row))) {
+    playlistModel(activePlaylistKind_).refresh();
+    openCurrentPlaylistItem(activePlaylistKind_);
   }
 }
 
 void PlayerPresenter::removePlaylistItems(QList<int> rows) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || rows.isEmpty()) {
+  if (isShuttingDown_ || activePlaylistKind_ != PlaylistKind::Local ||
+      rows.isEmpty()) {
     return;
   }
 
+  auto& activePlaylist = localPlaylist_;
   std::vector<std::size_t> indexes;
   indexes.reserve(static_cast<std::size_t>(rows.size()));
   for (const int row : rows) {
-    if (row >= 0 && static_cast<std::size_t>(row) < playlist_.size()) {
+    if (row >= 0 && static_cast<std::size_t>(row) < activePlaylist.size()) {
       indexes.push_back(static_cast<std::size_t>(row));
     }
   }
@@ -793,19 +1020,20 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
     return;
   }
 
-  const bool wasCurrent = playlist_.currentIndex().has_value() &&
+  const bool wasCurrent = currentPlaybackKind_ == activePlaylistKind_ &&
+                          activePlaylist.currentIndex().has_value() &&
                           std::binary_search(indexes.begin(), indexes.end(),
-                                             *playlist_.currentIndex());
+                                             *activePlaylist.currentIndex());
   for (auto index = indexes.rbegin(); index != indexes.rend(); ++index) {
-    static_cast<void>(playlist_.remove(*index));
+    static_cast<void>(activePlaylist.remove(*index));
   }
-  playlistModel_.refresh();
+  localPlaylistModel_.refresh();
   if (!wasCurrent) {
     render();
     return;
   }
-  if (!playlist_.empty()) {
-    openCurrentPlaylistItem();
+  if (!activePlaylist.empty()) {
+    openCurrentPlaylistItem(PlaylistKind::Local);
     return;
   }
 
@@ -816,6 +1044,8 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
   seekPreviewPosition_.reset();
   position_ = {};
   mediaName_ = QStringLiteral("未选择媒体");
+  currentPlaybackItem_.reset();
+  currentPlaybackKind_.reset();
   networkOpenTimeoutTimer_->stop();
   bufferingPercentage_ = 0;
   isVideoMedia_ = false;
@@ -833,30 +1063,79 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
   render();
 }
 
-void PlayerPresenter::movePlaylistItem(const int row, const int targetRow) {
+void PlayerPresenter::toggleLivePlaylistMark(const int row) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || row < 0 || targetRow < 0 ||
-      !playlist_.moveItem(static_cast<std::size_t>(row),
-                          static_cast<std::size_t>(targetRow))) {
+  if (isShuttingDown_ || activePlaylistKind_ != PlaylistKind::Live || row < 0 ||
+      static_cast<std::size_t>(row) >= livePlaylist_.size()) {
     return;
   }
-  playlistModel_.refresh();
+
+  const auto& item = livePlaylist_.at(static_cast<std::size_t>(row));
+  const auto markedItem = markedLiveSources_.find(item.source);
+  const bool isMarking = markedItem == markedLiveSources_.end();
+  if (isMarking) {
+    markedLiveSources_.insert(item.source);
+  } else {
+    markedLiveSources_.erase(markedItem);
+  }
+  livePlaylistModel_.refreshItem(row);
+  const bool marksCurrentPlayback =
+      isMarking && currentPlaybackKind_ == PlaylistKind::Live &&
+      currentPlaybackItem_.has_value() &&
+      currentPlaybackItem_->source == item.source;
+  if (marksCurrentPlayback) {
+    requestStop();
+    render();
+  }
+}
+
+void PlayerPresenter::toggleLivePlaylistFavorite(const int row) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || activePlaylistKind_ != PlaylistKind::Live || row < 0 ||
+      static_cast<std::size_t>(row) >= livePlaylist_.size()) {
+    return;
+  }
+
+  const auto& item = livePlaylist_.at(static_cast<std::size_t>(row));
+  const auto favoriteItem = favoriteLiveSources_.find(item.source);
+  if (favoriteItem == favoriteLiveSources_.end()) {
+    favoriteLiveSources_.insert(item.source);
+  } else {
+    favoriteLiveSources_.erase(favoriteItem);
+  }
+  livePlaylistModel_.refreshItem(row);
+}
+
+void PlayerPresenter::movePlaylistItem(const int row, const int targetRow) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || activePlaylistKind_ != PlaylistKind::Local ||
+      row < 0 || targetRow < 0 ||
+      !localPlaylist_.moveItem(static_cast<std::size_t>(row),
+                               static_cast<std::size_t>(targetRow))) {
+    return;
+  }
+  localPlaylistModel_.refresh();
   render();
 }
 
 void PlayerPresenter::renamePlaylistItem(const int row,
-                                         const QString& displayName) {
+                                         const QString &displayName) {
   Q_ASSERT(QThread::currentThread() == thread());
   const QString normalizedName = displayName.trimmed();
-  if (isShuttingDown_ || row < 0 || normalizedName.isEmpty() ||
-      !playlist_.renameItem(static_cast<std::size_t>(row),
-                            normalizedName.toUtf8().toStdString())) {
+  if (isShuttingDown_ || activePlaylistKind_ != PlaylistKind::Local ||
+      row < 0 || normalizedName.isEmpty() ||
+      !localPlaylist_.renameItem(static_cast<std::size_t>(row),
+                                 normalizedName.toUtf8().toStdString())) {
     return;
   }
-  if (playlist_.currentIndex() == static_cast<std::size_t>(row)) {
+  if (currentPlaybackKind_ == PlaylistKind::Local &&
+      localPlaylist_.currentIndex() == static_cast<std::size_t>(row)) {
     mediaName_ = normalizedName;
+    if (currentPlaybackItem_.has_value()) {
+      currentPlaybackItem_->displayName = normalizedName.toUtf8().toStdString();
+    }
   }
-  playlistModel_.refresh();
+  localPlaylistModel_.refresh();
   render();
 }
 
@@ -866,21 +1145,22 @@ void PlayerPresenter::changePlaybackMode(const int modeIndex) {
     return;
   }
 
+  auto &activePlaylist = playlist(activePlaylistKind_);
   switch (modeIndex) {
-    case 1:
-      playlist_.setMode(core::PlaybackMode::LoopAll);
-      break;
-    case 2:
-      playlist_.setMode(core::PlaybackMode::LoopOne);
-      break;
-    case 3:
-      playlist_.setMode(core::PlaybackMode::Shuffle);
-      break;
-    default:
-      playlist_.setMode(core::PlaybackMode::Sequential);
-      break;
+  case 1:
+    activePlaylist.setMode(core::PlaybackMode::LoopAll);
+    break;
+  case 2:
+    activePlaylist.setMode(core::PlaybackMode::LoopOne);
+    break;
+  case 3:
+    activePlaylist.setMode(core::PlaybackMode::Shuffle);
+    break;
+  default:
+    activePlaylist.setMode(core::PlaybackMode::Sequential);
+    break;
   }
-  playlistModel_.refresh();
+  playlistModel(activePlaylistKind_).refresh();
   render();
 }
 
@@ -1081,9 +1361,10 @@ void PlayerPresenter::handleEndReached() {
   hasCurrentMediaStarted_ = false;
   pendingRestartPosition_.reset();
   isRestartPlayRequested_ = false;
-  if (playlist_.advanceAfterEnd()) {
-    playlistModel_.refresh();
-    openCurrentPlaylistItem();
+  if (currentPlaybackKind_.has_value() &&
+      playlist(*currentPlaybackKind_).advanceAfterEnd()) {
+    playlistModel(*currentPlaybackKind_).refresh();
+    openCurrentPlaylistItem(*currentPlaybackKind_);
     return;
   }
 
@@ -1164,13 +1445,63 @@ void PlayerPresenter::handleNetworkOpenTimeout() {
   }
 }
 
-void PlayerPresenter::rememberNetworkUrl(const QString& url) {
+void PlayerPresenter::rememberNetworkUrl(const QString &url) {
   recentNetworkUrls_.removeAll(url);
   recentNetworkUrls_.prepend(url);
   while (recentNetworkUrls_.size() > kMaxSessionNetworkUrls) {
     recentNetworkUrls_.removeLast();
   }
   window_.setRecentNetworkUrls(recentNetworkUrls_);
+}
+
+core::Playlist &
+PlayerPresenter::playlist(const PlaylistKind playlistKind) noexcept {
+  return playlistKind == PlaylistKind::Live ? livePlaylist_ : localPlaylist_;
+}
+
+const core::Playlist &
+PlayerPresenter::playlist(const PlaylistKind playlistKind) const noexcept {
+  return playlistKind == PlaylistKind::Live ? livePlaylist_ : localPlaylist_;
+}
+
+PlaylistModel &
+PlayerPresenter::playlistModel(const PlaylistKind playlistKind) noexcept {
+  return playlistKind == PlaylistKind::Live ? livePlaylistModel_
+                                            : localPlaylistModel_;
+}
+
+bool PlayerPresenter::isLivePlaylistItemMarked(const std::size_t index) const {
+  return index < livePlaylist_.size() &&
+         markedLiveSources_.contains(livePlaylist_.at(index).source);
+}
+
+bool PlayerPresenter::selectAdjacentPlaylistItem(
+    const PlaylistKind playlistKind, const bool selectsNext) {
+  auto& targetPlaylist = playlist(playlistKind);
+  if (playlistKind == PlaylistKind::Local) {
+    return selectsNext ? targetPlaylist.selectNext()
+                       : targetPlaylist.selectPrevious();
+  }
+
+  const auto originalIndex = targetPlaylist.currentIndex();
+  for (std::size_t attempt = 0; attempt < targetPlaylist.size(); ++attempt) {
+    const bool wasSelected = selectsNext ? targetPlaylist.selectNext()
+                                         : targetPlaylist.selectPrevious();
+    if (!wasSelected || !targetPlaylist.currentIndex().has_value()) {
+      break;
+    }
+    const std::size_t selectedIndex = *targetPlaylist.currentIndex();
+    if (originalIndex.has_value() && selectedIndex == *originalIndex) {
+      break;
+    }
+    if (!isLivePlaylistItemMarked(selectedIndex)) {
+      return true;
+    }
+  }
+  if (originalIndex.has_value()) {
+    static_cast<void>(targetPlaylist.select(*originalIndex));
+  }
+  return false;
 }
 
 void PlayerPresenter::render() {
@@ -1180,6 +1511,7 @@ void PlayerPresenter::render() {
 
 PlayerViewState PlayerPresenter::makeViewState() const {
   PlayerViewState viewState;
+  const auto &activePlaylist = playlist(activePlaylistKind_);
   viewState.mediaName = mediaName_;
   viewState.videoPlaceholder = QStringLiteral("打开媒体后，画面会出现在这里");
   const auto displayedPosition =
@@ -1194,68 +1526,102 @@ PlayerViewState PlayerPresenter::makeViewState() const {
   viewState.isMuted = isMuted_;
   viewState.volumeText = isMuted_ ? QStringLiteral("已静音 · 0%")
                                   : QStringLiteral("音量 %1%").arg(volume_);
+  viewState.livePlaylistStatusText = livePlaylistStatusText_;
+  viewState.isLivePlaylistActive = activePlaylistKind_ == PlaylistKind::Live;
+  const auto* const activePlaylistItem = activePlaylist.currentItem();
+  viewState.isCurrentPlaybackInActivePlaylist =
+      currentPlaybackKind_.has_value() && currentPlaybackItem_.has_value() &&
+      *currentPlaybackKind_ == activePlaylistKind_ &&
+      activePlaylistItem != nullptr &&
+      activePlaylistItem->source == currentPlaybackItem_->source;
+  const auto playbackState = stateMachine_.state();
+  const bool hasActiveLivePlayback =
+      currentPlaybackKind_ == PlaylistKind::Live &&
+      currentPlaybackItem_.has_value() &&
+      !markedLiveSources_.contains(currentPlaybackItem_->source) &&
+      (isNetworkOpenPending_ || playbackState == core::PlaybackState::Opening ||
+       playbackState == core::PlaybackState::Buffering ||
+       playbackState == core::PlaybackState::Playing ||
+       playbackState == core::PlaybackState::Paused);
+  if (hasActiveLivePlayback) {
+    for (std::size_t index = 0; index < livePlaylist_.size(); ++index) {
+      if (livePlaylist_.at(index).source == currentPlaybackItem_->source) {
+        viewState.currentLivePlaybackIndex = static_cast<int>(index);
+        break;
+      }
+    }
+  }
+  viewState.isLivePlaylistLoading = isLivePlaylistLoading_;
+  viewState.isPlaylistEditable = activePlaylistKind_ == PlaylistKind::Local;
   viewState.currentPlaylistIndex =
-      playlist_.currentIndex().has_value()
-          ? static_cast<int>(*playlist_.currentIndex())
+      activePlaylist.currentIndex().has_value()
+          ? static_cast<int>(*activePlaylist.currentIndex())
           : -1;
-  viewState.playbackModeIndex = static_cast<int>(playlist_.mode());
+  viewState.playbackModeIndex = static_cast<int>(activePlaylist.mode());
   viewState.playbackRate = playbackRate_;
   viewState.isTemporaryFastPlayback = isTemporaryFastPlayback_;
-  viewState.canGoPrevious = playlist_.previousIndex().has_value();
-  viewState.canGoNext = playlist_.nextIndex().has_value();
-  viewState.canRemovePlaylistItem = playlist_.currentIndex().has_value();
-  viewState.canRefreshNetwork = isNetworkMedia_;
+  viewState.canGoPrevious = activePlaylist.previousIndex().has_value();
+  viewState.canGoNext = activePlaylist.nextIndex().has_value();
+  viewState.canRemovePlaylistItem =
+      activePlaylistKind_ == PlaylistKind::Local &&
+      activePlaylist.currentIndex().has_value();
+  const bool isCurrentLivePlaybackMarked =
+      currentPlaybackKind_ == PlaylistKind::Live &&
+      currentPlaybackItem_.has_value() &&
+      markedLiveSources_.contains(currentPlaybackItem_->source);
+  viewState.canRefreshNetwork =
+      isNetworkMedia_ && !isCurrentLivePlaybackMarked;
 
   switch (stateMachine_.state()) {
-    case core::PlaybackState::Idle:
-      if (isNetworkOpenPending_) {
-        viewState.statusText = QStringLiteral("正在连接...");
-      } else if (isNetworkOpenCancelled_) {
-        viewState.statusText = QStringLiteral("已取消连接");
-        viewState.canPlay = true;
-      } else {
-        viewState.statusText = QStringLiteral("未打开媒体");
-      }
-      break;
-    case core::PlaybackState::Opening:
-      viewState.statusText = QStringLiteral("正在打开...");
-      viewState.canStop = true;
-      break;
-    case core::PlaybackState::Buffering:
-      viewState.statusText =
-          isNetworkMedia_
-              ? QStringLiteral("正在缓冲 %1%").arg(bufferingPercentage_)
-              : QStringLiteral("正在缓冲...");
-      viewState.canStop = true;
-      break;
-    case core::PlaybackState::Playing:
-      viewState.statusText = QStringLiteral("正在播放");
-      viewState.canPause = true;
-      viewState.canStop = true;
-      break;
-    case core::PlaybackState::Paused:
-      viewState.statusText = QStringLiteral("已暂停");
+  case core::PlaybackState::Idle:
+    if (isNetworkOpenPending_) {
+      viewState.statusText = QStringLiteral("正在连接...");
+    } else if (isNetworkOpenCancelled_) {
+      viewState.statusText = QStringLiteral("已取消连接");
       viewState.canPlay = true;
-      viewState.canStop = true;
-      break;
-    case core::PlaybackState::Stopped:
-      viewState.statusText = isNetworkOpenCancelled_
-                                 ? QStringLiteral("已取消连接")
-                                 : QStringLiteral("已停止");
-      viewState.canPlay = true;
-      break;
-    case core::PlaybackState::Ended:
-      viewState.statusText = QStringLiteral("播放结束");
-      viewState.canPlay = true;
-      break;
-    case core::PlaybackState::Failed:
-      viewState.statusText =
-          isNetworkOpenTimedOut_
-              ? QStringLiteral("连接超时")
-              : (isNetworkMedia_ ? QStringLiteral("直播连接失败，请点击刷新")
-                                 : QStringLiteral("播放失败"));
-      viewState.canPlay = isNetworkOpenTimedOut_;
-      break;
+    } else {
+      viewState.statusText = QStringLiteral("未打开媒体");
+    }
+    break;
+  case core::PlaybackState::Opening:
+    viewState.statusText = QStringLiteral("正在打开...");
+    viewState.canStop = true;
+    break;
+  case core::PlaybackState::Buffering:
+    viewState.statusText =
+        isNetworkMedia_
+            ? QStringLiteral("正在缓冲 %1%").arg(bufferingPercentage_)
+            : QStringLiteral("正在缓冲...");
+    viewState.canStop = true;
+    break;
+  case core::PlaybackState::Playing:
+    viewState.statusText = QStringLiteral("正在播放");
+    viewState.canPause = true;
+    viewState.canStop = true;
+    break;
+  case core::PlaybackState::Paused:
+    viewState.statusText = QStringLiteral("已暂停");
+    viewState.canPlay = true;
+    viewState.canStop = true;
+    break;
+  case core::PlaybackState::Stopped:
+    viewState.statusText = isNetworkOpenCancelled_
+                               ? QStringLiteral("已取消连接")
+                               : QStringLiteral("已停止");
+    viewState.canPlay = true;
+    break;
+  case core::PlaybackState::Ended:
+    viewState.statusText = QStringLiteral("播放结束");
+    viewState.canPlay = true;
+    break;
+  case core::PlaybackState::Failed:
+    viewState.statusText =
+        isNetworkOpenTimedOut_
+            ? QStringLiteral("连接超时")
+            : (isNetworkMedia_ ? QStringLiteral("直播连接失败，请点击刷新")
+                               : QStringLiteral("播放失败"));
+    viewState.canPlay = isNetworkOpenTimedOut_;
+    break;
   }
 
   if (isNetworkOpenPending_) {
@@ -1280,6 +1646,11 @@ PlayerViewState PlayerPresenter::makeViewState() const {
     viewState.canStop = false;
   }
 
+  if (isCurrentLivePlaybackMarked) {
+    viewState.canPlay = false;
+    viewState.canPause = false;
+  }
+
   viewState.canSeek =
       !isNetworkMedia_ && isSeekAvailable(position_, stateMachine_.state());
 
@@ -1287,7 +1658,6 @@ PlayerViewState PlayerPresenter::makeViewState() const {
     return viewState;
   }
 
-  const auto playbackState = stateMachine_.state();
   viewState.canToggleFullscreen =
       !isPreparingMedia_ && (playbackState == core::PlaybackState::Opening ||
                              playbackState == core::PlaybackState::Buffering ||
@@ -1312,28 +1682,28 @@ PlayerViewState PlayerPresenter::makeViewState() const {
   }
 
   switch (stateMachine_.state()) {
-    case core::PlaybackState::Opening:
-    case core::PlaybackState::Buffering:
-    case core::PlaybackState::Playing:
-    case core::PlaybackState::Paused:
-      viewState.isVideoSurfaceActive = true;
-      viewState.videoPlaceholder.clear();
-      break;
-    case core::PlaybackState::Stopped:
-      viewState.videoPlaceholder = QStringLiteral("视频已停止");
-      break;
-    case core::PlaybackState::Ended:
-      viewState.videoPlaceholder = QStringLiteral("视频播放结束");
-      break;
-    case core::PlaybackState::Failed:
-      viewState.videoPlaceholder = QStringLiteral("视频播放失败");
-      break;
-    case core::PlaybackState::Idle:
-      viewState.videoPlaceholder = QStringLiteral("正在准备视频画面...");
-      break;
+  case core::PlaybackState::Opening:
+  case core::PlaybackState::Buffering:
+  case core::PlaybackState::Playing:
+  case core::PlaybackState::Paused:
+    viewState.isVideoSurfaceActive = true;
+    viewState.videoPlaceholder.clear();
+    break;
+  case core::PlaybackState::Stopped:
+    viewState.videoPlaceholder = QStringLiteral("视频已停止");
+    break;
+  case core::PlaybackState::Ended:
+    viewState.videoPlaceholder = QStringLiteral("视频播放结束");
+    break;
+  case core::PlaybackState::Failed:
+    viewState.videoPlaceholder = QStringLiteral("视频播放失败");
+    break;
+  case core::PlaybackState::Idle:
+    viewState.videoPlaceholder = QStringLiteral("正在准备视频画面...");
+    break;
   }
 
   return viewState;
 }
 
-}  // namespace mediahub::gui
+} // namespace mediahub::gui

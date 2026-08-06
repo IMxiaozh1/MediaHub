@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/mediahub">
+        <file alias="app_icon.png">app_icon_source.png</file>
+        <file alias="window_icon.jpg">window_icon.jpg</file>
+    </qresource>
+</RCC>

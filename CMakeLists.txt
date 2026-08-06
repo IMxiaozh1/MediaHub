@@ -54,7 +54,7 @@ function(mediahub_enable_warnings targetName)
 endfunction()
 
 if(NOT MEDIAHUB_CORE_ONLY)
-    find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Network Widgets)
+    find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Concurrent Network Widgets)
     if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)
         find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Test)
     endif()
@@ -142,6 +142,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/lyrics_service.h
         apps/gui/lyrics_view.cpp
         apps/gui/lyrics_view.h
+        apps/gui/live_playlist_service.cpp
+        apps/gui/live_playlist_service.h
         apps/gui/main_window.cpp
         apps/gui/main_window.h
         apps/gui/player_presenter.cpp
@@ -149,27 +151,52 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/player_view_state.h
         apps/gui/playlist_model.cpp
         apps/gui/playlist_model.h
+        apps/gui/resources/mediahub_gui.qrc
         apps/gui/seek_slider.cpp
         apps/gui/seek_slider.h
         apps/gui/shutdown_watchdog.cpp
         apps/gui/shutdown_watchdog.h
         apps/gui/video_output_widget.cpp
         apps/gui/video_output_widget.h
+        apps/gui/window_icon_manager.cpp
+        apps/gui/window_icon_manager.h
     )
-    set_target_properties(mediahub_gui_support PROPERTIES AUTOMOC ON)
+    set_target_properties(mediahub_gui_support PROPERTIES
+        AUTOMOC ON
+        AUTORCC ON
+    )
     target_include_directories(mediahub_gui_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui")
     target_link_libraries(mediahub_gui_support
         PUBLIC mediahub_core mediahub_logging Qt5::Widgets
-        PRIVATE Qt5::Network
+        PRIVATE Qt5::Concurrent Qt5::Network
     )
+    if(WIN32)
+        target_link_libraries(mediahub_gui_support PRIVATE gdi32 user32 winhttp)
+    endif()
     mediahub_enable_warnings(mediahub_gui_support)
 
-    add_executable(mediahub_gui WIN32 apps/gui/main.cpp)
+    set(MEDIAHUB_GUI_SOURCES apps/gui/main.cpp)
+    if(WIN32)
+        list(APPEND MEDIAHUB_GUI_SOURCES apps/gui/resources/mediahub.rc)
+    endif()
+    add_executable(mediahub_gui WIN32 ${MEDIAHUB_GUI_SOURCES})
     set_target_properties(mediahub_gui PROPERTIES OUTPUT_NAME MediaHub)
     target_link_libraries(mediahub_gui PRIVATE mediahub_engine_vlc mediahub_gui_support)
     mediahub_enable_warnings(mediahub_gui)
     mediahub_deploy_qt(mediahub_gui)
     mediahub_deploy_vlc(mediahub_gui)
+    add_custom_command(TARGET mediahub_gui POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_FILE_DIR:mediahub_gui>/icons"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui/resources/app_icon_source.png"
+            "$<TARGET_FILE_DIR:mediahub_gui>/icons/taskbar.png"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui/resources/window_icon.jpg"
+            "$<TARGET_FILE_DIR:mediahub_gui>/icons/window.jpg"
+        COMMENT "Deploying replaceable MediaHub window icons"
+        VERBATIM
+    )
 
     if(MEDIAHUB_PACKAGE_RELEASE)
         if(NOT WIN32)
@@ -194,6 +221,14 @@ if(NOT MEDIAHUB_CORE_ONLY)
         endif()
 
         install(TARGETS mediahub_gui RUNTIME DESTINATION .)
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui/resources/app_icon_source.png"
+            DESTINATION icons
+            RENAME taskbar.png
+        )
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui/resources/window_icon.jpg"
+            DESTINATION icons
+            RENAME window.jpg
+        )
         install(FILES
             "${MEDIAHUB_QT_LICENSE_DIR}/LICENSE.LGPLv3"
             DESTINATION licenses

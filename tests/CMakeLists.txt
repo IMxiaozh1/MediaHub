@@ -67,4 +67,16 @@ if(NOT MEDIAHUB_CORE_ONLY)
             ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
         )
     endif()
+
+    add_executable(mediahub_live_playlist_tests
+        gui/live_playlist_service_test.cpp
+    )
+    set_target_properties(mediahub_live_playlist_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_live_playlist_tests
+        PRIVATE mediahub_gui_support Qt5::Network Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_live_playlist_tests)
+    mediahub_deploy_qt(mediahub_live_playlist_tests)
+    add_test(NAME gui.live_playlist_service COMMAND mediahub_live_playlist_tests)
+    set_tests_properties(gui.live_playlist_service PROPERTIES TIMEOUT 5)
 endif()

@@ -146,6 +146,38 @@ TEST(M3uParseTest, SkipsAddressesRejectedByTheExistingNetworkValidator) {
     EXPECT_EQ(result.issues[1].kind, M3uParseIssueKind::InvalidStreamUrl);
 }
 
+TEST(M3uParseTest, ResolvesRelativeAddressesBeforeValidationAndDuplicateChecks) {
+    const auto result = parseM3u(
+        "#EXTM3U\n"
+        "#EXTINF:-1,频道一\n../live/one.m3u8\n"
+        "#EXTINF:-1,重复频道\n../live/one.m3u8\n",
+        [](const std::string_view source) -> std::optional<std::string> {
+            if (source == "../live/one.m3u8") {
+                return "https://example.test/live/one.m3u8";
+            }
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(result.library.channels.size(), 1U);
+    EXPECT_EQ(result.library.channels.front().streamUrl,
+              "https://example.test/live/one.m3u8");
+    EXPECT_EQ(result.duplicateChannelCount, 1U);
+    EXPECT_EQ(result.skippedChannelCount, 0U);
+}
+
+TEST(M3uParseTest, SkipsRelativeAddressWhenResolverCannotCompleteIt) {
+    const auto result = parseM3u(
+        "#EXTM3U\n#EXTINF:-1,频道一\nrelative.m3u8\n",
+        [](const std::string_view) -> std::optional<std::string> {
+            return std::nullopt;
+        });
+
+    EXPECT_TRUE(result.library.channels.empty());
+    EXPECT_EQ(result.skippedChannelCount, 1U);
+    ASSERT_EQ(result.issues.size(), 1U);
+    EXPECT_EQ(result.issues.front().kind, M3uParseIssueKind::InvalidStreamUrl);
+}
+
 TEST(M3uParseTest, SkipsExactAddressDuplicatesButKeepsSameNameWithAnotherAddress) {
     const std::string content =
         "#EXTM3U\n"

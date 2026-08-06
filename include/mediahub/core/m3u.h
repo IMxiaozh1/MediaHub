@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -36,8 +37,16 @@ struct M3uParseResult {
     std::size_t duplicateChannelCount{0};
 };
 
+// 相对地址解析器返回可交给播放内核的绝对地址；空结果表示该地址无法安全补全。
+using M3uStreamUrlResolver =
+    std::function<std::optional<std::string>(std::string_view)>;
+
 // 解析 MediaHub 支持的 UTF-8 M3U 子集。缺少有效文件头时不继续解释后续内容。
 [[nodiscard]] M3uParseResult parseM3u(std::string_view content);
+
+// 使用调用方提供的基准补全相对条目；核心层仍负责协议白名单和重复检查。
+[[nodiscard]] M3uParseResult parseM3u(
+    std::string_view content, const M3uStreamUrlResolver& streamUrlResolver);
 
 enum class M3uSerializationIssueKind {
     EmptyChannelName,

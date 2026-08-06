@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -8,10 +9,16 @@
 
 namespace mediahub::engine_vlc {
 
-// 哑输出仅供自动化测试使用；正式程序保持两个选项为 false。
+// 以下选项仅供自动化测试使用；正式程序使用默认值。
 struct VlcPlayerEngineOptions {
   bool useDummyAudioOutput{false};
   bool useDummyVideoOutput{false};
+  // 仅供自动化观察实际提交给 libVLC 的视频句柄，正式程序保持为空。
+  std::function<void(void*)> videoSurfaceObserver;
+  // 仅供自动化统计 libVLC 实例创建次数，正式程序保持为空。
+  std::function<void()> instanceCreatedObserver;
+  // 仅供自动化控制旧播放器停止时序，正式程序保持为空。
+  std::function<void()> beforeRetiredPlayerStop;
 };
 
 // libVLC 播放实现。线程、异步请求和监听器生命周期约定继承 PlayerEngine。

@@ -1,0 +1,4 @@
+#pragma once
+
+#define IDI_MEDIAHUB_APP_ICON 101
+#define IDI_MEDIAHUB_WINDOW_ICON 102

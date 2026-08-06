@@ -258,6 +258,12 @@ bool channelMetadataContainsLineBreak(const LiveChannel& channel) noexcept {
 }  // namespace
 
 M3uParseResult parseM3u(const std::string_view content) {
+    return parseM3u(content, {});
+}
+
+M3uParseResult parseM3u(
+    const std::string_view content,
+    const M3uStreamUrlResolver& streamUrlResolver) {
     M3uParseResult result;
     const auto lines = splitLines(content);
     const auto header = std::find_if(lines.begin(), lines.end(), [](const SourceLine& line) {
@@ -296,12 +302,21 @@ M3uParseResult parseM3u(const std::string_view content) {
             pending.reset();
             continue;
         }
-        if (validateNetworkUrl(text) != NetworkUrlValidationError::None) {
+        std::optional<std::string> resolvedUrl;
+        std::string_view streamUrl = text;
+        if (validateNetworkUrl(streamUrl) != NetworkUrlValidationError::None &&
+            streamUrlResolver) {
+            resolvedUrl = streamUrlResolver(text);
+            if (resolvedUrl.has_value()) {
+                streamUrl = *resolvedUrl;
+            }
+        }
+        if (validateNetworkUrl(streamUrl) != NetworkUrlValidationError::None) {
             recordSkipped(result, line->number, M3uParseIssueKind::InvalidStreamUrl);
             pending.reset();
             continue;
         }
-        if (!streamUrls.insert(std::string(text)).second) {
+        if (!streamUrls.insert(std::string(streamUrl)).second) {
             result.issues.push_back(
                 M3uParseIssue{line->number, M3uParseIssueKind::DuplicateStreamUrl});
             ++result.duplicateChannelCount;
@@ -309,7 +324,7 @@ M3uParseResult parseM3u(const std::string_view content) {
             continue;
         }
 
-        pending->channel->streamUrl = std::string(text);
+        pending->channel->streamUrl = std::string(streamUrl);
         result.library.channels.push_back(std::move(*pending->channel));
         pending.reset();
     }

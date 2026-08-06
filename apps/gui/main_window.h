@@ -7,6 +7,7 @@
 
 #include "mediahub/core/media_types.h"
 #include "player_view_state.h"
+#include "window_icon_manager.h"
 
 class QAbstractItemModel;
 class QAction;
@@ -14,6 +15,7 @@ class QCloseEvent;
 class QDragEnterEvent;
 class QDropEvent;
 class QLabel;
+class QLineEdit;
 class QListView;
 class QMenu;
 class QPoint;
@@ -22,6 +24,7 @@ class QFrame;
 class QEvent;
 class QSlider;
 class QStackedLayout;
+class QTabBar;
 class QTimer;
 class QToolButton;
 class QVBoxLayout;
@@ -54,15 +57,20 @@ class MainWindow final : public QMainWindow {
   void showPlaybackError(const QString& message);
   // 调用线程：GUI 主线程。
   void clearPlaybackError();
-  // 调用线程：GUI 主线程。model 由 presenter 持有且生命周期覆盖本窗口。
-  void setPlaylistModel(QAbstractItemModel* model);
+  // 调用线程：GUI 主线程。两个 model 均由 presenter 持有且生命周期覆盖本窗口。
+  void setPlaylistModels(QAbstractItemModel* localModel,
+                         QAbstractItemModel* liveModel);
   // 调用线程：GUI 主线程。完整地址只保留在当前窗口内，用于下次输入时选择。
   void setRecentNetworkUrls(const QStringList& urls);
   [[nodiscard]] const QStringList& recentNetworkUrls() const noexcept;
+  // 调用线程：GUI 主线程。Ctrl+L 识别清单后同步显示到直播清单输入框。
+  void setLivePlaylistUrl(const QString& url);
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
   void networkUrlSelected(const QString& url);
+  void livePlaylistLoadRequested(const QString& url);
+  void playlistKindSelected(int kindIndex);
   void playRequested();
   void pauseRequested();
   void playbackToggleRequested();
@@ -82,6 +90,8 @@ class MainWindow final : public QMainWindow {
   void nextRequested();
   void playlistItemActivated(int row);
   void playlistItemsRemoveRequested(QList<int> rows);
+  void livePlaylistMarkToggled(int row);
+  void livePlaylistFavoriteToggled(int row);
   void playlistItemMoveRequested(int row, int targetRow);
   void playlistItemRenameRequested(int row, const QString& displayName);
   void playbackModeRequested(int modeIndex);
@@ -93,7 +103,7 @@ class MainWindow final : public QMainWindow {
   void closeEvent(QCloseEvent* event) override;
   // 调用线程：GUI 主线程。同步全屏动作与按钮文字。
   void changeEvent(QEvent* event) override;
-  // 调用线程：GUI 主线程。区分右键轻按与长按，并吞掉系统自动重复事件。
+  // 调用线程：GUI 主线程。处理快捷键长按，并阻止右键双击激活列表项。
   bool eventFilter(QObject* watched, QEvent* event) override;
   // 调用线程：GUI 主线程。只接受包含本地文件的拖放数据。
   void dragEnterEvent(QDragEnterEvent* event) override;
@@ -111,7 +121,9 @@ class MainWindow final : public QMainWindow {
   void showPlaylistContextMenu(const QPoint& position);
   void renameContextPlaylistItem();
   void selectPlaylistRow(int row);
+  void showPlaylistKind(int kindIndex);
 
+  WindowIconManager windowIconManager_;
   QAction* openAction_{nullptr};
   QAction* openNetworkAction_{nullptr};
   QAction* fullScreenAction_{nullptr};
@@ -124,6 +136,10 @@ class MainWindow final : public QMainWindow {
   QAction* playlistMoveDownAction_{nullptr};
   QAction* playlistMoveTopAction_{nullptr};
   QAction* playlistRemoveAction_{nullptr};
+  QAction* livePlaylistPlaybackAction_{nullptr};
+  QAction* livePlaylistStopAction_{nullptr};
+  QAction* livePlaylistMarkAction_{nullptr};
+  QAction* livePlaylistFavoriteAction_{nullptr};
   QSlider* progressSlider_{nullptr};
   QSlider* volumeSlider_{nullptr};
   QToolButton* playPauseButton_{nullptr};
@@ -138,8 +154,13 @@ class MainWindow final : public QMainWindow {
   QToolButton* playbackRateButton_{nullptr};
   QToolButton* playbackModeButton_{nullptr};
   QToolButton* playlistToggleButton_{nullptr};
+  QTabBar* playlistKindTabs_{nullptr};
+  QLineEdit* livePlaylistUrlEdit_{nullptr};
+  QPushButton* livePlaylistLoadButton_{nullptr};
+  QPushButton* livePlaylistLocateButton_{nullptr};
   QListView* playlistView_{nullptr};
   QMenu* playlistContextMenu_{nullptr};
+  QMenu* livePlaylistContextMenu_{nullptr};
   QFrame* playlistPanel_{nullptr};
   VideoOutputWidget* videoOutput_{nullptr};
   LyricsView* lyricsView_{nullptr};
@@ -149,18 +170,24 @@ class MainWindow final : public QMainWindow {
   QLabel* errorLabel_{nullptr};
   QLabel* positionLabel_{nullptr};
   QLabel* volumeLabel_{nullptr};
+  QLabel* livePlaylistStatusLabel_{nullptr};
   QVBoxLayout* rootLayout_{nullptr};
   QTimer* rightKeyHoldTimer_{nullptr};
   QList<QWidget*> fullScreenChrome_;
   QList<int> playlistContextRows_;
   QStringList recentNetworkUrls_;
+  QAbstractItemModel* localPlaylistModel_{nullptr};
+  QAbstractItemModel* livePlaylistModel_{nullptr};
   int keyboardSeekStepSeconds_{5};
   int currentPlaylistIndex_{-1};
+  int currentLivePlaybackIndex_{-1};
   bool isPlaylistExpanded_{true};
+  bool isLivePlaylistActive_{false};
   bool canEditPlaylist_{false};
   bool canPlayCurrentItem_{false};
   bool canPauseCurrentItem_{false};
   bool canStopCurrentItem_{false};
+  bool isCurrentPlaybackInActivePlaylist_{false};
   bool isRightKeyPressed_{false};
   bool isRightKeyHoldActive_{false};
 };

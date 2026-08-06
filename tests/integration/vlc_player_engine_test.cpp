@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <limits>
@@ -201,6 +202,70 @@ class RecordingListener final : public core::PlayerEventListener {
   std::vector<core::PlaybackError> errors_;
 };
 
+class VideoSurfaceRecorder final {
+ public:
+  void record(void* const nativeHandle) {
+    const std::lock_guard lock(mutex_);
+    handles_.push_back(nativeHandle);
+    changed_.notify_all();
+  }
+
+  [[nodiscard]] bool waitFor(
+      void* const nativeHandle,
+      const std::chrono::milliseconds timeout = 1s) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this, nativeHandle] {
+      return std::find(handles_.begin(), handles_.end(), nativeHandle) !=
+             handles_.end();
+    });
+  }
+
+  [[nodiscard]] bool waitForCount(
+      void* const nativeHandle, const std::size_t expectedCount,
+      const std::chrono::milliseconds timeout = 1s) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this, nativeHandle, expectedCount] {
+      return static_cast<std::size_t>(
+                 std::count(handles_.begin(), handles_.end(), nativeHandle)) >=
+             expectedCount;
+    });
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  std::vector<void*> handles_;
+};
+
+class RetirementGate final {
+ public:
+  void waitBeforeStop() {
+    std::unique_lock lock(mutex_);
+    hasReachedStop_ = true;
+    changed_.notify_all();
+    changed_.wait(lock, [this] { return canStop_; });
+  }
+
+  [[nodiscard]] bool waitUntilReached(
+      const std::chrono::milliseconds timeout = 1s) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout,
+                             [this] { return hasReachedStop_; });
+  }
+
+  void allowStop() {
+    const std::lock_guard lock(mutex_);
+    canStop_ = true;
+    changed_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  bool hasReachedStop_{false};
+  bool canStop_{false};
+};
+
 VlcPlayerEngineOptions testOptions() {
   return VlcPlayerEngineOptions{true, true};
 }
@@ -302,10 +367,83 @@ TEST(VlcPlayerEngineTest, QueuesNetworkControlsWithoutBlockingCaller) {
   ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
 }
 
+TEST(VlcPlayerEngineTest, RepeatedNetworkSwitchesReuseInstanceAndSurface) {
+  RecordingListener listener;
+  VideoSurfaceRecorder surfaceRecorder;
+  std::atomic<int> instanceCreatedCount{0};
+  auto options = testOptions();
+  options.videoSurfaceObserver = [&surfaceRecorder](void* const nativeHandle) {
+    surfaceRecorder.record(nativeHandle);
+  };
+  options.instanceCreatedObserver = [&instanceCreatedCount] {
+    ++instanceCreatedCount;
+  };
+  VlcPlayerEngine engine(std::move(options));
+  engine.setEventListener(&listener);
+  auto* const embeddedSurface = reinterpret_cast<void*>(0x1234);
+
+  engine.setVideoSurface(embeddedSurface);
+  ASSERT_TRUE(surfaceRecorder.waitFor(embeddedSurface));
+  engine.open(core::MediaItem{"http://127.0.0.1:1/first.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "first.ts"});
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/second.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "second.ts"});
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
+  engine.open(core::MediaItem{"http://127.0.0.1:1/third.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "third.ts"});
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 3));
+
+  EXPECT_TRUE(surfaceRecorder.waitForCount(embeddedSurface, 3));
+  EXPECT_FALSE(surfaceRecorder.waitFor(nullptr, 500ms));
+  EXPECT_EQ(instanceCreatedCount.load(), 2);
+}
+
+TEST(VlcPlayerEngineTest,
+     WaitsForRetiredPlayerVoutAndSkipsSupersededNetworkOpen) {
+  RecordingListener listener;
+  RetirementGate retirementGate;
+  auto options = testOptions();
+  options.beforeRetiredPlayerStop = [&retirementGate] {
+    retirementGate.waitBeforeStop();
+  };
+  VlcPlayerEngine engine(std::move(options));
+  engine.setEventListener(&listener);
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/first.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "first.ts"});
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/second.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "second.ts"});
+  ASSERT_TRUE(retirementGate.waitUntilReached());
+  EXPECT_FALSE(
+      listener.waitForStateCount(core::PlaybackState::Opening, 2, 500ms));
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/third.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "third.ts"});
+  retirementGate.allowStop();
+  EXPECT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
+  EXPECT_FALSE(
+      listener.waitForStateCount(core::PlaybackState::Opening, 3, 500ms));
+}
+
 TEST(VlcPlayerEngineTest, SwitchesFromNetworkDescriptorToLocalAudio) {
   GeneratedWav media(2s);
   RecordingListener listener;
-  VlcPlayerEngine engine(testOptions());
+  std::atomic<int> instanceCreatedCount{0};
+  auto options = testOptions();
+  options.instanceCreatedObserver = [&instanceCreatedCount] {
+    ++instanceCreatedCount;
+  };
+  VlcPlayerEngine engine(std::move(options));
   engine.setEventListener(&listener);
 
   engine.setVolume(37);
@@ -322,6 +460,7 @@ TEST(VlcPlayerEngineTest, SwitchesFromNetworkDescriptorToLocalAudio) {
   ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Playing, 1));
   ASSERT_TRUE(listener.waitForNonSilentWaveform());
   EXPECT_TRUE(listener.waitForPositionAtLeast(100ms));
+  EXPECT_EQ(instanceCreatedCount.load(), 3);
 }
 
 TEST(VlcPlayerEngineTest, RejectsInvalidNetworkDescriptorWithoutLeakingUrl) {

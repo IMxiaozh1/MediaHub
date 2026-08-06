@@ -7,8 +7,10 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <unordered_set>
 
 #include "engine_event_bridge.h"
+#include "live_playlist_service.h"
 #include "lyrics_service.h"
 #include "mediahub/core/playback_state_machine.h"
 #include "mediahub/core/player_engine.h"
@@ -31,7 +33,8 @@ class PlayerPresenter final : public QObject {
   PlayerPresenter(core::PlayerEngine& engine, EngineEventBridge& eventBridge,
                   MainWindow& window, QObject* parent = nullptr,
                   logging::Logger* logger = nullptr,
-                  LyricsService* lyricsService = nullptr);
+                  LyricsService* lyricsService = nullptr,
+                  LivePlaylistService* livePlaylistService = nullptr);
   ~PlayerPresenter() override;
 
   // 调用线程：GUI 主线程。路径来自文件选择器，使用 UTF-8 交给核心接口。
@@ -48,6 +51,11 @@ class PlayerPresenter final : public QObject {
   void stateApplied(core::PlaybackState state);
 
  private:
+  enum class PlaylistKind {
+    Local,
+    Live,
+  };
+
   // 调用线程：GUI 主线程。以下方法只由主线程输入或队列事件调用。
   void requestPlay();
   void requestPause();
@@ -70,9 +78,18 @@ class PlayerPresenter final : public QObject {
   void requestNext();
   void activatePlaylistItem(int row);
   void removePlaylistItems(QList<int> rows);
+  void toggleLivePlaylistMark(int row);
+  void toggleLivePlaylistFavorite(int row);
   void movePlaylistItem(int row, int targetRow);
   void renamePlaylistItem(int row, const QString& displayName);
   void changePlaybackMode(int modeIndex);
+  void changePlaylistKind(int kindIndex);
+  void requestLivePlaylistLoad(const QString& playlistUrl);
+  void startLivePlaylistLoad(const QString& playlistUrl,
+                             bool fallsBackToDirectPlayback);
+  void openDirectNetworkUrl(const QString& normalizedUrl);
+  void handleLivePlaylistLoaded(LivePlaylistLoadResult result);
+  void handleLivePlaylistFailure(LivePlaylistLoadError error);
   void attachVideoSurface(void* nativeHandle);
   void handleStateChanged(core::PlaybackState state);
   void handlePositionChanged(core::PlaybackPosition position);
@@ -84,7 +101,17 @@ class PlayerPresenter final : public QObject {
   void handleError(core::PlaybackError error);
   void handleNetworkOpenTimeout();
   void rememberNetworkUrl(const QString& url);
-  void openCurrentPlaylistItem(bool isNetworkRefresh = false);
+  void openCurrentPlaylistItem(PlaylistKind playlistKind,
+                               bool isNetworkRefresh = false);
+  void openCurrentPlaybackItem(bool isNetworkRefresh = false);
+  [[nodiscard]] core::Playlist& playlist(PlaylistKind playlistKind) noexcept;
+  [[nodiscard]] const core::Playlist& playlist(
+      PlaylistKind playlistKind) const noexcept;
+  [[nodiscard]] PlaylistModel& playlistModel(
+      PlaylistKind playlistKind) noexcept;
+  [[nodiscard]] bool isLivePlaylistItemMarked(std::size_t index) const;
+  [[nodiscard]] bool selectAdjacentPlaylistItem(PlaylistKind playlistKind,
+                                                bool selectsNext);
   void render();
   [[nodiscard]] PlayerViewState makeViewState() const;
 
@@ -94,16 +121,27 @@ class PlayerPresenter final : public QObject {
   logging::Logger* logger_{nullptr};
   std::unique_ptr<LyricsService> ownedLyricsService_;
   LyricsService* lyricsService_{nullptr};
+  std::unique_ptr<LivePlaylistService> ownedLivePlaylistService_;
+  LivePlaylistService* livePlaylistService_{nullptr};
   QTimer* networkOpenTimeoutTimer_{nullptr};
   core::PlaybackStateMachine stateMachine_;
-  core::Playlist playlist_;
-  PlaylistModel playlistModel_;
+  core::Playlist localPlaylist_;
+  core::Playlist livePlaylist_;
+  std::unordered_set<std::string> markedLiveSources_;
+  std::unordered_set<std::string> favoriteLiveSources_;
+  PlaylistModel localPlaylistModel_;
+  PlaylistModel livePlaylistModel_;
+  std::optional<core::MediaItem> currentPlaybackItem_;
+  std::optional<PlaylistKind> currentPlaybackKind_;
+  PlaylistKind activePlaylistKind_{PlaylistKind::Local};
   core::PlaybackPosition position_;
   std::optional<std::chrono::milliseconds> seekPreviewPosition_;
   std::optional<std::chrono::milliseconds> pendingRestartPosition_;
   QString mediaName_{QStringLiteral("未选择媒体")};
   QString currentSourcePath_;
   QStringList recentNetworkUrls_;
+  QString pendingPlaylistProbeUrl_;
+  QString livePlaylistStatusText_{QStringLiteral("输入远程 M3U/M3U8 清单 URL")};
   int volume_{100};
   int bufferingPercentage_{0};
   double playbackRate_{1.0};
@@ -122,6 +160,7 @@ class PlayerPresenter final : public QObject {
   bool ignoresCancelledNetworkEvents_{false};
   bool isNetworkRefreshPending_{false};
   bool isNetworkDisconnected_{false};
+  bool isLivePlaylistLoading_{false};
   bool isPreparingMedia_{false};
   bool isRestartPlayRequested_{false};
   bool isTemporaryFastPlayback_{false};

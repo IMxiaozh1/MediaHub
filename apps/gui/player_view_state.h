@@ -13,9 +13,11 @@ struct PlayerViewState {
   QString videoPlaceholder{QStringLiteral("打开媒体后，画面会出现在这里")};
   QString positionText{QStringLiteral("00:00 / --:--")};
   QString volumeText{QStringLiteral("音量 100%")};
+  QString livePlaylistStatusText{QStringLiteral("输入远程 M3U/M3U8 清单 URL")};
   int progressValue{0};
   int volumeValue{100};
   int currentPlaylistIndex{-1};
+  int currentLivePlaybackIndex{-1};
   int playbackModeIndex{0};
   double playbackRate{1.0};
   qint64 positionMilliseconds{0};
@@ -29,6 +31,10 @@ struct PlayerViewState {
   bool canGoPrevious{false};
   bool canGoNext{false};
   bool canRemovePlaylistItem{false};
+  bool isPlaylistEditable{true};
+  bool isLivePlaylistActive{false};
+  bool isCurrentPlaybackInActivePlaylist{false};
+  bool isLivePlaylistLoading{false};
   bool isMuted{false};
   bool isVideoSurfaceActive{false};
   bool isAudioVisualizationActive{false};
