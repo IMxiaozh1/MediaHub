@@ -18,6 +18,7 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSlider>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QTextBrowser>
 #include <QThread>
@@ -146,6 +147,7 @@ class MainWindowTest final : public QObject {
   Q_OBJECT
 
  private slots:
+  void initTestCase();
   void hasFormalInitialLayout();
   void parsesSynchronizedAndPlainLyrics();
   void matchesQualifiedTitleByDurationWhenArtistCreditDiffers();
@@ -204,7 +206,16 @@ class MainWindowTest final : public QObject {
   void stopsForwardingBeforeWindowCloses();
   void runsShutdownFallbackOnlyAfterTimeout();
   void cancelsShutdownFallbackAfterNormalCleanup();
+
+ private:
+  QTemporaryDir settingsDirectory_;
 };
+
+void MainWindowTest::initTestCase() {
+  QVERIFY(settingsDirectory_.isValid());
+  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                     settingsDirectory_.path());
+}
 
 void MainWindowTest::hasFormalInitialLayout() {
   GuiHarness harness;

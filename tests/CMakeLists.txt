@@ -10,6 +10,7 @@ add_executable(mediahub_tests
     unit/generated_media_test.cpp
     unit/logger_test.cpp
     unit/media_types_test.cpp
+    unit/m3u_test.cpp
     unit/playback_state_machine_test.cpp
     unit/playlist_test.cpp
 )

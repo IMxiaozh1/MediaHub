@@ -100,11 +100,14 @@ if(NOT MEDIAHUB_CORE_ONLY)
 endif()
 
 add_library(mediahub_core STATIC
+    include/mediahub/core/live_channel.h
     include/mediahub/core/media_types.h
+    include/mediahub/core/m3u.h
     include/mediahub/core/playback_state_machine.h
     include/mediahub/core/playlist.h
     include/mediahub/core/player_engine.h
     src/core/media_types.cpp
+    src/core/m3u.cpp
     src/core/playback_state_machine.cpp
     src/core/playlist.cpp
 )
