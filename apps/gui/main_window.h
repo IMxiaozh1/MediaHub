@@ -67,6 +67,7 @@ class MainWindow final : public QMainWindow {
   void pauseRequested();
   void playbackToggleRequested();
   void stopRequested();
+  void networkRefreshRequested();
   void seekStarted();
   void seekPreviewRequested(int progressValue);
   void seekRequested(int progressValue);
@@ -127,6 +128,7 @@ class MainWindow final : public QMainWindow {
   QSlider* volumeSlider_{nullptr};
   QToolButton* playPauseButton_{nullptr};
   QToolButton* stopButton_{nullptr};
+  QToolButton* networkRefreshButton_{nullptr};
   QToolButton* fullScreenButton_{nullptr};
   QToolButton* previousButton_{nullptr};
   QToolButton* nextButton_{nullptr};

@@ -66,6 +66,7 @@ enum class ControlIcon {
   Play,
   Pause,
   Stop,
+  Refresh,
   Volume,
   Muted,
   FullScreen,
@@ -134,6 +135,11 @@ QIcon controlIcon(const ControlIcon icon) {
       painter.setPen(Qt::NoPen);
       painter.setBrush(ink);
       painter.drawRoundedRect(QRectF(5, 5, 10, 10), 1.5, 1.5);
+      break;
+    case ControlIcon::Refresh:
+      painter.drawArc(QRectF(3.5, 3.5, 13, 13), 35 * 16, 285 * 16);
+      painter.drawLine(QPointF(15.5, 3.5), QPointF(15.5, 8));
+      painter.drawLine(QPointF(15.5, 3.5), QPointF(11, 3.5));
       break;
     case ControlIcon::Volume:
     case ControlIcon::Muted: {
@@ -525,6 +531,12 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
       new QShortcut(QKeySequence(Qt::Key_Space), this);
   playbackShortcut->setObjectName(QStringLiteral("playbackToggleShortcut"));
   playbackShortcut->setContext(Qt::WindowShortcut);
+  auto* const networkRefreshShortcut =
+      new QShortcut(QKeySequence(Qt::Key_F5), this);
+  networkRefreshShortcut->setObjectName(
+      QStringLiteral("networkRefreshShortcut"));
+  networkRefreshShortcut->setContext(Qt::WindowShortcut);
+  networkRefreshShortcut->setAutoRepeat(false);
   auto* const volumeUpShortcut = new QShortcut(QKeySequence(Qt::Key_Up), this);
   volumeUpShortcut->setObjectName(QStringLiteral("volumeUpShortcut"));
   volumeUpShortcut->setContext(Qt::WindowShortcut);
@@ -834,6 +846,12 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   stopButton_->setObjectName(QStringLiteral("stopButton"));
   configureTransportButton(stopButton_, QStringLiteral("停止"),
                            QStringLiteral("停止播放"), ControlIcon::Stop);
+  networkRefreshButton_ = new QToolButton(transportPanel);
+  networkRefreshButton_->setObjectName(QStringLiteral("networkRefreshButton"));
+  configureTransportButton(networkRefreshButton_, QStringLiteral("刷新直播"),
+                           QStringLiteral("刷新当前直播（F5）"),
+                           ControlIcon::Refresh);
+  networkRefreshButton_->hide();
 
   playbackModeButton_ = new HoverOptionButton(transportPanel);
   playbackModeButton_->setObjectName(QStringLiteral("playbackModeButton"));
@@ -879,6 +897,7 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   timelineRow->addWidget(playPauseButton_);
   timelineRow->addWidget(nextButton_);
   timelineRow->addWidget(stopButton_);
+  timelineRow->addWidget(networkRefreshButton_);
   timelineRow->addWidget(volumeButton_);
   timelineRow->addWidget(lyricsButton_);
   timelineRow->addWidget(playbackRateButton_);
@@ -1153,8 +1172,12 @@ MainWindow::MainWindow(QWidget* const parent) : QMainWindow(parent) {
   connect(playPauseButton_, &QToolButton::clicked, this,
           &MainWindow::playbackToggleRequested);
   connect(stopButton_, &QToolButton::clicked, this, &MainWindow::stopRequested);
+  connect(networkRefreshButton_, &QToolButton::clicked, this,
+          &MainWindow::networkRefreshRequested);
   connect(playbackShortcut, &QShortcut::activated, this,
           &MainWindow::playbackToggleRequested);
+  connect(networkRefreshShortcut, &QShortcut::activated, this,
+          &MainWindow::networkRefreshRequested);
   connect(volumeUpShortcut, &QShortcut::activated, this,
           [this] { emit volumeStepRequested(kKeyboardVolumeStep); });
   connect(volumeDownShortcut, &QShortcut::activated, this,
@@ -1266,6 +1289,8 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   playPauseButton_->setToolTip(showsPause ? QStringLiteral("暂停（空格）")
                                           : QStringLiteral("播放（空格）"));
   stopButton_->setEnabled(viewState.canStop);
+  networkRefreshButton_->setVisible(viewState.canRefreshNetwork);
+  networkRefreshButton_->setEnabled(viewState.canRefreshNetwork);
   previousButton_->setEnabled(viewState.canGoPrevious);
   nextButton_->setEnabled(viewState.canGoNext);
   canEditPlaylist_ = viewState.canRemovePlaylistItem;

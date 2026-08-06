@@ -302,6 +302,28 @@ TEST(VlcPlayerEngineTest, QueuesNetworkControlsWithoutBlockingCaller) {
   ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
 }
 
+TEST(VlcPlayerEngineTest, SwitchesFromNetworkDescriptorToLocalAudio) {
+  GeneratedWav media(2s);
+  RecordingListener listener;
+  VlcPlayerEngine engine(testOptions());
+  engine.setEventListener(&listener);
+
+  engine.setVolume(37);
+  engine.setMuted(false);
+  engine.open(core::MediaItem{"https://example.invalid/live.flv",
+                              core::MediaSourceKind::NetworkStream,
+                              "live.flv"});
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+
+  engine.open(core::makeMediaItem(media.source()));
+  engine.play();
+
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Playing, 1));
+  ASSERT_TRUE(listener.waitForNonSilentWaveform());
+  EXPECT_TRUE(listener.waitForPositionAtLeast(100ms));
+}
+
 TEST(VlcPlayerEngineTest, RejectsInvalidNetworkDescriptorWithoutLeakingUrl) {
   RecordingListener listener;
   VlcPlayerEngine engine(testOptions());

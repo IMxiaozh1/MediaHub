@@ -20,10 +20,6 @@ namespace {
 
 constexpr std::array<double, 6> kPlaybackRates{0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
 constexpr auto kNetworkOpenTimeout = std::chrono::seconds(15);
-constexpr auto kNetworkActivityPollInterval = std::chrono::milliseconds(500);
-constexpr auto kNetworkActivityStallTimeout = std::chrono::seconds(6);
-constexpr std::array<int, 3> kNetworkReconnectDelaysMilliseconds{1000, 2000,
-                                                                 4000};
 constexpr int kMaxSessionNetworkUrls = 10;
 
 std::optional<double> normalizedPlaybackRate(const double requestedRate) {
@@ -231,27 +227,6 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
       static_cast<int>(kNetworkOpenTimeout.count() * 1000));
   connect(networkOpenTimeoutTimer_, &QTimer::timeout, this,
           &PlayerPresenter::handleNetworkOpenTimeout);
-  networkReconnectTimer_ = new QTimer(this);
-  networkReconnectTimer_->setObjectName(
-      QStringLiteral("networkReconnectTimer"));
-  networkReconnectTimer_->setSingleShot(true);
-  connect(networkReconnectTimer_, &QTimer::timeout, this,
-          &PlayerPresenter::handleNetworkReconnectTimeout);
-  networkActivityPollTimer_ = new QTimer(this);
-  networkActivityPollTimer_->setObjectName(
-      QStringLiteral("networkActivityPollTimer"));
-  networkActivityPollTimer_->setInterval(
-      static_cast<int>(kNetworkActivityPollInterval.count()));
-  connect(networkActivityPollTimer_, &QTimer::timeout, this,
-          &PlayerPresenter::handleNetworkActivityCheck);
-  networkActivityWatchdogTimer_ = new QTimer(this);
-  networkActivityWatchdogTimer_->setObjectName(
-      QStringLiteral("networkActivityWatchdogTimer"));
-  networkActivityWatchdogTimer_->setSingleShot(true);
-  networkActivityWatchdogTimer_->setInterval(
-      static_cast<int>(kNetworkActivityStallTimeout.count() * 1000));
-  connect(networkActivityWatchdogTimer_, &QTimer::timeout, this,
-          &PlayerPresenter::handleNetworkActivityStalled);
   window_.setPlaylistModel(&playlistModel_);
   connect(&window_, &MainWindow::localFilesSelected, this,
           &PlayerPresenter::addLocalFiles);
@@ -265,6 +240,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine& engine,
           &PlayerPresenter::togglePlayback);
   connect(&window_, &MainWindow::stopRequested, this,
           &PlayerPresenter::requestStop);
+  connect(&window_, &MainWindow::networkRefreshRequested, this,
+          &PlayerPresenter::requestNetworkRefresh);
   connect(&window_, &MainWindow::seekStarted, this,
           &PlayerPresenter::beginSeek);
   connect(&window_, &MainWindow::seekPreviewRequested, this,
@@ -401,19 +378,10 @@ void PlayerPresenter::openNetworkUrl(const QString& url) {
   openCurrentPlaylistItem();
 }
 
-void PlayerPresenter::openCurrentPlaylistItem(const bool isAutomaticReconnect) {
+void PlayerPresenter::openCurrentPlaylistItem(const bool isNetworkRefresh) {
   const auto* const item = playlist_.currentItem();
   if (item == nullptr) {
     return;
-  }
-
-  resetNetworkActivityMonitoring();
-  if (isAutomaticReconnect) {
-    networkReconnectTimer_->stop();
-    isNetworkReconnectPending_ = false;
-    isNetworkReconnectExhausted_ = false;
-  } else {
-    resetNetworkReconnect();
   }
 
   mediaName_ = fromUtf8(item->displayName);
@@ -434,7 +402,8 @@ void PlayerPresenter::openCurrentPlaylistItem(const bool isAutomaticReconnect) {
   isNetworkOpenCancelled_ = false;
   isNetworkOpenTimedOut_ = false;
   ignoresCancelledNetworkEvents_ = false;
-  isNetworkReconnectInProgress_ = isAutomaticReconnect && isNetworkMedia_;
+  isNetworkRefreshPending_ = isNetworkRefresh && isNetworkMedia_;
+  isNetworkDisconnected_ = false;
   isVideoMedia_ =
       isNetworkMedia_ ||
       !isAudioFile(QString::fromUtf8(item->source.data(),
@@ -463,8 +432,6 @@ void PlayerPresenter::shutdown() noexcept {
 
   isShuttingDown_ = true;
   networkOpenTimeoutTimer_->stop();
-  resetNetworkActivityMonitoring();
-  resetNetworkReconnect();
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "shutdown");
   }
@@ -507,8 +474,7 @@ void PlayerPresenter::requestPlay() {
   if (isShuttingDown_) {
     return;
   }
-  if (isNetworkMedia_ && (isNetworkOpenCancelled_ || isNetworkOpenTimedOut_ ||
-                          isNetworkReconnectExhausted_)) {
+  if (isNetworkMedia_ && (isNetworkOpenCancelled_ || isNetworkOpenTimedOut_)) {
     openCurrentPlaylistItem();
     return;
   }
@@ -541,25 +507,18 @@ void PlayerPresenter::togglePlayback() {
 void PlayerPresenter::requestStop() {
   Q_ASSERT(QThread::currentThread() == thread());
   if (!isShuttingDown_ && makeViewState().canStop) {
-    resetNetworkActivityMonitoring();
-    const bool cancelsNetworkOpen = isNetworkMedia_ && isNetworkOpenPending_;
-    const bool cancelsNetworkReconnect =
-        isNetworkMedia_ &&
-        (isNetworkReconnectPending_ || isNetworkReconnectInProgress_);
     const bool cancelsNetworkOperation =
-        cancelsNetworkOpen || cancelsNetworkReconnect;
+        isNetworkMedia_ && isNetworkOpenPending_;
     isAutoPlayPending_ = false;
     isSeeking_ = false;
     pendingRestartPosition_.reset();
     isRestartPlayRequested_ = false;
     hasCurrentMediaStarted_ = false;
     seekPreviewPosition_.reset();
-    if (isNetworkMedia_ && !cancelsNetworkOperation) {
-      resetNetworkReconnect();
-    }
+    isNetworkRefreshPending_ = false;
+    isNetworkDisconnected_ = false;
     if (cancelsNetworkOperation) {
       networkOpenTimeoutTimer_->stop();
-      resetNetworkReconnect();
       isNetworkOpenPending_ = false;
       isNetworkOpenCancelled_ = true;
       isNetworkOpenTimedOut_ = false;
@@ -582,6 +541,21 @@ void PlayerPresenter::requestStop() {
       }
     }
   }
+}
+
+void PlayerPresenter::requestNetworkRefresh() {
+  Q_ASSERT(QThread::currentThread() == thread());
+  const auto* const item = playlist_.currentItem();
+  if (isShuttingDown_ || !isNetworkMedia_ || item == nullptr ||
+      item->kind != core::MediaSourceKind::NetworkStream) {
+    return;
+  }
+
+  if (logger_ != nullptr) {
+    logger_->log(logging::LogLevel::Info, "presenter",
+                 "network_refresh_requested");
+  }
+  openCurrentPlaylistItem(true);
 }
 
 void PlayerPresenter::beginSeek() {
@@ -843,7 +817,6 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
   position_ = {};
   mediaName_ = QStringLiteral("未选择媒体");
   networkOpenTimeoutTimer_->stop();
-  resetNetworkReconnect();
   bufferingPercentage_ = 0;
   isVideoMedia_ = false;
   isNetworkMedia_ = false;
@@ -851,6 +824,8 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
   isNetworkOpenCancelled_ = false;
   isNetworkOpenTimedOut_ = false;
   ignoresCancelledNetworkEvents_ = false;
+  isNetworkRefreshPending_ = false;
+  isNetworkDisconnected_ = false;
   isPreparingMedia_ = false;
   hasCurrentMediaStarted_ = false;
   engine_.stop();
@@ -914,14 +889,13 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
   if (isShuttingDown_) {
     return;
   }
-  if (isNetworkMedia_ &&
-      (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_)) {
+  if (isNetworkMedia_ && ignoresCancelledNetworkEvents_) {
     return;
   }
 
-  const bool shouldReconnectAfterFailure =
-      isNetworkMedia_ && state == core::PlaybackState::Failed &&
-      (hasCurrentMediaStarted_ || isNetworkReconnectInProgress_);
+  const bool wasStartedNetworkFailure = isNetworkMedia_ &&
+                                        state == core::PlaybackState::Failed &&
+                                        hasCurrentMediaStarted_;
 
   if (state == core::PlaybackState::Stopped &&
       stateMachine_.state() == core::PlaybackState::Ended &&
@@ -950,16 +924,13 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     return;
   }
 
-  if (isNetworkMedia_ && state != core::PlaybackState::Playing) {
-    resetNetworkActivityMonitoring();
-  }
-
   if (state == core::PlaybackState::Playing) {
     if (isNetworkMedia_) {
       networkOpenTimeoutTimer_->stop();
       isNetworkOpenPending_ = false;
       bufferingPercentage_ = 100;
-      isNetworkReconnectInProgress_ = false;
+      isNetworkRefreshPending_ = false;
+      isNetworkDisconnected_ = false;
       // 网络音频输出可能在连接完成后才创建，进入 Playing 后同步一次界面状态。
       engine_.setVolume(volume_);
       engine_.setMuted(isMuted_);
@@ -967,33 +938,26 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     const double effectiveRate = isTemporaryFastPlayback_ ? 2.0 : playbackRate_;
     applyPlaybackRate(effectiveRate);
     hasCurrentMediaStarted_ = true;
-    if (isNetworkMedia_) {
-      startNetworkActivityMonitoring();
-    }
   } else if (state == core::PlaybackState::Stopped ||
              state == core::PlaybackState::Failed) {
     if (isNetworkMedia_) {
       networkOpenTimeoutTimer_->stop();
       isNetworkOpenPending_ = false;
+      isNetworkRefreshPending_ = false;
+      if (state == core::PlaybackState::Failed) {
+        isNetworkDisconnected_ = wasStartedNetworkFailure;
+      }
     }
     hasCurrentMediaStarted_ = false;
   }
 
-  if (shouldReconnectAfterFailure) {
-    scheduleNetworkReconnect("playback_failed");
-  } else {
-    render();
-  }
+  render();
 
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "state_changed",
                  {{"state", stateName(state)}});
   }
   emit stateApplied(stateMachine_.state());
-
-  if (shouldReconnectAfterFailure) {
-    return;
-  }
 
   if (state == core::PlaybackState::Stopped &&
       pendingRestartPosition_.has_value() && !isRestartPlayRequested_) {
@@ -1020,8 +984,7 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
 void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (!isShuttingDown_ &&
-      !(isNetworkMedia_ &&
-        (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_))) {
+      !(isNetworkMedia_ && ignoresCancelledNetworkEvents_)) {
     if (pendingRestartPosition_.has_value()) {
       const auto total =
           position.total.has_value() ? position.total : position_.total;
@@ -1045,8 +1008,7 @@ void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
 void PlayerPresenter::handleDurationChanged(const OptionalDuration duration) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (!isShuttingDown_ &&
-      !(isNetworkMedia_ &&
-        (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_))) {
+      !(isNetworkMedia_ && ignoresCancelledNetworkEvents_)) {
     position_.total = duration;
     if (pendingRestartPosition_.has_value()) {
       position_.current =
@@ -1063,8 +1025,7 @@ void PlayerPresenter::handleDurationChanged(const OptionalDuration duration) {
 
 void PlayerPresenter::handleBufferingChanged(const int percentage) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || !isNetworkMedia_ || ignoresCancelledNetworkEvents_ ||
-      isNetworkReconnectPending_) {
+  if (isShuttingDown_ || !isNetworkMedia_ || ignoresCancelledNetworkEvents_) {
     return;
   }
   bufferingPercentage_ = std::clamp(percentage, 0, 100);
@@ -1093,16 +1054,24 @@ void PlayerPresenter::handleLyricsResult(LyricsResult result) {
 
 void PlayerPresenter::handleEndReached() {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || (isNetworkMedia_ && (ignoresCancelledNetworkEvents_ ||
-                                              isNetworkReconnectPending_))) {
+  if (isShuttingDown_ || (isNetworkMedia_ && ignoresCancelledNetworkEvents_)) {
     return;
   }
 
   if (isNetworkMedia_) {
-    if (!hasCurrentMediaStarted_ && !isNetworkReconnectInProgress_) {
+    if (!hasCurrentMediaStarted_) {
       return;
     }
-    scheduleNetworkReconnect("end_reached");
+    hasCurrentMediaStarted_ = false;
+    isNetworkOpenPending_ = false;
+    isNetworkRefreshPending_ = false;
+    isNetworkDisconnected_ = true;
+    isPreparingMedia_ = false;
+    const auto result = stateMachine_.transitionTo(core::PlaybackState::Ended);
+    if (result != core::PlaybackTransitionResult::Rejected) {
+      render();
+      emit stateApplied(stateMachine_.state());
+    }
     return;
   }
   if (!hasCurrentMediaStarted_) {
@@ -1132,15 +1101,11 @@ void PlayerPresenter::handleEndReached() {
 
 void PlayerPresenter::handleError(core::PlaybackError error) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || (isNetworkMedia_ && (ignoresCancelledNetworkEvents_ ||
-                                              isNetworkReconnectPending_ ||
-                                              isNetworkReconnectExhausted_))) {
+  if (isShuttingDown_ || (isNetworkMedia_ && ignoresCancelledNetworkEvents_)) {
     return;
   }
 
-  const bool shouldReconnect =
-      isNetworkMedia_ &&
-      (hasCurrentMediaStarted_ || isNetworkReconnectInProgress_);
+  const bool wasStartedNetwork = isNetworkMedia_ && hasCurrentMediaStarted_;
 
   isAutoPlayPending_ = false;
   isSeeking_ = false;
@@ -1152,6 +1117,8 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
   if (isNetworkMedia_) {
     networkOpenTimeoutTimer_->stop();
     isNetworkOpenPending_ = false;
+    isNetworkRefreshPending_ = false;
+    isNetworkDisconnected_ = isNetworkDisconnected_ || wasStartedNetwork;
   }
   if (logger_ != nullptr) {
     logger_->log(
@@ -1159,13 +1126,6 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
         {{"kind", errorKindName(error.kind)}, {"detail", error.engineDetail}});
   }
   const auto result = stateMachine_.transitionTo(core::PlaybackState::Failed);
-  if (shouldReconnect) {
-    scheduleNetworkReconnect("playback_error");
-    if (result != core::PlaybackTransitionResult::Rejected) {
-      emit stateApplied(stateMachine_.state());
-    }
-    return;
-  }
   if (result != core::PlaybackTransitionResult::Rejected) {
     render();
     emit stateApplied(stateMachine_.state());
@@ -1179,7 +1139,6 @@ void PlayerPresenter::handleNetworkOpenTimeout() {
     return;
   }
 
-  const bool shouldContinueReconnect = isNetworkReconnectInProgress_;
   isAutoPlayPending_ = false;
   isNetworkOpenPending_ = false;
   isNetworkOpenCancelled_ = false;
@@ -1187,16 +1146,11 @@ void PlayerPresenter::handleNetworkOpenTimeout() {
   ignoresCancelledNetworkEvents_ = true;
   isPreparingMedia_ = false;
   hasCurrentMediaStarted_ = false;
+  isNetworkRefreshPending_ = false;
+  isNetworkDisconnected_ = false;
   bufferingPercentage_ = 0;
   engine_.stop();
   const auto result = stateMachine_.transitionTo(core::PlaybackState::Failed);
-  if (shouldContinueReconnect) {
-    scheduleNetworkReconnect("open_timeout");
-    if (result != core::PlaybackTransitionResult::Rejected) {
-      emit stateApplied(stateMachine_.state());
-    }
-    return;
-  }
   if (result != core::PlaybackTransitionResult::Rejected) {
     render();
     emit stateApplied(stateMachine_.state());
@@ -1210,96 +1164,6 @@ void PlayerPresenter::handleNetworkOpenTimeout() {
   }
 }
 
-void PlayerPresenter::handleNetworkReconnectTimeout() {
-  Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || !isNetworkMedia_ || !isNetworkReconnectPending_) {
-    return;
-  }
-
-  const auto* const item = playlist_.currentItem();
-  if (item == nullptr || item->kind != core::MediaSourceKind::NetworkStream) {
-    resetNetworkReconnect();
-    return;
-  }
-
-  if (logger_ != nullptr) {
-    logger_->log(logging::LogLevel::Info, "presenter",
-                 "network_reconnect_started",
-                 {{"attempt", std::to_string(networkReconnectAttempt_)}});
-  }
-  openCurrentPlaylistItem(true);
-}
-
-void PlayerPresenter::handleNetworkActivityCheck() {
-  Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || !isNetworkMedia_ || isNetworkReconnectPending_ ||
-      isNetworkReconnectInProgress_ ||
-      stateMachine_.state() != core::PlaybackState::Playing) {
-    resetNetworkActivityMonitoring();
-    return;
-  }
-
-  const auto activity = engine_.networkStreamActivity();
-  if (!activity.has_value()) {
-    networkActivityWatchdogTimer_->stop();
-    lastNetworkActivity_.reset();
-    return;
-  }
-  if (!lastNetworkActivity_.has_value() || *lastNetworkActivity_ != *activity) {
-    lastNetworkActivity_ = activity;
-    networkActivityWatchdogTimer_->start();
-  }
-}
-
-void PlayerPresenter::handleNetworkActivityStalled() {
-  Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || !isNetworkMedia_ || isNetworkReconnectPending_ ||
-      isNetworkReconnectInProgress_ ||
-      stateMachine_.state() != core::PlaybackState::Playing) {
-    resetNetworkActivityMonitoring();
-    return;
-  }
-
-  const auto activity = engine_.networkStreamActivity();
-  if (!activity.has_value()) {
-    lastNetworkActivity_.reset();
-    return;
-  }
-  if (!lastNetworkActivity_.has_value() || *lastNetworkActivity_ != *activity) {
-    lastNetworkActivity_ = activity;
-    networkActivityWatchdogTimer_->start();
-    return;
-  }
-
-  if (logger_ != nullptr) {
-    logger_->log(
-        logging::LogLevel::Warning, "presenter", "network_activity_stalled",
-        {{"timeout_ms",
-          std::to_string(kNetworkActivityStallTimeout.count() * 1000)}});
-  }
-  scheduleNetworkReconnect("activity_stalled");
-}
-
-void PlayerPresenter::startNetworkActivityMonitoring() {
-  resetNetworkActivityMonitoring();
-  if (isShuttingDown_ || !isNetworkMedia_ ||
-      stateMachine_.state() != core::PlaybackState::Playing) {
-    return;
-  }
-  networkActivityPollTimer_->start();
-  handleNetworkActivityCheck();
-}
-
-void PlayerPresenter::resetNetworkActivityMonitoring() {
-  if (networkActivityPollTimer_ != nullptr) {
-    networkActivityPollTimer_->stop();
-  }
-  if (networkActivityWatchdogTimer_ != nullptr) {
-    networkActivityWatchdogTimer_->stop();
-  }
-  lastNetworkActivity_.reset();
-}
-
 void PlayerPresenter::rememberNetworkUrl(const QString& url) {
   recentNetworkUrls_.removeAll(url);
   recentNetworkUrls_.prepend(url);
@@ -1307,72 +1171,6 @@ void PlayerPresenter::rememberNetworkUrl(const QString& url) {
     recentNetworkUrls_.removeLast();
   }
   window_.setRecentNetworkUrls(recentNetworkUrls_);
-}
-
-void PlayerPresenter::scheduleNetworkReconnect(const char* const reason) {
-  if (isShuttingDown_ || !isNetworkMedia_ || isNetworkReconnectPending_) {
-    return;
-  }
-
-  resetNetworkActivityMonitoring();
-  networkOpenTimeoutTimer_->stop();
-  isAutoPlayPending_ = false;
-  isNetworkOpenPending_ = false;
-  isNetworkOpenCancelled_ = false;
-  isNetworkOpenTimedOut_ = false;
-  ignoresCancelledNetworkEvents_ = false;
-  isNetworkReconnectInProgress_ = false;
-  isPreparingMedia_ = false;
-  hasCurrentMediaStarted_ = false;
-  bufferingPercentage_ = 0;
-
-  if (networkReconnectAttempt_ >=
-      static_cast<int>(kNetworkReconnectDelaysMilliseconds.size())) {
-    isNetworkReconnectExhausted_ = true;
-    networkReconnectDelayMilliseconds_ = 0;
-    const auto result = stateMachine_.transitionTo(core::PlaybackState::Failed);
-    render();
-    if (result != core::PlaybackTransitionResult::Rejected) {
-      emit stateApplied(stateMachine_.state());
-    }
-    window_.showPlaybackError(
-        QStringLiteral(
-            "直播连接已中断，%1 次自动重连均未成功，请检查网络后手动重试。")
-            .arg(static_cast<int>(kNetworkReconnectDelaysMilliseconds.size())));
-    if (logger_ != nullptr) {
-      logger_->log(logging::LogLevel::Warning, "presenter",
-                   "network_reconnect_exhausted");
-    }
-    return;
-  }
-
-  networkReconnectDelayMilliseconds_ =
-      kNetworkReconnectDelaysMilliseconds[static_cast<std::size_t>(
-          networkReconnectAttempt_)];
-  ++networkReconnectAttempt_;
-  isNetworkReconnectPending_ = true;
-  isNetworkReconnectExhausted_ = false;
-  window_.clearPlaybackError();
-  render();
-  networkReconnectTimer_->start(networkReconnectDelayMilliseconds_);
-  if (logger_ != nullptr) {
-    logger_->log(
-        logging::LogLevel::Warning, "presenter", "network_reconnect_scheduled",
-        {{"attempt", std::to_string(networkReconnectAttempt_)},
-         {"delay_ms", std::to_string(networkReconnectDelayMilliseconds_)},
-         {"reason", reason}});
-  }
-}
-
-void PlayerPresenter::resetNetworkReconnect() {
-  if (networkReconnectTimer_ != nullptr) {
-    networkReconnectTimer_->stop();
-  }
-  networkReconnectAttempt_ = 0;
-  networkReconnectDelayMilliseconds_ = 0;
-  isNetworkReconnectPending_ = false;
-  isNetworkReconnectInProgress_ = false;
-  isNetworkReconnectExhausted_ = false;
 }
 
 void PlayerPresenter::render() {
@@ -1386,8 +1184,10 @@ PlayerViewState PlayerPresenter::makeViewState() const {
   viewState.videoPlaceholder = QStringLiteral("打开媒体后，画面会出现在这里");
   const auto displayedPosition =
       seekPreviewPosition_.value_or(position_.current);
-  viewState.positionText = formatPosition(displayedPosition, position_.total);
-  viewState.progressValue = progressValue(displayedPosition, position_.total);
+  const std::optional<std::chrono::milliseconds> displayedTotal =
+      isNetworkMedia_ ? std::nullopt : position_.total;
+  viewState.positionText = formatPosition(displayedPosition, displayedTotal);
+  viewState.progressValue = progressValue(displayedPosition, displayedTotal);
   viewState.positionMilliseconds =
       std::max<qint64>(static_cast<qint64>(displayedPosition.count()), 0);
   viewState.volumeValue = isMuted_ ? 0 : volume_;
@@ -1404,6 +1204,7 @@ PlayerViewState PlayerPresenter::makeViewState() const {
   viewState.canGoPrevious = playlist_.previousIndex().has_value();
   viewState.canGoNext = playlist_.nextIndex().has_value();
   viewState.canRemovePlaylistItem = playlist_.currentIndex().has_value();
+  viewState.canRefreshNetwork = isNetworkMedia_;
 
   switch (stateMachine_.state()) {
     case core::PlaybackState::Idle:
@@ -1448,9 +1249,11 @@ PlayerViewState PlayerPresenter::makeViewState() const {
       viewState.canPlay = true;
       break;
     case core::PlaybackState::Failed:
-      viewState.statusText = isNetworkOpenTimedOut_
-                                 ? QStringLiteral("连接超时")
-                                 : QStringLiteral("播放失败");
+      viewState.statusText =
+          isNetworkOpenTimedOut_
+              ? QStringLiteral("连接超时")
+              : (isNetworkMedia_ ? QStringLiteral("直播连接失败，请点击刷新")
+                                 : QStringLiteral("播放失败"));
       viewState.canPlay = isNetworkOpenTimedOut_;
       break;
   }
@@ -1465,33 +1268,20 @@ PlayerViewState PlayerPresenter::makeViewState() const {
     }
   }
 
-  if (isNetworkReconnectPending_) {
-    const int delaySeconds =
-        std::max(1, networkReconnectDelayMilliseconds_ / 1000);
-    viewState.statusText =
-        QStringLiteral("直播已断开，%1 秒后重连（%2/%3）")
-            .arg(delaySeconds)
-            .arg(networkReconnectAttempt_)
-            .arg(static_cast<int>(kNetworkReconnectDelaysMilliseconds.size()));
+  if (isNetworkRefreshPending_ && isNetworkOpenPending_) {
+    viewState.statusText = QStringLiteral("正在刷新直播...");
     viewState.canPlay = false;
     viewState.canPause = false;
     viewState.canStop = true;
-  } else if (isNetworkReconnectInProgress_ && isNetworkOpenPending_) {
-    viewState.statusText =
-        QStringLiteral("正在重连（%1/%2）...")
-            .arg(networkReconnectAttempt_)
-            .arg(static_cast<int>(kNetworkReconnectDelaysMilliseconds.size()));
+  } else if (isNetworkDisconnected_) {
+    viewState.statusText = QStringLiteral("直播已断开，请点击刷新");
     viewState.canPlay = false;
-    viewState.canPause = false;
-    viewState.canStop = true;
-  } else if (isNetworkReconnectExhausted_) {
-    viewState.statusText = QStringLiteral("自动重连失败");
-    viewState.canPlay = true;
     viewState.canPause = false;
     viewState.canStop = false;
   }
 
-  viewState.canSeek = isSeekAvailable(position_, stateMachine_.state());
+  viewState.canSeek =
+      !isNetworkMedia_ && isSeekAvailable(position_, stateMachine_.state());
 
   if (mediaName_ == QStringLiteral("未选择媒体")) {
     return viewState;

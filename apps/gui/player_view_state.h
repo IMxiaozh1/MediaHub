@@ -24,6 +24,7 @@ struct PlayerViewState {
   bool canPlay{false};
   bool canPause{false};
   bool canStop{false};
+  bool canRefreshNetwork{false};
   bool canSeek{false};
   bool canGoPrevious{false};
   bool canGoNext{false};

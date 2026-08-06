@@ -243,7 +243,8 @@ bool hasObviouslyInvalidMp4Content(const std::filesystem::path& path) {
 class VlcPlayerEngine::Impl {
  public:
   explicit Impl(const VlcPlayerEngineOptions options)
-      : instance_(createInstance(options)),
+      : options_(options),
+        instance_(createInstance(options)),
         analysisInstance_(createInstance(options)),
         player_(libvlc_media_player_new(instance_.get())),
         analysisPlayer_(libvlc_media_player_new(analysisInstance_.get())) {
@@ -548,11 +549,23 @@ class VlcPlayerEngine::Impl {
 
   void setVolumeNow(const int volume) {
     const int boundedVolume = std::clamp(volume, 0, 100);
+    volume_ = boundedVolume;
     static_cast<void>(libvlc_audio_set_volume(player_.get(), boundedVolume));
   }
 
   void setMutedNow(const bool isMuted) {
+    isMuted_ = isMuted;
     libvlc_audio_set_mute(player_.get(), isMuted ? 1 : 0);
+  }
+
+  void reapplyAudioStateAfterPlaying() noexcept {
+    try {
+      enqueueCommand([this] {
+        static_cast<void>(libvlc_audio_set_volume(player_.get(), volume_));
+        libvlc_audio_set_mute(player_.get(), isMuted_ ? 1 : 0);
+      });
+    } catch (...) {
+    }
   }
 
   void setPlaybackRateNow(const double rate) {
@@ -867,6 +880,9 @@ class VlcPlayerEngine::Impl {
         movePositionToEnd();
       }
       updateState(nextState);
+      if (*playbackEvent == VlcPlaybackEvent::Playing) {
+        reapplyAudioStateAfterPlaying();
+      }
 
       if (*playbackEvent == VlcPlaybackEvent::EndReached) {
         dispatch([](core::PlayerEventListener& listener) noexcept {
@@ -1035,18 +1051,26 @@ class VlcPlayerEngine::Impl {
     callbacksDrained_.wait(lock, [this] { return activeAudioCallbacks_ == 0; });
   }
 
-  void retirePrimaryPlayer(VlcPlayerPtr player) noexcept {
-    if (!player) {
+  void retirePrimaryPlayer(VlcPlayerPtr player,
+                           libvlc_instance_t* const instance) noexcept {
+    if (!player || instance == nullptr) {
       return;
     }
 
     auto* const rawPlayer = player.release();
-    auto* const retainedInstance = instance_.get();
-    libvlc_retain(retainedInstance);
+    libvlc_retain(instance);
     try {
-      std::thread([rawPlayer, retainedInstance] {
+      std::thread([rawPlayer, instance] {
+        // release 只减少引用计数；持续直播可能继续持有播放器并输出。
+        // 后台明确关闭音视频轨和播放，避免旧源覆盖新媒体或占用声卡。
+        libvlc_audio_set_mute(rawPlayer, 1);
+        static_cast<void>(libvlc_audio_set_volume(rawPlayer, 0));
+        static_cast<void>(libvlc_audio_set_track(rawPlayer, -1));
+        static_cast<void>(libvlc_video_set_track(rawPlayer, -1));
+        libvlc_media_player_set_hwnd(rawPlayer, nullptr);
+        libvlc_media_player_stop(rawPlayer);
         libvlc_media_player_release(rawPlayer);
-        libvlc_release(retainedInstance);
+        libvlc_release(instance);
       }).detach();
     } catch (...) {
       // 宁可在极端的线程创建失败中留给进程回收，也不能让 GUI 重新阻塞。
@@ -1054,25 +1078,41 @@ class VlcPlayerEngine::Impl {
   }
 
   void replacePrimaryPlayer(const bool preserveMedia) {
-    VlcPlayerPtr replacement(libvlc_media_player_new(instance_.get()));
+    VlcInstancePtr replacementInstance;
+    libvlc_instance_t* replacementOwner = instance_.get();
+    if (!preserveMedia) {
+      replacementInstance = createInstance(options_);
+      replacementOwner = replacementInstance.get();
+    }
+
+    VlcPlayerPtr replacement(libvlc_media_player_new(replacementOwner));
     if (!replacement) {
       throw std::runtime_error("无法重建 libVLC 播放器。");
     }
     libvlc_media_player_set_hwnd(replacement.get(), videoSurface_);
+    static_cast<void>(libvlc_audio_set_volume(replacement.get(), volume_));
+    libvlc_audio_set_mute(replacement.get(), isMuted_ ? 1 : 0);
     if (preserveMedia && media_) {
       libvlc_media_player_set_media(replacement.get(), media_.get());
     }
 
     detachEvents();
     auto retiredPlayer = std::move(player_);
+    VlcInstancePtr retiredInstance;
+    if (!preserveMedia) {
+      retiredInstance = std::move(instance_);
+      instance_ = std::move(replacementInstance);
+    }
+    auto* const retiredOwner =
+        preserveMedia ? instance_.get() : retiredInstance.get();
     player_ = std::move(replacement);
     try {
       attachEvents();
     } catch (...) {
-      retirePrimaryPlayer(std::move(retiredPlayer));
+      retirePrimaryPlayer(std::move(retiredPlayer), retiredOwner);
       throw;
     }
-    retirePrimaryPlayer(std::move(retiredPlayer));
+    retirePrimaryPlayer(std::move(retiredPlayer), retiredOwner);
   }
 
   void stopCurrentMedia() {
@@ -1155,6 +1195,7 @@ class VlcPlayerEngine::Impl {
     instance_.reset();
   }
 
+  const VlcPlayerEngineOptions options_;
   VlcInstancePtr instance_;
   VlcInstancePtr analysisInstance_;
   VlcMediaPtr media_;
@@ -1165,6 +1206,8 @@ class VlcPlayerEngine::Impl {
   std::size_t attachedEventCount_{0};
   bool isAudioOnlyMedia_{false};
   bool isNetworkMedia_{false};
+  int volume_{100};
+  bool isMuted_{false};
   void* videoSurface_{nullptr};
 
   std::mutex commandMutex_;
