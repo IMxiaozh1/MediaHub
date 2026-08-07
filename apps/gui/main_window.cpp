@@ -580,6 +580,10 @@ MainWindow::MainWindow(QWidget* const parent)
       helpMenu->addAction(QStringLiteral("直播源(&L)..."));
   liveSourceMemoAction->setObjectName(
       QStringLiteral("liveSourceMemoAction"));
+  liveSourceMemoAction->setShortcut(
+      QKeySequence(static_cast<int>(Qt::CTRL) |
+                   static_cast<int>(Qt::Key_M)));
+  liveSourceMemoAction->setShortcutContext(Qt::WindowShortcut);
   connect(liveSourceMemoAction, &QAction::triggered, this,
           &MainWindow::showLiveSourceMemo);
 

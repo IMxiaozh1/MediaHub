@@ -243,6 +243,7 @@ private slots:
   void restoresPersistedStateWithoutStartingPlayback();
   void persistsPlaylistChangesAndSuccessfulLiveHistory();
   void fillsAndDeletesLiveUrlHistoryWithoutLoading();
+  void opensLiveSourceMemoWithCtrlM();
   void managesLiveSourceMemosWithSaveShortcutAndReturnPrompt();
   void savesUnsavedLiveSourceMemosWhenWindowCloses();
   void cancelsLivePlaylistLoadingAndIgnoresLateResult();
@@ -1561,6 +1562,36 @@ void MainWindowTest::fillsAndDeletesLiveUrlHistoryWithoutLoading() {
   QCOMPARE(store.snapshot.livePlaylistUrlHistory,
            QStringList{QStringLiteral("https://example.test/two.m3u")});
   QCOMPARE(urlEdit->text(), QStringLiteral("https://example.test/two.m3u"));
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+}
+
+void MainWindowTest::opensLiveSourceMemoWithCtrlM() {
+  GuiHarness harness;
+  harness.window.show();
+  harness.window.activateWindow();
+  QCoreApplication::processEvents();
+  auto *const memoAction =
+      requiredChild<QAction>(harness.window, "liveSourceMemoAction");
+  QCOMPARE(memoAction->shortcut(),
+           QKeySequence(static_cast<int>(Qt::CTRL) |
+                        static_cast<int>(Qt::Key_M)));
+  QCOMPARE(memoAction->shortcutContext(), Qt::WindowShortcut);
+  bool openedFromShortcut = false;
+
+  QTimer::singleShot(0, [&] {
+    auto *const dialog =
+        qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    openedFromShortcut =
+        dialog->objectName() == QStringLiteral("liveSourceMemoDialog");
+    dialog->close();
+  });
+  QTest::keyClick(&harness.window, Qt::Key_M, Qt::ControlModifier);
+
+  QVERIFY(openedFromShortcut);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
   QCOMPARE(harness.livePlaylistService.loadCount, 0);
 }
 
@@ -3970,6 +4001,7 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
         shortcuts.contains(QStringLiteral("F11")) &&
         shortcuts.contains(QStringLiteral("Ctrl+下键")) &&
         shortcuts.contains(QStringLiteral("Ctrl+上键")) &&
+        shortcuts.contains(QStringLiteral("Ctrl+M")) &&
         shortcuts.contains(QStringLiteral("Ctrl+S")) &&
         !shortcuts.contains(QStringLiteral("Ctrl+F5"));
     auto *const okButton = buttons->button(QDialogButtonBox::Ok);

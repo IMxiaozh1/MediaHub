@@ -32,6 +32,7 @@ const QVector<ShortcutHelpEntry>& ShortcutHelpDialog::entries() {
       {QStringLiteral("Ctrl+右键"), QStringLiteral("下一项")},
       {QStringLiteral("Ctrl+下键"), QStringLiteral("静音")},
       {QStringLiteral("Ctrl+上键"), QStringLiteral("恢复声音")},
+      {QStringLiteral("Ctrl+M"), QStringLiteral("打开直播源窗口")},
       {QStringLiteral("Ctrl+S"),
        QStringLiteral("在直播源窗口中保存（仅该窗口）")},
       {QStringLiteral("Ctrl+Q"), QStringLiteral("退出程序")},
