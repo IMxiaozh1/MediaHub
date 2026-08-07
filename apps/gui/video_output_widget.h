@@ -7,6 +7,7 @@
 #include <array>
 
 #include "mediahub/core/media_types.h"
+#include "ui_theme.h"
 
 class QEvent;
 class QPainter;
@@ -25,6 +26,8 @@ class VideoOutputWidget final : public QWidget {
   [[nodiscard]] QSize sizeHint() const override;
   [[nodiscard]] QSize minimumSizeHint() const override;
 
+  // 调用线程：GUI 主线程。只更新画布配色，不改变视频句柄或播放状态。
+  void setPresentationMode(UiPresentationMode mode);
   // 调用线程：GUI 主线程。视频、音频波纹和静态占位三种画面互斥。
   void setPresentation(bool isVideoActive, bool isAudioVisualizationActive,
                        bool isAudioVisualizationPlaying, int progressValue,
@@ -38,6 +41,7 @@ class VideoOutputWidget final : public QWidget {
   [[nodiscard]] float audioVisualizationIntensity() const noexcept;
   [[nodiscard]] core::AudioWaveform audioWaveform() const noexcept;
   [[nodiscard]] QString placeholderText() const;
+  [[nodiscard]] UiPresentationMode presentationMode() const noexcept;
 
  signals:
   // 句柄只作为不透明值交给核心接口，GUI 层不暴露 Windows 类型。
@@ -68,6 +72,7 @@ class VideoOutputWidget final : public QWidget {
   int progressValue_{0};
   int animationFrame_{0};
   int waveformTargetFramesRemaining_{0};
+  UiPresentationMode presentationMode_{UiPresentationMode::LocalVideo};
   bool isVideoActive_{false};
   bool isAudioVisualizationActive_{false};
   bool isAudioVisualizationPlaying_{false};

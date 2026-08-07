@@ -173,7 +173,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PRIVATE Qt5::Concurrent Qt5::Network
     )
     if(WIN32)
-        target_link_libraries(mediahub_gui_support PRIVATE gdi32 user32 winhttp)
+        target_link_libraries(mediahub_gui_support PRIVATE dwmapi gdi32 user32 winhttp)
     endif()
     mediahub_enable_warnings(mediahub_gui_support)
 

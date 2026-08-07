@@ -463,8 +463,12 @@ void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
       requiredChild<QSlider>(harness.window, "progressSlider");
   auto *const playlistView =
       requiredChild<QListView>(harness.window, "playlistView");
+  auto *const videoOutput =
+      requiredChild<VideoOutputWidget>(harness.window, "videoOutputWidget");
 
   QCOMPARE(centralSurface->property("themeMode").toString(),
+           QStringLiteral("video"));
+  QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
            QStringLiteral("video"));
   QCOMPARE(modeBadge->text(), QStringLiteral("VIDEO"));
   QVERIFY(titleLabel->text().contains(QStringLiteral("播放")));
@@ -472,6 +476,8 @@ void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
   harness.presenter.openLocalFile(QStringLiteral("C:/music/theme-song.mp3"));
   QTRY_COMPARE(centralSurface->property("themeMode").toString(),
                QStringLiteral("audio"));
+  QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
+           QStringLiteral("audio"));
   QCOMPARE(modeBadge->text(), QStringLiteral("MUSIC"));
   QCOMPARE(requiredChild<QToolButton>(harness.window, "playPauseButton"),
            playPauseButton);
@@ -483,13 +489,19 @@ void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
   harness.presenter.openLocalFile(QStringLiteral("C:/video/theme-movie.mp4"));
   QTRY_COMPARE(centralSurface->property("themeMode").toString(),
                QStringLiteral("video"));
+  QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
+           QStringLiteral("video"));
   QCOMPARE(modeBadge->text(), QStringLiteral("VIDEO"));
 
   auto *const playlistTabs =
       requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  QCOMPARE(playlistTabs->tabText(0), QStringLiteral("本地列表"));
+  QCOMPARE(playlistTabs->tabText(1), QStringLiteral("直播列表"));
   playlistTabs->setCurrentIndex(1);
   QTRY_COMPARE(centralSurface->property("themeMode").toString(),
                QStringLiteral("live"));
+  QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
+           QStringLiteral("live"));
   QCOMPARE(modeBadge->text(), QStringLiteral("LIVE"));
   QVERIFY(titleLabel->text().contains(QStringLiteral("直播")));
   QCOMPARE(requiredChild<QToolButton>(harness.window, "playPauseButton"),
@@ -2793,6 +2805,8 @@ void MainWindowTest::switchesBetweenVideoSurfaceAndAudioVisualization() {
       requiredChild<VideoOutputWidget>(harness.window, "videoOutputWidget");
 
   harness.presenter.openLocalFile(QStringLiteral("C:/video/sample.mp4"));
+  QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
+           QStringLiteral("video"));
   QVERIFY(!videoOutput->isVideoActive());
   QCOMPARE(videoOutput->placeholderText(),
            QStringLiteral("正在准备视频画面..."));
@@ -2804,6 +2818,8 @@ void MainWindowTest::switchesBetweenVideoSurfaceAndAudioVisualization() {
   QVERIFY(!videoOutput->testAttribute(Qt::WA_OpaquePaintEvent));
 
   harness.presenter.openLocalFile(QStringLiteral("C:/audio/sample.flac"));
+  QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
+           QStringLiteral("audio"));
   QVERIFY(!videoOutput->isVideoActive());
   QVERIFY(videoOutput->isAudioVisualizationActive());
   QCOMPARE(videoOutput->placeholderText(), QString());

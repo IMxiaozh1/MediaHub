@@ -85,6 +85,18 @@ QSize VideoOutputWidget::sizeHint() const { return QSize(720, 405); }
 
 QSize VideoOutputWidget::minimumSizeHint() const { return QSize(320, 180); }
 
+void VideoOutputWidget::setPresentationMode(const UiPresentationMode mode) {
+  if (presentationMode_ == mode) {
+    return;
+  }
+  presentationMode_ = mode;
+  setProperty("themeMode", presentationModeKey(mode));
+  backgroundCache_ = QPixmap{};
+  if (!isVideoActive_) {
+    update();
+  }
+}
+
 void VideoOutputWidget::setPresentation(const bool isVideoActive,
                                         const bool isAudioVisualizationActive,
                                         const bool isAudioVisualizationPlaying,
@@ -186,6 +198,10 @@ core::AudioWaveform VideoOutputWidget::audioWaveform() const noexcept {
 
 QString VideoOutputWidget::placeholderText() const { return placeholderText_; }
 
+UiPresentationMode VideoOutputWidget::presentationMode() const noexcept {
+  return presentationMode_;
+}
+
 void VideoOutputWidget::showEvent(QShowEvent* const event) {
   QWidget::showEvent(event);
   publishSurface();
@@ -216,7 +232,11 @@ void VideoOutputWidget::paintEvent(QPaintEvent* const event) {
     return;
   }
 
-  painter.setPen(QColor(QStringLiteral("#e8e1d2")));
+  const QColor placeholderColor =
+      presentationMode_ == UiPresentationMode::Live
+          ? QColor(QStringLiteral("#d7b57f"))
+          : QColor(QStringLiteral("#aeb8c0"));
+  painter.setPen(placeholderColor);
   QFont messageFont = font();
   messageFont.setPointSize(13);
   messageFont.setWeight(QFont::DemiBold);
@@ -240,38 +260,81 @@ void VideoOutputWidget::ensureBackgroundCache() {
   cache.fill(Qt::transparent);
   QPainter painter(&cache);
   const QRectF bounds(QPointF(0.0, 0.0), QSizeF(size()));
-  QLinearGradient background(bounds.topLeft(), bounds.bottomRight());
-  background.setColorAt(0.0, QColor(QStringLiteral("#102f2d")));
-  background.setColorAt(1.0, QColor(QStringLiteral("#183e3a")));
-  painter.fillRect(bounds, background);
+  if (isAudioVisualizationActive_) {
+    QLinearGradient background(bounds.topLeft(), bounds.bottomRight());
+    background.setColorAt(0.0, QColor(QStringLiteral("#f7fbf9")));
+    background.setColorAt(0.56, QColor(QStringLiteral("#e7f4ee")));
+    background.setColorAt(1.0, QColor(QStringLiteral("#d9ebe3")));
+    painter.fillRect(bounds, background);
 
-  QRadialGradient glow(QPointF(width() * 0.52, height() * 0.5),
-                       qMax(width(), height()) * 0.74);
-  glow.setColorAt(0.0, QColor(44, 139, 125, 82));
-  glow.setColorAt(0.58, QColor(20, 75, 70, 32));
-  glow.setColorAt(1.0, QColor(10, 35, 34, 0));
-  painter.fillRect(bounds, glow);
+    QRadialGradient glow(QPointF(width() * 0.7, height() * 0.22),
+                         qMax(width(), height()) * 0.78);
+    glow.setColorAt(0.0, QColor(39, 197, 126, 76));
+    glow.setColorAt(0.46, QColor(48, 181, 132, 25));
+    glow.setColorAt(1.0, QColor(255, 255, 255, 0));
+    painter.fillRect(bounds, glow);
 
-  painter.setPen(QColor(QStringLiteral("#315a54")));
-  constexpr int kGridStep = 36;
-  for (int x = -height(); x < width(); x += kGridStep) {
-    painter.drawLine(x, height(), x + height(), 0);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(QColor(30, 176, 111, 26), 1.0));
+    const qreal ringRadius = qMin(width(), height()) * 0.24;
+    const QPointF ringCenter(width() * 0.5, height() * 0.48);
+    painter.drawEllipse(ringCenter, ringRadius, ringRadius);
+    painter.drawEllipse(ringCenter, ringRadius * 0.62, ringRadius * 0.62);
+    painter.drawEllipse(ringCenter, ringRadius * 0.18, ringRadius * 0.18);
+  } else {
+    const bool isLive = presentationMode_ == UiPresentationMode::Live;
+    QLinearGradient background(bounds.topLeft(), bounds.bottomRight());
+    background.setColorAt(
+        0.0, QColor(isLive ? QStringLiteral("#070707")
+                           : QStringLiteral("#06080b")));
+    background.setColorAt(
+        1.0, QColor(isLive ? QStringLiteral("#1b1a18")
+                           : QStringLiteral("#121923")));
+    painter.fillRect(bounds, background);
+
+    QRadialGradient glow(QPointF(width() * 0.5, height() * 0.78),
+                         qMax(width(), height()) * 0.82);
+    glow.setColorAt(0.0,
+                    isLive ? QColor(222, 158, 66, 46)
+                           : QColor(32, 190, 122, 38));
+    glow.setColorAt(0.62, QColor(20, 28, 34, 14));
+    glow.setColorAt(1.0, QColor(0, 0, 0, 0));
+    painter.fillRect(bounds, glow);
+
+    painter.setPen(isLive ? QColor(255, 255, 255, 11)
+                          : QColor(120, 158, 176, 13));
+    constexpr int kGridStep = 48;
+    for (int x = 0; x < width(); x += kGridStep) {
+      painter.drawLine(x, 0, x, height());
+    }
+    for (int y = 0; y < height(); y += kGridStep) {
+      painter.drawLine(0, y, width(), y);
+    }
   }
   backgroundCache_ = std::move(cache);
 }
 
 void VideoOutputWidget::paintAudioVisualization(QPainter& painter) {
   QFont titleFont = font();
-  titleFont.setPointSize(16);
+  titleFont.setPointSize(15);
   titleFont.setWeight(QFont::DemiBold);
   painter.setFont(titleFont);
-  painter.setPen(QColor(QStringLiteral("#f3ead7")));
+  painter.setPen(QColor(QStringLiteral("#183027")));
   const QString title = QFontMetrics(titleFont).elidedText(
       mediaTitle_, Qt::ElideRight, qMax(80, width() - 64));
   painter.drawText(QRectF(32, 24, width() - 64, 34),
                    Qt::AlignLeft | Qt::AlignVCenter, title);
 
-  const QRectF waveBounds = QRectF(rect()).adjusted(28.0, 68.0, -28.0, -10.0);
+  QFont modeFont = font();
+  modeFont.setPixelSize(10);
+  modeFont.setBold(true);
+  modeFont.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+  painter.setFont(modeFont);
+  painter.setPen(QColor(QStringLiteral("#168557")));
+  painter.drawText(QRectF(32, 52, width() - 64, 18), Qt::AlignLeft,
+                   QStringLiteral("LOCAL AUDIO  /  NOW PLAYING"));
+
+  const QRectF waveBounds = QRectF(rect()).adjusted(28.0, 78.0, -28.0, -16.0);
   if (waveBounds.width() <= 1.0 || waveBounds.height() <= 1.0) {
     return;
   }
@@ -308,7 +371,15 @@ void VideoOutputWidget::paintAudioVisualization(QPainter& painter) {
       waveformPath.lineTo(point);
     }
   }
-  painter.setPen(QPen(QColor(QStringLiteral("#72ddc5")), 2.4, Qt::SolidLine,
+  QPainterPath waveformFill = waveformPath;
+  waveformFill.lineTo(waveBounds.bottomRight());
+  waveformFill.lineTo(waveBounds.bottomLeft());
+  waveformFill.closeSubpath();
+  QLinearGradient waveFill(waveBounds.topLeft(), waveBounds.bottomLeft());
+  waveFill.setColorAt(0.0, QColor(31, 190, 119, 68));
+  waveFill.setColorAt(1.0, QColor(31, 190, 119, 3));
+  painter.fillPath(waveformFill, waveFill);
+  painter.setPen(QPen(QColor(QStringLiteral("#1fbe77")), 2.4, Qt::SolidLine,
                       Qt::RoundCap, Qt::RoundJoin));
   painter.drawPath(waveformPath);
 }

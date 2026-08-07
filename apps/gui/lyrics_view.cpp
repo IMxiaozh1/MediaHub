@@ -65,12 +65,12 @@ ResponsiveLyricFontSizes responsiveLyricFontSizes(const int width,
 QString synchronizedLabelStyle(const bool isCurrent, const int fontPixels) {
   if (isCurrent) {
     return QStringLiteral(
-               "color: #cc5a36; font-size: %1px; font-weight: 700;"
+               "color: #19aa67; font-size: %1px; font-weight: 700;"
                "background: transparent;")
         .arg(fontPixels);
   }
   return QStringLiteral(
-             "color: rgba(23, 60, 58, 145); font-size: %1px; font-weight: 500;"
+             "color: rgba(34, 55, 46, 145); font-size: %1px; font-weight: 500;"
              "background: transparent;")
       .arg(fontPixels);
 }
@@ -183,45 +183,45 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
 
   setStyleSheet(QStringLiteral(R"(
       QWidget#lyricsView {
-          background: qradialgradient(cx:0.5, cy:0.82, radius:1.0,
-                                      fx:0.5, fy:0.82,
-                                      stop:0 #e3eee7, stop:0.58 #edf1e8,
-                                      stop:1 #d8e5df);
-          border: 1px solid #b6c8c0;
+          background: qradialgradient(cx:0.72, cy:0.18, radius:1.0,
+                                      fx:0.72, fy:0.18,
+                                      stop:0 #d8f0e4, stop:0.48 #eef8f3,
+                                      stop:1 #dfeee7);
+          border: 1px solid #bad8ca;
           border-radius: 18px;
       }
       QLabel#lyricsMediaNameLabel {
-          color: #174f4b;
+          color: #172820;
           font-family: "Microsoft YaHei UI";
           font-size: 15px;
           font-weight: 700;
       }
       QLabel#lyricsSourceLabel {
-          color: #72543f;
-          background: rgba(244, 216, 201, 190);
-          border: 1px solid #ddb69f;
+          color: #147e52;
+          background: rgba(219, 244, 231, 210);
+          border: 1px solid #afd9c2;
           border-radius: 10px;
           padding: 3px 9px;
           font-size: 11px;
           font-weight: 700;
       }
       QLabel#lyricsMessageTitle {
-          color: #174f4b;
+          color: #183128;
           font-size: 22px;
           font-weight: 700;
       }
       QLabel#lyricsMessageDetail {
-          color: #66817c;
+          color: #63766e;
           font-size: 13px;
           margin-top: 8px;
       }
       QWidget#lyricsTimingControls {
-          background: rgba(255, 255, 255, 105);
-          border: 1px solid rgba(182, 200, 192, 175);
+          background: rgba(255, 255, 255, 150);
+          border: 1px solid rgba(186, 216, 202, 190);
           border-radius: 12px;
       }
       QLabel#lyricsTimingOffsetLabel {
-          color: #496b66;
+          color: #4f6b60;
           border: none;
           font-size: 11px;
           font-weight: 700;
@@ -230,9 +230,9 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
       QToolButton#lyricsTimingSlowButton,
       QToolButton#lyricsTimingFastButton,
       QToolButton#lyricsTimingResetButton {
-          color: #245b56;
-          background: #f7faf7;
-          border: 1px solid #b9cbc3;
+          color: #1f6f4d;
+          background: #f7fbf9;
+          border: 1px solid #bed8cc;
           border-radius: 9px;
           min-height: 22px;
           padding: 0 7px;
@@ -242,19 +242,19 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
       QToolButton#lyricsTimingSlowButton:hover,
       QToolButton#lyricsTimingFastButton:hover,
       QToolButton#lyricsTimingResetButton:hover {
-          background: #f4d8c9;
-          border-color: #d4a78e;
+          background: #dff5ea;
+          border-color: #62c995;
       }
       QTextBrowser#plainLyricsBrowser {
-          color: #244f4b;
-          background: rgba(255, 255, 255, 95);
-          border: 1px solid rgba(182, 200, 192, 150);
+          color: #243b32;
+          background: rgba(255, 255, 255, 180);
+          border: 1px solid rgba(186, 216, 202, 175);
           border-radius: 14px;
           padding: 18px 22px;
           font-family: "Microsoft YaHei UI";
           font-size: 16px;
           line-height: 1.6;
-          selection-background-color: #f4d8c9;
+          selection-background-color: #ccefdc;
       }
   )"));
 

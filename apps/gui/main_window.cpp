@@ -52,6 +52,14 @@
 #include "seek_slider.h"
 #include "video_output_widget.h"
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <dwmapi.h>
+#include <qt_windows.h>
+#endif
+
 namespace mediahub::gui {
 namespace {
 
@@ -492,6 +500,18 @@ QStringList localFilePaths(const QMimeData* const mimeData) {
   return paths;
 }
 
+void setNativeDarkTitleBar(QWidget* const window, const bool isDark) {
+#ifdef Q_OS_WIN
+  const BOOL enabled = isDark ? TRUE : FALSE;
+  const auto handle = reinterpret_cast<HWND>(window->winId());
+  static_cast<void>(DwmSetWindowAttribute(
+      handle, DWMWA_USE_IMMERSIVE_DARK_MODE, &enabled, sizeof(enabled)));
+#else
+  Q_UNUSED(window);
+  Q_UNUSED(isDark);
+#endif
+}
+
 }  // namespace
 
 MainWindow::MainWindow(QWidget* const parent)
@@ -636,7 +656,9 @@ MainWindow::MainWindow(QWidget* const parent)
   playlistKindTabs_->setAccessibleName(QStringLiteral("播放列表类型"));
   playlistKindTabs_->setDocumentMode(true);
   playlistKindTabs_->setExpanding(true);
-  playlistKindTabs_->addTab(QStringLiteral("本地播放列表"));
+  playlistKindTabs_->setUsesScrollButtons(false);
+  playlistKindTabs_->setElideMode(Qt::ElideNone);
+  playlistKindTabs_->addTab(QStringLiteral("本地列表"));
   playlistKindTabs_->addTab(QStringLiteral("直播列表"));
   livePlaylistUrlEdit_ = new QLineEdit(playlistPanel_);
   livePlaylistUrlEdit_->setObjectName(QStringLiteral("livePlaylistUrlEdit"));
@@ -735,8 +757,8 @@ MainWindow::MainWindow(QWidget* const parent)
   auto* const mediaCard = mediaCard_;
   mediaCard->setObjectName(QStringLiteral("mediaCard"));
   auto* const cardLayout = new QVBoxLayout(mediaCard);
-  cardLayout->setContentsMargins(28, 24, 28, 24);
-  cardLayout->setSpacing(14);
+  cardLayout->setContentsMargins(18, 12, 18, 12);
+  cardLayout->setSpacing(6);
 
   auto* const mediaCaption = new QLabel(QStringLiteral("当前媒体"), mediaCard);
   mediaCaption->setObjectName(QStringLiteral("captionLabel"));
@@ -1213,6 +1235,8 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       playlistPanel_->setMaximumWidth(390);
       break;
   }
+  videoOutput_->setPresentationMode(mode);
+  setNativeDarkTitleBar(this, mode != UiPresentationMode::LocalAudio);
 
   // 动态属性只影响视觉；重新抛光现有控件，不重建对象或信号连接。
   for (auto* const widget : themedWidgets) {

@@ -29,7 +29,7 @@ QString presentationModeKey(const UiPresentationMode mode) {
 
 const QString& mainWindowStyleSheet() {
   static const QString styleSheet = QStringLiteral(R"(
-      QMainWindow, QWidget#centralSurface {
+      QWidget {
           font-family: "Microsoft YaHei UI";
       }
       QMainWindow[themeMode="audio"],
@@ -224,7 +224,7 @@ const QString& mainWindowStyleSheet() {
       QTabBar#playlistKindTabs::tab {
           border: none;
           font-size: 12px;
-          min-width: 82px;
+          min-width: 0;
           padding: 7px 5px;
       }
       QTabBar#playlistKindTabs[themeMode="audio"]::tab {
