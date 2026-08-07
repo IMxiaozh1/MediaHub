@@ -156,6 +156,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/seek_slider.h
         apps/gui/shutdown_watchdog.cpp
         apps/gui/shutdown_watchdog.h
+        apps/gui/ui_theme.cpp
+        apps/gui/ui_theme.h
         apps/gui/video_output_widget.cpp
         apps/gui/video_output_widget.h
         apps/gui/window_icon_manager.cpp

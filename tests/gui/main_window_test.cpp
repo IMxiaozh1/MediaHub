@@ -193,6 +193,7 @@ class MainWindowTest final : public QObject {
 private slots:
   void initTestCase();
   void hasFormalInitialLayout();
+  void switchesVisualModesWithoutRebuildingControls();
   void loadsReplaceableWindowIconsFromFixedSlots();
   void fallsBackForMissingOrDamagedWindowIcons();
   void parsesSynchronizedAndPlainLyrics();
@@ -447,6 +448,56 @@ void MainWindowTest::hasFormalInitialLayout() {
   QVERIFY(!requiredChild<QToolButton>(harness.window, "playlistToggleButton")
                ->icon()
                .isNull());
+}
+
+void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
+  GuiHarness harness;
+  auto *const centralSurface =
+      requiredChild<QWidget>(harness.window, "centralSurface");
+  auto *const titleLabel = requiredChild<QLabel>(harness.window, "titleLabel");
+  auto *const modeBadge =
+      requiredChild<QLabel>(harness.window, "modeBadgeLabel");
+  auto *const playPauseButton =
+      requiredChild<QToolButton>(harness.window, "playPauseButton");
+  auto *const progressSlider =
+      requiredChild<QSlider>(harness.window, "progressSlider");
+  auto *const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+
+  QCOMPARE(centralSurface->property("themeMode").toString(),
+           QStringLiteral("video"));
+  QCOMPARE(modeBadge->text(), QStringLiteral("VIDEO"));
+  QVERIFY(titleLabel->text().contains(QStringLiteral("播放")));
+
+  harness.presenter.openLocalFile(QStringLiteral("C:/music/theme-song.mp3"));
+  QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+               QStringLiteral("audio"));
+  QCOMPARE(modeBadge->text(), QStringLiteral("MUSIC"));
+  QCOMPARE(requiredChild<QToolButton>(harness.window, "playPauseButton"),
+           playPauseButton);
+  QCOMPARE(requiredChild<QSlider>(harness.window, "progressSlider"),
+           progressSlider);
+  QCOMPARE(requiredChild<QListView>(harness.window, "playlistView"),
+           playlistView);
+
+  harness.presenter.openLocalFile(QStringLiteral("C:/video/theme-movie.mp4"));
+  QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+               QStringLiteral("video"));
+  QCOMPARE(modeBadge->text(), QStringLiteral("VIDEO"));
+
+  auto *const playlistTabs =
+      requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  playlistTabs->setCurrentIndex(1);
+  QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+               QStringLiteral("live"));
+  QCOMPARE(modeBadge->text(), QStringLiteral("LIVE"));
+  QVERIFY(titleLabel->text().contains(QStringLiteral("直播")));
+  QCOMPARE(requiredChild<QToolButton>(harness.window, "playPauseButton"),
+           playPauseButton);
+  QCOMPARE(requiredChild<QSlider>(harness.window, "progressSlider"),
+           progressSlider);
+  QCOMPARE(requiredChild<QListView>(harness.window, "playlistView"),
+           playlistView);
 }
 
 void MainWindowTest::parsesSynchronizedAndPlainLyrics() {

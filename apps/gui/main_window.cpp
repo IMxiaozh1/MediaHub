@@ -36,6 +36,7 @@
 #include <QSizePolicy>
 #include <QSlider>
 #include <QStackedLayout>
+#include <QStyle>
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
@@ -95,7 +96,7 @@ QIcon controlIcon(const ControlIcon icon) {
   pixmap.fill(Qt::transparent);
   QPainter painter(&pixmap);
   painter.setRenderHint(QPainter::Antialiasing);
-  const QColor ink(QStringLiteral("#174f4b"));
+  const QColor ink(QStringLiteral("#20ad72"));
   QPen pen(ink, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
   painter.setPen(pen);
   painter.setBrush(Qt::NoBrush);
@@ -564,7 +565,8 @@ MainWindow::MainWindow(QWidget* const parent)
                     this);
   nextShortcut->setObjectName(QStringLiteral("nextShortcut"));
   nextShortcut->setContext(Qt::WindowShortcut);
-  auto* const centralWidget = new QWidget(this);
+  centralSurface_ = new QWidget(this);
+  auto* const centralWidget = centralSurface_;
   centralWidget->setObjectName(QStringLiteral("centralSurface"));
   rootLayout_ = new QVBoxLayout(centralWidget);
   rootLayout_->setContentsMargins(
@@ -572,23 +574,34 @@ MainWindow::MainWindow(QWidget* const parent)
       kNormalVerticalMargin);
   rootLayout_->setSpacing(kNormalSpacing);
 
-  auto* const eyebrow =
-      new QLabel(QStringLiteral("LOCAL MEDIA / 01"), centralWidget);
-  eyebrow->setObjectName(QStringLiteral("eyebrowLabel"));
-  auto* const title =
-      new QLabel(QStringLiteral("让本地声音重新流动"), centralWidget);
-  title->setObjectName(QStringLiteral("titleLabel"));
-  auto* const subtitle =
-      new QLabel(QStringLiteral("打开本地音视频，声音与画面都留在你的设备上。"),
-                 centralWidget);
-  subtitle->setObjectName(QStringLiteral("subtitleLabel"));
-  rootLayout_->addWidget(eyebrow);
-  rootLayout_->addWidget(title);
-  rootLayout_->addWidget(subtitle);
+  headerPanel_ = new QFrame(centralWidget);
+  headerPanel_->setObjectName(QStringLiteral("headerPanel"));
+  auto* const headerLayout = new QHBoxLayout(headerPanel_);
+  headerLayout->setContentsMargins(18, 12, 18, 12);
+  headerLayout->setSpacing(16);
+  auto* const headerCopyLayout = new QVBoxLayout();
+  headerCopyLayout->setContentsMargins(0, 0, 0, 0);
+  headerCopyLayout->setSpacing(2);
+  eyebrowLabel_ = new QLabel(headerPanel_);
+  eyebrowLabel_->setObjectName(QStringLiteral("eyebrowLabel"));
+  titleLabel_ = new QLabel(headerPanel_);
+  titleLabel_->setObjectName(QStringLiteral("titleLabel"));
+  subtitleLabel_ = new QLabel(headerPanel_);
+  subtitleLabel_->setObjectName(QStringLiteral("subtitleLabel"));
+  headerCopyLayout->addWidget(eyebrowLabel_);
+  headerCopyLayout->addWidget(titleLabel_);
+  headerCopyLayout->addWidget(subtitleLabel_);
+  modeBadgeLabel_ = new QLabel(headerPanel_);
+  modeBadgeLabel_->setObjectName(QStringLiteral("modeBadgeLabel"));
+  modeBadgeLabel_->setAlignment(Qt::AlignCenter);
+  headerLayout->addLayout(headerCopyLayout, 1);
+  headerLayout->addWidget(modeBadgeLabel_, 0, Qt::AlignVCenter);
+  rootLayout_->addWidget(headerPanel_);
 
   auto* const mediaWorkspace = new QHBoxLayout();
   mediaWorkspace->setSpacing(10);
-  auto* const mediaDisplay = new QWidget(centralWidget);
+  mediaDisplay_ = new QWidget(centralWidget);
+  auto* const mediaDisplay = mediaDisplay_;
   mediaDisplay->setObjectName(QStringLiteral("mediaDisplay"));
   mediaDisplayStack_ = new QStackedLayout(mediaDisplay);
   mediaDisplayStack_->setContentsMargins(0, 0, 0, 0);
@@ -718,7 +731,8 @@ MainWindow::MainWindow(QWidget* const parent)
   mediaWorkspace->addWidget(playlistPanel_, 1);
   rootLayout_->addLayout(mediaWorkspace, 1);
 
-  auto* const mediaCard = new QFrame(centralWidget);
+  mediaCard_ = new QFrame(centralWidget);
+  auto* const mediaCard = mediaCard_;
   mediaCard->setObjectName(QStringLiteral("mediaCard"));
   auto* const cardLayout = new QVBoxLayout(mediaCard);
   cardLayout->setContentsMargins(28, 24, 28, 24);
@@ -750,7 +764,8 @@ MainWindow::MainWindow(QWidget* const parent)
   cardLayout->addWidget(errorLabel_);
   rootLayout_->addWidget(mediaCard);
 
-  auto* const transportPanel = new QFrame(centralWidget);
+  transportPanel_ = new QFrame(centralWidget);
+  auto* const transportPanel = transportPanel_;
   transportPanel->setObjectName(QStringLiteral("transportPanel"));
   auto* const transportLayout = new QVBoxLayout(transportPanel);
   transportLayout->setContentsMargins(20, 14, 20, 14);
@@ -966,302 +981,10 @@ MainWindow::MainWindow(QWidget* const parent)
   transportLayout->addLayout(timelineRow);
   rootLayout_->addWidget(transportPanel);
 
-  fullScreenChrome_ = {eyebrow, title, subtitle, mediaCard};
+  fullScreenChrome_ = {headerPanel_, mediaCard_};
 
   setCentralWidget(centralWidget);
-  setStyleSheet(QStringLiteral(R"(
-        QMainWindow, QWidget#centralSurface {
-            background: #f4f0e6;
-            color: #173c3a;
-        }
-        QMenuBar {
-            background: #f4f0e6;
-            color: #173c3a;
-            padding: 4px 8px;
-        }
-        QMenuBar::item:selected, QMenu::item:selected {
-            background: #dce7df;
-        }
-        QLabel#eyebrowLabel {
-            color: #cc5a36;
-            font-family: "Bahnschrift SemiCondensed";
-            font-size: 13px;
-            font-weight: 700;
-        }
-        QLabel#titleLabel {
-            color: #102f2d;
-            font-family: "Microsoft YaHei UI";
-            font-size: 34px;
-            font-weight: 700;
-        }
-        QLabel#subtitleLabel {
-            color: #57706b;
-            font-family: "Microsoft YaHei UI";
-            font-size: 14px;
-        }
-        QFrame#mediaCard {
-            background: #fffdf7;
-            border: 1px solid #d9d4c8;
-            border-left: 5px solid #1f7770;
-            border-radius: 8px;
-        }
-        QFrame#playlistPanel {
-            background: #fffdf7;
-            border: 1px solid #d9d4c8;
-            border-radius: 8px;
-        }
-        QLabel#playlistTitleLabel {
-            color: #173c3a;
-            font-size: 15px;
-            font-weight: 700;
-        }
-        QTabBar#playlistKindTabs::tab {
-            background: #e9eee8;
-            border: 1px solid #c7d1ca;
-            color: #48645f;
-            min-width: 80px;
-            padding: 7px 4px;
-        }
-        QTabBar#playlistKindTabs::tab:first {
-            border-top-left-radius: 5px;
-            border-bottom-left-radius: 5px;
-        }
-        QTabBar#playlistKindTabs::tab:last {
-            border-top-right-radius: 5px;
-            border-bottom-right-radius: 5px;
-        }
-        QTabBar#playlistKindTabs::tab:selected {
-            background: #1f7770;
-            border-color: #1f7770;
-            color: #fffdf7;
-            font-weight: 700;
-        }
-        QLineEdit#livePlaylistUrlEdit {
-            background: #f7f4eb;
-            border: 1px solid #b6c8c0;
-            border-radius: 5px;
-            color: #173c3a;
-            padding: 7px 8px;
-        }
-        QLineEdit#livePlaylistUrlEdit:focus {
-            border-color: #1f7770;
-        }
-        QLabel#livePlaylistStatusLabel {
-            color: #667973;
-            font-size: 12px;
-        }
-        QListView#playlistView {
-            background: #f7f4eb;
-            border: 1px solid #d9d4c8;
-            border-radius: 5px;
-            color: #294b47;
-            outline: none;
-            padding: 4px;
-        }
-        QListView#playlistView::item {
-            border-radius: 4px;
-            padding: 7px 6px;
-        }
-        QListView#playlistView::item:selected {
-            background: #dce7df;
-            color: #174f4b;
-        }
-        QListView#playlistView::item:disabled {
-            background: #fff0e8;
-            color: #9b2f1f;
-            font-weight: 700;
-        }
-        QToolButton[optionSelector="true"] {
-            background: #edf3ee;
-            border: 1px solid #b6c8c0;
-            border-radius: 14px;
-            color: #174f4b;
-            font-size: 12px;
-            font-weight: 700;
-            min-width: 58px;
-            padding: 7px 12px;
-        }
-        QToolButton[optionSelector="true"]:hover {
-            background: #dcebe3;
-            border-color: #1f7770;
-            color: #103f3b;
-        }
-        QToolButton[optionSelector="true"]::menu-indicator {
-            image: none;
-            width: 0px;
-        }
-        QToolButton[transportControl="true"] {
-            background: #edf3ee;
-            border: 1px solid #b6c8c0;
-            border-radius: 18px;
-            padding: 0px;
-        }
-        QToolButton[transportControl="true"]:hover:enabled {
-            background: #dcebe3;
-            border-color: #1f7770;
-        }
-        QToolButton[transportControl="true"]:pressed:enabled {
-            background: #c8ddd2;
-        }
-        QToolButton[transportControl="true"]:disabled {
-            background: #e9e5dc;
-            border-color: #d4cfc5;
-        }
-        QToolButton[lyricsControl="true"] {
-            color: #174f4b;
-            font-family: "Microsoft YaHei UI";
-            font-size: 15px;
-            font-weight: 800;
-        }
-        QToolButton[lyricsControl="true"]:checked {
-            color: #8e3d25;
-            background: #f4d8c9;
-            border-color: #cc805d;
-        }
-        QToolButton[primaryTransport="true"] {
-            background: #f4d8c9;
-            border-color: #cc5a36;
-        }
-        QToolButton[playlistToggle="true"] {
-            border-radius: 14px;
-        }
-        QMenu#optionPopup {
-            background: #fffdf7;
-            border: 1px solid #b9c9c2;
-            border-radius: 11px;
-            color: #294b47;
-            padding: 7px;
-        }
-        QMenu#optionPopup::item {
-            border-radius: 7px;
-            margin: 2px;
-            min-width: 86px;
-            padding: 8px 22px;
-        }
-        QMenu#optionPopup::item:selected {
-            background: #e0ece5;
-            color: #174f4b;
-        }
-        QMenu#optionPopup::item:checked {
-            background: #1f7770;
-            color: #ffffff;
-        }
-        QFrame#volumePopup {
-            background: #fffdf7;
-            border: 1px solid #b9c9c2;
-            border-radius: 11px;
-            min-width: 92px;
-        }
-        QLabel#captionLabel {
-            color: #778984;
-            font-size: 12px;
-            font-weight: 700;
-        }
-        QLabel#currentMediaLabel {
-            color: #173c3a;
-            font-size: 20px;
-            font-weight: 600;
-        }
-        QLabel#playbackStatusLabel {
-            background: #dce7df;
-            border-radius: 12px;
-            color: #1f625d;
-            font-size: 12px;
-            font-weight: 700;
-            min-width: 92px;
-            padding: 6px 12px;
-        }
-        QLabel#playbackErrorLabel {
-            background: #fae7df;
-            border-radius: 5px;
-            color: #983f28;
-            padding: 9px 12px;
-        }
-        QFrame#transportPanel {
-            background: #fffdf7;
-            border: 1px solid #d9d4c8;
-            border-radius: 8px;
-        }
-        QLabel#transportCaptionLabel, QLabel#positionLabel,
-        QLabel#volumeLabel {
-            color: #49645f;
-            font-size: 12px;
-            font-weight: 700;
-        }
-        QSlider::groove:horizontal {
-            background: #d9e1dc;
-            border-radius: 3px;
-            height: 6px;
-        }
-        QSlider::sub-page:horizontal {
-            background: #cc5a36;
-            border-radius: 3px;
-        }
-        QSlider::handle:horizontal {
-            background: #fffdf7;
-            border: 2px solid #1f7770;
-            border-radius: 7px;
-            margin: -5px 0;
-            width: 14px;
-        }
-        QSlider::groove:horizontal:disabled {
-            background: #e2dfd7;
-        }
-        QSlider::sub-page:horizontal:disabled {
-            background: #d88a70;
-        }
-        QSlider::handle:horizontal:disabled {
-            background: #fffaf0;
-            border-color: #78918b;
-        }
-        QSlider::groove:vertical {
-            background: #d9e1dc;
-            border-radius: 3px;
-            width: 6px;
-        }
-        QSlider::add-page:vertical {
-            background: #cc5a36;
-            border-radius: 3px;
-        }
-        QSlider::sub-page:vertical {
-            background: #d9e1dc;
-            border-radius: 3px;
-        }
-        QSlider::handle:vertical {
-            background: #fffdf7;
-            border: 2px solid #1f7770;
-            border-radius: 7px;
-            height: 14px;
-            margin: 0 -5px;
-        }
-        QPushButton {
-            background: #fffdf7;
-            border: 1px solid #aebdb7;
-            border-radius: 6px;
-            color: #173c3a;
-            font-size: 14px;
-            font-weight: 600;
-            min-width: 72px;
-            padding: 10px 14px;
-        }
-        QPushButton:hover:enabled {
-            background: #e6eee9;
-            border-color: #1f7770;
-        }
-        QPushButton[primary="true"] {
-            background: #1f7770;
-            border-color: #1f7770;
-            color: #ffffff;
-        }
-        QPushButton[primary="true"]:hover:enabled {
-            background: #185f5a;
-        }
-        QPushButton:disabled {
-            background: #e9e5dc;
-            border-color: #d4cfc5;
-            color: #a09d95;
-        }
-    )"));
+  setStyleSheet(mainWindowStyleSheet());
 
   connect(openAction_, &QAction::triggered, this, &MainWindow::chooseLocalFile);
   connect(openNetworkAction_, &QAction::triggered, this,
@@ -1442,10 +1165,68 @@ MainWindow::MainWindow(QWidget* const parent)
   applyViewState(initialState);
 }
 
+void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
+  if (presentationMode_.has_value() && *presentationMode_ == mode) {
+    return;
+  }
+  presentationMode_ = mode;
+  const QString modeKey = presentationModeKey(mode);
+
+  QList<QWidget*> themedWidgets = findChildren<QWidget*>();
+  themedWidgets.push_front(this);
+  for (auto* const widget : themedWidgets) {
+    widget->setProperty("themeMode", modeKey);
+  }
+
+  switch (mode) {
+    case UiPresentationMode::LocalAudio:
+      eyebrowLabel_->setText(QStringLiteral("LOCAL MUSIC / LISTEN"));
+      titleLabel_->setText(QStringLiteral("沉浸音乐"));
+      subtitleLabel_->setText(
+          QStringLiteral("让波形、歌词与播放列表围绕正在播放的声音展开。"));
+      modeBadgeLabel_->setText(QStringLiteral("MUSIC"));
+      rootLayout_->setContentsMargins(22, 18, 22, 20);
+      rootLayout_->setSpacing(12);
+      playlistPanel_->setMinimumWidth(230);
+      playlistPanel_->setMaximumWidth(330);
+      break;
+    case UiPresentationMode::LocalVideo:
+      eyebrowLabel_->setText(QStringLiteral("LOCAL VIDEO / CINEMA"));
+      titleLabel_->setText(QStringLiteral("沉浸播放"));
+      subtitleLabel_->setText(
+          QStringLiteral("深色影院画布聚焦本地视频，控制与信息保持在手边。"));
+      modeBadgeLabel_->setText(QStringLiteral("VIDEO"));
+      rootLayout_->setContentsMargins(22, 18, 22, 20);
+      rootLayout_->setSpacing(12);
+      playlistPanel_->setMinimumWidth(230);
+      playlistPanel_->setMaximumWidth(330);
+      break;
+    case UiPresentationMode::Live:
+      eyebrowLabel_->setText(QStringLiteral("LIVE STREAM / CONTROL"));
+      titleLabel_->setText(QStringLiteral("直播控制台"));
+      subtitleLabel_->setText(
+          QStringLiteral("紧凑查看频道、连接状态与当前直播，快速刷新或切换。"));
+      modeBadgeLabel_->setText(QStringLiteral("LIVE"));
+      rootLayout_->setContentsMargins(14, 12, 14, 14);
+      rootLayout_->setSpacing(8);
+      playlistPanel_->setMinimumWidth(270);
+      playlistPanel_->setMaximumWidth(390);
+      break;
+  }
+
+  // 动态属性只影响视觉；重新抛光现有控件，不重建对象或信号连接。
+  for (auto* const widget : themedWidgets) {
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+    widget->update();
+  }
+}
+
 void MainWindow::applyViewState(const PlayerViewState& viewState) {
   const QSignalBlocker progressBlocker(progressSlider_);
   const QSignalBlocker volumeBlocker(volumeSlider_);
   const QSignalBlocker lyricsBlocker(lyricsButton_);
+  applyPresentationMode(presentationModeFor(viewState));
   openAction_->setEnabled(viewState.canOpen);
   openNetworkAction_->setEnabled(viewState.canOpen);
   showPlaylistKind(viewState.isLivePlaylistActive ? 1 : 0);

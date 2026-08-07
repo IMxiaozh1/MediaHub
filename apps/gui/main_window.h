@@ -4,9 +4,11 @@
 #include <QMainWindow>
 #include <QString>
 #include <QStringList>
+#include <optional>
 
 #include "mediahub/core/media_types.h"
 #include "player_view_state.h"
+#include "ui_theme.h"
 #include "window_icon_manager.h"
 
 class QAbstractItemModel;
@@ -118,6 +120,7 @@ class MainWindow final : public QMainWindow {
   void updateFullScreenText();
   void togglePlaylistVisibility();
   void updatePlaylistToggleAppearance();
+  void applyPresentationMode(UiPresentationMode mode);
   void showPlaylistContextMenu(const QPoint& position);
   void renameContextPlaylistItem();
   void selectPlaylistRow(int row);
@@ -162,6 +165,11 @@ class MainWindow final : public QMainWindow {
   QMenu* playlistContextMenu_{nullptr};
   QMenu* livePlaylistContextMenu_{nullptr};
   QFrame* playlistPanel_{nullptr};
+  QFrame* headerPanel_{nullptr};
+  QFrame* mediaCard_{nullptr};
+  QFrame* transportPanel_{nullptr};
+  QWidget* centralSurface_{nullptr};
+  QWidget* mediaDisplay_{nullptr};
   VideoOutputWidget* videoOutput_{nullptr};
   LyricsView* lyricsView_{nullptr};
   QStackedLayout* mediaDisplayStack_{nullptr};
@@ -171,6 +179,10 @@ class MainWindow final : public QMainWindow {
   QLabel* positionLabel_{nullptr};
   QLabel* volumeLabel_{nullptr};
   QLabel* livePlaylistStatusLabel_{nullptr};
+  QLabel* eyebrowLabel_{nullptr};
+  QLabel* titleLabel_{nullptr};
+  QLabel* subtitleLabel_{nullptr};
+  QLabel* modeBadgeLabel_{nullptr};
   QVBoxLayout* rootLayout_{nullptr};
   QTimer* rightKeyHoldTimer_{nullptr};
   QList<QWidget*> fullScreenChrome_;
@@ -179,6 +191,7 @@ class MainWindow final : public QMainWindow {
   QAbstractItemModel* localPlaylistModel_{nullptr};
   QAbstractItemModel* livePlaylistModel_{nullptr};
   int keyboardSeekStepSeconds_{5};
+  std::optional<UiPresentationMode> presentationMode_;
   int currentPlaylistIndex_{-1};
   int currentLivePlaybackIndex_{-1};
   bool isPlaylistExpanded_{true};
