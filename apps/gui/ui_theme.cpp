@@ -217,9 +217,14 @@ const QString& mainWindowStyleSheet() {
       QLabel#playlistTitleLabel[themeMode="audio"] {
           color: #20312b;
       }
-      QLabel#playlistTitleLabel[themeMode="video"],
-      QLabel#playlistTitleLabel[themeMode="live"] {
+      QLabel#playlistTitleLabel[themeMode="video"] {
           color: #edf1ef;
+      }
+      QLabel#playlistTitleLabel[themeMode="live"] {
+          color: #f1e4cf;
+          font-family: "Bahnschrift SemiCondensed";
+          font-size: 13px;
+          letter-spacing: 1px;
       }
       QTabBar#playlistKindTabs::tab {
           border: none;
@@ -236,9 +241,10 @@ const QString& mainWindowStyleSheet() {
           color: #8e9aa4;
       }
       QTabBar#playlistKindTabs[themeMode="live"]::tab {
-          background: #292b2e;
-          color: #aaa9a5;
-          padding: 6px 4px;
+          background: #18191b;
+          border-bottom: 1px solid #343538;
+          color: #918f8a;
+          padding: 5px 4px;
       }
       QTabBar#playlistKindTabs::tab:selected {
           background: #20b974;
@@ -246,8 +252,21 @@ const QString& mainWindowStyleSheet() {
           font-weight: 700;
       }
       QTabBar#playlistKindTabs[themeMode="live"]::tab:selected {
-          background: #4a3a25;
-          color: #ffd08a;
+          background: #34291d;
+          border-bottom: 2px solid #e3a64d;
+          color: #ffd18c;
+      }
+      QFrame#livePlaylistTools[themeMode="live"] {
+          background: #17181a;
+          border: 1px solid #34363a;
+          border-radius: 2px;
+      }
+      QLabel#livePlaylistSourceLabel[themeMode="live"] {
+          color: #d69a43;
+          font-family: "Bahnschrift SemiCondensed";
+          font-size: 9px;
+          font-weight: 700;
+          letter-spacing: 1px;
       }
       QLineEdit#livePlaylistUrlEdit {
           border-radius: 5px;
@@ -263,6 +282,8 @@ const QString& mainWindowStyleSheet() {
           background: #121417;
           border: 1px solid #404349;
           color: #eceeec;
+          font-family: "Cascadia Mono";
+          font-size: 11px;
           selection-background-color: #98692d;
       }
       QLineEdit#livePlaylistUrlEdit:focus {
@@ -278,7 +299,21 @@ const QString& mainWindowStyleSheet() {
           color: #929da6;
       }
       QLabel#livePlaylistStatusLabel[themeMode="live"] {
-          color: #d5ad70;
+          background: #202124;
+          border: none;
+          border-left: 2px solid #9f7134;
+          color: #c8b18e;
+          padding: 4px 6px;
+      }
+      QPushButton#livePlaylistLoadButton[themeMode="live"],
+      QPushButton#livePlaylistLocateButton[themeMode="live"] {
+          min-width: 0;
+          padding: 6px 5px;
+      }
+      QPushButton#livePlaylistLocateButton[themeMode="live"] {
+          background: #282a2d;
+          border-color: #44464b;
+          color: #d4d2cd;
       }
       QListView#playlistView {
           border: none;
@@ -298,6 +333,7 @@ const QString& mainWindowStyleSheet() {
           border: 1px solid #323438;
           border-radius: 2px;
           color: #d4d4d1;
+          font-size: 12px;
           padding: 1px;
       }
       QListView#playlistView::item {
@@ -307,7 +343,7 @@ const QString& mainWindowStyleSheet() {
       QListView#playlistView[themeMode="live"]::item {
           border-radius: 0;
           border-bottom: 1px solid #25272a;
-          padding: 5px 6px;
+          padding: 4px 6px;
       }
       QListView#playlistView::item:hover {
           background: rgba(45, 184, 121, 45);
@@ -317,13 +353,39 @@ const QString& mainWindowStyleSheet() {
           color: #ffffff;
       }
       QListView#playlistView[themeMode="live"]::item:selected {
-          background: #5b4529;
+          background: #594326;
           color: #ffe0aa;
+      }
+      QListView#playlistView[themeMode="live"]::item:hover:!selected {
+          background: #29261f;
+          color: #f0dfc3;
       }
       QListView#playlistView::item:disabled {
           background: #4a2525;
           color: #ffb0a5;
           font-weight: 700;
+      }
+      QScrollBar[themeMode="live"]:vertical {
+          background: #141517;
+          border: none;
+          margin: 0;
+          width: 8px;
+      }
+      QScrollBar[themeMode="live"]::handle:vertical {
+          background: #4c4d50;
+          border-radius: 3px;
+          min-height: 24px;
+      }
+      QScrollBar[themeMode="live"]::handle:vertical:hover {
+          background: #9c7138;
+      }
+      QScrollBar[themeMode="live"]::add-line:vertical,
+      QScrollBar[themeMode="live"]::sub-line:vertical {
+          height: 0;
+      }
+      QScrollBar[themeMode="live"]::add-page:vertical,
+      QScrollBar[themeMode="live"]::sub-page:vertical {
+          background: transparent;
       }
   )") + QStringLiteral(R"(
       QFrame#mediaCard, QFrame#transportPanel {

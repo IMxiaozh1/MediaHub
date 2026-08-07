@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QFrame>
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -707,9 +708,19 @@ void MainWindowTest::separatesLocalAndLiveListsWithoutStoppingPlayback() {
       requiredChild<QPushButton>(harness.window, "openFileButton");
   auto *const playlistUrlEdit =
       requiredChild<QLineEdit>(harness.window, "livePlaylistUrlEdit");
+  auto *const livePlaylistTools =
+      requiredChild<QFrame>(harness.window, "livePlaylistTools");
+  auto *const playlistTitle =
+      requiredChild<QLabel>(harness.window, "playlistTitleLabel");
+  auto *const livePlaylistLoadButton =
+      requiredChild<QPushButton>(harness.window, "livePlaylistLoadButton");
+  auto *const livePlaylistLocateButton =
+      requiredChild<QPushButton>(harness.window, "livePlaylistLocateButton");
 
   QCOMPARE(tabs->currentIndex(), 0);
+  QCOMPARE(playlistTitle->text(), QStringLiteral("播放列表"));
   QVERIFY(!openButton->isHidden());
+  QVERIFY(livePlaylistTools->isHidden());
   QVERIFY(playlistUrlEdit->isHidden());
   harness.presenter.addLocalFiles(
       {QStringLiteral("C:/local/one.mp3"), QStringLiteral("C:/local/two.mp4")});
@@ -725,8 +736,12 @@ void MainWindowTest::separatesLocalAndLiveListsWithoutStoppingPlayback() {
            QStringLiteral("direct.m3u8"));
   QCOMPARE(playlistView->selectionMode(), QAbstractItemView::SingleSelection);
   QCOMPARE(playlistView->contextMenuPolicy(), Qt::CustomContextMenu);
+  QCOMPARE(playlistTitle->text(), QStringLiteral("直播频道"));
   QVERIFY(openButton->isHidden());
+  QVERIFY(!livePlaylistTools->isHidden());
   QVERIFY(!playlistUrlEdit->isHidden());
+  QCOMPARE(livePlaylistLoadButton->parentWidget(), livePlaylistTools);
+  QCOMPARE(livePlaylistLocateButton->parentWidget(), livePlaylistTools);
 
   const auto commandCountBeforeSwitch = harness.engine.commands().size();
   tabs->setCurrentIndex(0);
@@ -734,6 +749,8 @@ void MainWindowTest::separatesLocalAndLiveListsWithoutStoppingPlayback() {
   QCOMPARE(playlistView->model()->rowCount(), 2);
   QCOMPARE(playlistView->selectionMode(), QAbstractItemView::ExtendedSelection);
   QCOMPARE(playlistView->contextMenuPolicy(), Qt::CustomContextMenu);
+  QCOMPARE(playlistTitle->text(), QStringLiteral("播放列表"));
+  QVERIFY(livePlaylistTools->isHidden());
   QCOMPARE(harness.engine.commands().size(), commandCountBeforeSwitch);
 
   requiredChild<QToolButton>(harness.window, "networkRefreshButton")->click();

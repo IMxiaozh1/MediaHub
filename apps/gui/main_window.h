@@ -165,6 +165,7 @@ class MainWindow final : public QMainWindow {
   QMenu* playlistContextMenu_{nullptr};
   QMenu* livePlaylistContextMenu_{nullptr};
   QFrame* playlistPanel_{nullptr};
+  QFrame* livePlaylistTools_{nullptr};
   QFrame* headerPanel_{nullptr};
   QFrame* mediaCard_{nullptr};
   QFrame* transportPanel_{nullptr};
@@ -179,6 +180,7 @@ class MainWindow final : public QMainWindow {
   QLabel* positionLabel_{nullptr};
   QLabel* volumeLabel_{nullptr};
   QLabel* livePlaylistStatusLabel_{nullptr};
+  QLabel* playlistTitleLabel_{nullptr};
   QLabel* eyebrowLabel_{nullptr};
   QLabel* titleLabel_{nullptr};
   QLabel* subtitleLabel_{nullptr};

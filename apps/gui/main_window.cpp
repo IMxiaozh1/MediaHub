@@ -648,9 +648,9 @@ MainWindow::MainWindow(QWidget* const parent)
   auto* const playlistLayout = new QVBoxLayout(playlistPanel_);
   playlistLayout->setContentsMargins(16, 14, 16, 14);
   playlistLayout->setSpacing(10);
-  auto* const playlistTitle =
+  playlistTitleLabel_ =
       new QLabel(QStringLiteral("播放列表"), playlistPanel_);
-  playlistTitle->setObjectName(QStringLiteral("playlistTitleLabel"));
+  playlistTitleLabel_->setObjectName(QStringLiteral("playlistTitleLabel"));
   playlistKindTabs_ = new QTabBar(playlistPanel_);
   playlistKindTabs_->setObjectName(QStringLiteral("playlistKindTabs"));
   playlistKindTabs_->setAccessibleName(QStringLiteral("播放列表类型"));
@@ -660,25 +660,36 @@ MainWindow::MainWindow(QWidget* const parent)
   playlistKindTabs_->setElideMode(Qt::ElideNone);
   playlistKindTabs_->addTab(QStringLiteral("本地列表"));
   playlistKindTabs_->addTab(QStringLiteral("直播列表"));
-  livePlaylistUrlEdit_ = new QLineEdit(playlistPanel_);
+  livePlaylistTools_ = new QFrame(playlistPanel_);
+  livePlaylistTools_->setObjectName(QStringLiteral("livePlaylistTools"));
+  auto* const livePlaylistToolsLayout = new QVBoxLayout(livePlaylistTools_);
+  livePlaylistToolsLayout->setContentsMargins(9, 8, 9, 9);
+  livePlaylistToolsLayout->setSpacing(6);
+  auto* const livePlaylistSourceLabel =
+      new QLabel(QStringLiteral("REMOTE PLAYLIST / SIGNAL SOURCE"),
+                 livePlaylistTools_);
+  livePlaylistSourceLabel->setObjectName(
+      QStringLiteral("livePlaylistSourceLabel"));
+  livePlaylistUrlEdit_ = new QLineEdit(livePlaylistTools_);
   livePlaylistUrlEdit_->setObjectName(QStringLiteral("livePlaylistUrlEdit"));
   livePlaylistUrlEdit_->setAccessibleName(QStringLiteral("远程直播清单 URL"));
   livePlaylistUrlEdit_->setPlaceholderText(
       QStringLiteral("https://example.com/list.m3u"));
   livePlaylistUrlEdit_->setClearButtonEnabled(true);
   livePlaylistLoadButton_ =
-      new QPushButton(QStringLiteral("载入 / 刷新清单"), playlistPanel_);
+      new QPushButton(QStringLiteral("载入 / 刷新清单"), livePlaylistTools_);
   livePlaylistLoadButton_->setObjectName(
       QStringLiteral("livePlaylistLoadButton"));
   livePlaylistLoadButton_->setProperty("primary", true);
   livePlaylistLocateButton_ =
-      new QPushButton(QStringLiteral("定位正在播放"), playlistPanel_);
+      new QPushButton(QStringLiteral("定位正在播放"), livePlaylistTools_);
   livePlaylistLocateButton_->setObjectName(
       QStringLiteral("livePlaylistLocateButton"));
   livePlaylistLocateButton_->setToolTip(
       QStringLiteral("滚动并选中当前正在播放的直播源"));
   livePlaylistStatusLabel_ =
-      new QLabel(QStringLiteral("输入远程 M3U/M3U8 清单 URL"), playlistPanel_);
+      new QLabel(QStringLiteral("输入远程 M3U/M3U8 清单 URL"),
+                 livePlaylistTools_);
   livePlaylistStatusLabel_->setObjectName(
       QStringLiteral("livePlaylistStatusLabel"));
   livePlaylistStatusLabel_->setWordWrap(true);
@@ -742,12 +753,18 @@ MainWindow::MainWindow(QWidget* const parent)
       livePlaylistContextMenu_->addAction(QStringLiteral("收藏"));
   livePlaylistFavoriteAction_->setObjectName(
       QStringLiteral("livePlaylistFavoriteAction"));
-  playlistLayout->addWidget(playlistTitle);
+  auto* const livePlaylistButtonRow = new QHBoxLayout();
+  livePlaylistButtonRow->setSpacing(6);
+  livePlaylistButtonRow->addWidget(livePlaylistLoadButton_, 1);
+  livePlaylistButtonRow->addWidget(livePlaylistLocateButton_, 1);
+  livePlaylistToolsLayout->addWidget(livePlaylistSourceLabel);
+  livePlaylistToolsLayout->addWidget(livePlaylistUrlEdit_);
+  livePlaylistToolsLayout->addLayout(livePlaylistButtonRow);
+  livePlaylistToolsLayout->addWidget(livePlaylistStatusLabel_);
+
+  playlistLayout->addWidget(playlistTitleLabel_);
   playlistLayout->addWidget(playlistKindTabs_);
-  playlistLayout->addWidget(livePlaylistUrlEdit_);
-  playlistLayout->addWidget(livePlaylistLoadButton_);
-  playlistLayout->addWidget(livePlaylistLocateButton_);
-  playlistLayout->addWidget(livePlaylistStatusLabel_);
+  playlistLayout->addWidget(livePlaylistTools_);
   playlistLayout->addWidget(playlistView_, 1);
   playlistLayout->addWidget(openButton_);
   mediaWorkspace->addWidget(playlistPanel_, 1);
@@ -1199,6 +1216,8 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
   for (auto* const widget : themedWidgets) {
     widget->setProperty("themeMode", modeKey);
   }
+  auto* const playlistLayout =
+      qobject_cast<QVBoxLayout*>(playlistPanel_->layout());
 
   switch (mode) {
     case UiPresentationMode::LocalAudio:
@@ -1211,6 +1230,8 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       rootLayout_->setSpacing(12);
       playlistPanel_->setMinimumWidth(230);
       playlistPanel_->setMaximumWidth(330);
+      playlistLayout->setContentsMargins(16, 14, 16, 14);
+      playlistLayout->setSpacing(10);
       break;
     case UiPresentationMode::LocalVideo:
       eyebrowLabel_->setText(QStringLiteral("LOCAL VIDEO / CINEMA"));
@@ -1222,6 +1243,8 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       rootLayout_->setSpacing(12);
       playlistPanel_->setMinimumWidth(230);
       playlistPanel_->setMaximumWidth(330);
+      playlistLayout->setContentsMargins(16, 14, 16, 14);
+      playlistLayout->setSpacing(10);
       break;
     case UiPresentationMode::Live:
       eyebrowLabel_->setText(QStringLiteral("LIVE STREAM / CONTROL"));
@@ -1233,6 +1256,8 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       rootLayout_->setSpacing(8);
       playlistPanel_->setMinimumWidth(270);
       playlistPanel_->setMaximumWidth(390);
+      playlistLayout->setContentsMargins(8, 8, 8, 8);
+      playlistLayout->setSpacing(6);
       break;
   }
   videoOutput_->setPresentationMode(mode);
@@ -1511,6 +1536,10 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
                                       ? QAbstractItemView::SingleSelection
                                       : QAbstractItemView::ExtendedSelection);
   playlistView_->setContextMenuPolicy(Qt::CustomContextMenu);
+  playlistTitleLabel_->setText(showsLivePlaylist
+                                   ? QStringLiteral("直播频道")
+                                   : QStringLiteral("播放列表"));
+  livePlaylistTools_->setVisible(showsLivePlaylist);
   livePlaylistUrlEdit_->setVisible(showsLivePlaylist);
   livePlaylistLoadButton_->setVisible(showsLivePlaylist);
   livePlaylistLocateButton_->setVisible(showsLivePlaylist);
