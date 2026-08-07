@@ -30,6 +30,7 @@
 #include <QPixmap>
 #include <QPolygonF>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollBar>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -63,9 +64,11 @@
 namespace mediahub::gui {
 namespace {
 
-constexpr int kNormalHorizontalMargin = 36;
-constexpr int kNormalVerticalMargin = 28;
-constexpr int kNormalSpacing = 16;
+constexpr int kNormalHorizontalMargin = 22;
+constexpr int kNormalVerticalMargin = 18;
+constexpr int kNormalSpacing = 12;
+constexpr int kPlaylistMinimumWidth = 260;
+constexpr int kPlaylistMaximumWidth = 440;
 constexpr int kKeyboardVolumeStep = 5;
 constexpr int kDefaultKeyboardSeekStepSeconds = 5;
 constexpr int kRightKeyHoldThresholdMilliseconds = 350;
@@ -643,8 +646,7 @@ MainWindow::MainWindow(QWidget* const parent)
 
   playlistPanel_ = new QFrame(centralWidget);
   playlistPanel_->setObjectName(QStringLiteral("playlistPanel"));
-  playlistPanel_->setMinimumWidth(220);
-  playlistPanel_->setMaximumWidth(320);
+  playlistPanel_->setFixedWidth(kPlaylistMinimumWidth);
   auto* const playlistLayout = new QVBoxLayout(playlistPanel_);
   playlistLayout->setContentsMargins(16, 14, 16, 14);
   playlistLayout->setSpacing(10);
@@ -1202,6 +1204,7 @@ MainWindow::MainWindow(QWidget* const parent)
   initialState.mediaName = QStringLiteral("未选择媒体");
   initialState.statusText = QStringLiteral("未打开媒体");
   applyViewState(initialState);
+  updatePlaylistResponsiveStyle();
 }
 
 void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
@@ -1216,9 +1219,6 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
   for (auto* const widget : themedWidgets) {
     widget->setProperty("themeMode", modeKey);
   }
-  auto* const playlistLayout =
-      qobject_cast<QVBoxLayout*>(playlistPanel_->layout());
-
   switch (mode) {
     case UiPresentationMode::LocalAudio:
       eyebrowLabel_->setText(QStringLiteral("LOCAL MUSIC / LISTEN"));
@@ -1226,12 +1226,6 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       subtitleLabel_->setText(
           QStringLiteral("让波形、歌词与播放列表围绕正在播放的声音展开。"));
       modeBadgeLabel_->setText(QStringLiteral("MUSIC"));
-      rootLayout_->setContentsMargins(22, 18, 22, 20);
-      rootLayout_->setSpacing(12);
-      playlistPanel_->setMinimumWidth(230);
-      playlistPanel_->setMaximumWidth(330);
-      playlistLayout->setContentsMargins(16, 14, 16, 14);
-      playlistLayout->setSpacing(10);
       break;
     case UiPresentationMode::LocalVideo:
       eyebrowLabel_->setText(QStringLiteral("LOCAL VIDEO / CINEMA"));
@@ -1239,12 +1233,6 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       subtitleLabel_->setText(
           QStringLiteral("深色影院画布聚焦本地视频，控制与信息保持在手边。"));
       modeBadgeLabel_->setText(QStringLiteral("VIDEO"));
-      rootLayout_->setContentsMargins(22, 18, 22, 20);
-      rootLayout_->setSpacing(12);
-      playlistPanel_->setMinimumWidth(230);
-      playlistPanel_->setMaximumWidth(330);
-      playlistLayout->setContentsMargins(16, 14, 16, 14);
-      playlistLayout->setSpacing(10);
       break;
     case UiPresentationMode::Live:
       eyebrowLabel_->setText(QStringLiteral("LIVE STREAM / CONTROL"));
@@ -1252,12 +1240,6 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
       subtitleLabel_->setText(
           QStringLiteral("紧凑查看频道、连接状态与当前直播，快速刷新或切换。"));
       modeBadgeLabel_->setText(QStringLiteral("LIVE"));
-      rootLayout_->setContentsMargins(14, 12, 14, 14);
-      rootLayout_->setSpacing(8);
-      playlistPanel_->setMinimumWidth(270);
-      playlistPanel_->setMaximumWidth(390);
-      playlistLayout->setContentsMargins(8, 8, 8, 8);
-      playlistLayout->setSpacing(6);
       break;
   }
   videoOutput_->setPresentationMode(mode);
@@ -1556,6 +1538,48 @@ void MainWindow::changeEvent(QEvent* const event) {
   QMainWindow::changeEvent(event);
   if (event->type() == QEvent::WindowStateChange) {
     updateFullScreenText();
+  }
+}
+
+void MainWindow::resizeEvent(QResizeEvent* const event) {
+  QMainWindow::resizeEvent(event);
+  updatePlaylistResponsiveStyle();
+}
+
+void MainWindow::updatePlaylistResponsiveStyle() {
+  if (playlistPanel_ == nullptr) {
+    return;
+  }
+
+  const int responsiveWidth = std::clamp(
+      width() * 3 / 10, kPlaylistMinimumWidth, kPlaylistMaximumWidth);
+  if (playlistPanel_->width() != responsiveWidth) {
+    playlistPanel_->setFixedWidth(responsiveWidth);
+  }
+
+  QString sizeKey;
+  if (width() >= 1600 && height() >= 900) {
+    sizeKey = QStringLiteral("extraLarge");
+  } else if (width() >= 1200 && height() >= 800) {
+    sizeKey = QStringLiteral("large");
+  } else if (width() >= 900 && height() >= 700) {
+    sizeKey = QStringLiteral("normal");
+  } else {
+    sizeKey = QStringLiteral("compact");
+  }
+  if (playlistResponsiveSize_ == sizeKey) {
+    return;
+  }
+  playlistResponsiveSize_ = sizeKey;
+
+  QList<QWidget*> playlistWidgets = playlistPanel_->findChildren<QWidget*>();
+  playlistWidgets.push_front(playlistPanel_);
+  for (auto* const widget : playlistWidgets) {
+    widget->setProperty("responsiveSize", sizeKey);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+    widget->updateGeometry();
+    widget->update();
   }
 }
 

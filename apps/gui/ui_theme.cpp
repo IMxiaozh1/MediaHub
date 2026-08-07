@@ -124,7 +124,6 @@ const QString& mainWindowStyleSheet() {
           font-family: "Bahnschrift SemiCondensed";
           font-size: 11px;
           font-weight: 700;
-          letter-spacing: 1px;
       }
       QLabel#eyebrowLabel[themeMode="audio"],
       QLabel#eyebrowLabel[themeMode="video"] {
@@ -222,9 +221,6 @@ const QString& mainWindowStyleSheet() {
       }
       QLabel#playlistTitleLabel[themeMode="live"] {
           color: #f1e4cf;
-          font-family: "Bahnschrift SemiCondensed";
-          font-size: 13px;
-          letter-spacing: 1px;
       }
       QTabBar#playlistKindTabs::tab {
           border: none;
@@ -244,7 +240,6 @@ const QString& mainWindowStyleSheet() {
           background: #18191b;
           border-bottom: 1px solid #343538;
           color: #918f8a;
-          padding: 5px 4px;
       }
       QTabBar#playlistKindTabs::tab:selected {
           background: #20b974;
@@ -263,10 +258,7 @@ const QString& mainWindowStyleSheet() {
       }
       QLabel#livePlaylistSourceLabel[themeMode="live"] {
           color: #d69a43;
-          font-family: "Bahnschrift SemiCondensed";
-          font-size: 9px;
           font-weight: 700;
-          letter-spacing: 1px;
       }
       QLineEdit#livePlaylistUrlEdit {
           border-radius: 5px;
@@ -333,7 +325,6 @@ const QString& mainWindowStyleSheet() {
           border: 1px solid #323438;
           border-radius: 2px;
           color: #d4d4d1;
-          font-size: 12px;
           padding: 1px;
       }
       QListView#playlistView::item {
@@ -343,7 +334,6 @@ const QString& mainWindowStyleSheet() {
       QListView#playlistView[themeMode="live"]::item {
           border-radius: 0;
           border-bottom: 1px solid #25272a;
-          padding: 4px 6px;
       }
       QListView#playlistView::item:hover {
           background: rgba(45, 184, 121, 45);
@@ -671,6 +661,62 @@ const QString& mainWindowStyleSheet() {
           background: rgba(100, 110, 110, 35);
           border-color: rgba(120, 130, 130, 40);
           color: #747d7a;
+      }
+      QLabel#playlistTitleLabel[responsiveSize="compact"] {
+          font-size: 14px;
+      }
+      QTabBar#playlistKindTabs[responsiveSize="compact"]::tab,
+      QListView#playlistView[responsiveSize="compact"],
+      QLineEdit#livePlaylistUrlEdit[responsiveSize="compact"],
+      QLabel#livePlaylistStatusLabel[responsiveSize="compact"],
+      QPushButton#livePlaylistLoadButton[responsiveSize="compact"],
+      QPushButton#livePlaylistLocateButton[responsiveSize="compact"] {
+          font-size: 12px;
+      }
+      QLabel#livePlaylistSourceLabel[responsiveSize="compact"] {
+          font-size: 10px;
+      }
+      QLabel#playlistTitleLabel[responsiveSize="normal"] {
+          font-size: 15px;
+      }
+      QTabBar#playlistKindTabs[responsiveSize="normal"]::tab,
+      QListView#playlistView[responsiveSize="normal"],
+      QLineEdit#livePlaylistUrlEdit[responsiveSize="normal"],
+      QLabel#livePlaylistStatusLabel[responsiveSize="normal"],
+      QPushButton#livePlaylistLoadButton[responsiveSize="normal"],
+      QPushButton#livePlaylistLocateButton[responsiveSize="normal"] {
+          font-size: 13px;
+      }
+      QLabel#livePlaylistSourceLabel[responsiveSize="normal"] {
+          font-size: 11px;
+      }
+      QLabel#playlistTitleLabel[responsiveSize="large"] {
+          font-size: 17px;
+      }
+      QTabBar#playlistKindTabs[responsiveSize="large"]::tab,
+      QListView#playlistView[responsiveSize="large"],
+      QLineEdit#livePlaylistUrlEdit[responsiveSize="large"],
+      QLabel#livePlaylistStatusLabel[responsiveSize="large"],
+      QPushButton#livePlaylistLoadButton[responsiveSize="large"],
+      QPushButton#livePlaylistLocateButton[responsiveSize="large"] {
+          font-size: 15px;
+      }
+      QLabel#livePlaylistSourceLabel[responsiveSize="large"] {
+          font-size: 12px;
+      }
+      QLabel#playlistTitleLabel[responsiveSize="extraLarge"] {
+          font-size: 19px;
+      }
+      QTabBar#playlistKindTabs[responsiveSize="extraLarge"]::tab,
+      QListView#playlistView[responsiveSize="extraLarge"],
+      QLineEdit#livePlaylistUrlEdit[responsiveSize="extraLarge"],
+      QLabel#livePlaylistStatusLabel[responsiveSize="extraLarge"],
+      QPushButton#livePlaylistLoadButton[responsiveSize="extraLarge"],
+      QPushButton#livePlaylistLocateButton[responsiveSize="extraLarge"] {
+          font-size: 17px;
+      }
+      QLabel#livePlaylistSourceLabel[responsiveSize="extraLarge"] {
+          font-size: 14px;
       }
   )");
   return styleSheet;

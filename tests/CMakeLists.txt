@@ -61,11 +61,27 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
 
     add_test(NAME gui.stage10_coverage COMMAND mediahub_gui_tests -platform offscreen)
-    set_tests_properties(gui.stage10_coverage PROPERTIES TIMEOUT 15)
+    add_test(NAME gui.v03_scale_125 COMMAND mediahub_gui_tests -platform offscreen)
+    add_test(NAME gui.v03_scale_150 COMMAND mediahub_gui_tests -platform offscreen)
+    set_tests_properties(
+        gui.stage10_coverage
+        gui.v03_scale_125
+        gui.v03_scale_150
+        PROPERTIES TIMEOUT 60
+    )
+    set_tests_properties(gui.v03_scale_125 PROPERTIES
+        ENVIRONMENT "QT_SCALE_FACTOR=1.25"
+    )
+    set_tests_properties(gui.v03_scale_150 PROPERTIES
+        ENVIRONMENT "QT_SCALE_FACTOR=1.5"
+    )
     if(WIN32 AND DEFINED ENV{WINDIR})
-        set_property(TEST gui.stage10_coverage APPEND PROPERTY
-            ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
-        )
+        foreach(gui_test IN ITEMS
+                gui.stage10_coverage gui.v03_scale_125 gui.v03_scale_150)
+            set_property(TEST ${gui_test} APPEND PROPERTY
+                ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
+            )
+        endforeach()
     endif()
 
     add_executable(mediahub_live_playlist_tests

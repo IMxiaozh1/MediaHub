@@ -255,6 +255,8 @@ private slots:
   void rendersBottomUpwardAudioWaveformAndTogglesFullScreen();
   void togglesLyricsBesideVolumeAndTracksSynchronizedLine();
   void collapsesAndExpandsPlaylistWithMediaResize();
+  void keepsPlaylistGeometryStableAndScalesTypography();
+  void keepsPresentationModesInsideResponsiveBounds();
   void resizesVideoSurfaceAndTogglesFullScreen();
   void stopsForwardingBeforeWindowCloses();
   void runsShutdownFallbackOnlyAfterTimeout();
@@ -3108,6 +3110,160 @@ void MainWindowTest::collapsesAndExpandsPlaylistWithMediaResize() {
   QCOMPARE(toggleButton->accessibleName(), QStringLiteral("收起播放列表"));
 }
 
+void MainWindowTest::keepsPlaylistGeometryStableAndScalesTypography() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  auto *const centralSurface =
+      requiredChild<QWidget>(harness.window, "centralSurface");
+  auto *const playlistPanel =
+      requiredChild<QWidget>(harness.window, "playlistPanel");
+  auto *const playlistTitle =
+      requiredChild<QLabel>(harness.window, "playlistTitleLabel");
+  auto *const playlistTabs =
+      requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  auto *const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+
+  const std::array<QSize, 3> sizes{
+      harness.window.minimumSize(), QSize(960, 720), QSize(1200, 800)};
+  std::array<int, 3> panelWidths{};
+  std::array<int, 3> listFontHeights{};
+  for (std::size_t index = 0; index < sizes.size(); ++index) {
+    const QSize size = sizes.at(index);
+    harness.window.resize(size);
+    QTRY_COMPARE(harness.window.size(), size);
+
+    playlistTabs->setCurrentIndex(0);
+    QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+                 QStringLiteral("video"));
+    const QSize localPanelSize = playlistPanel->size();
+    const int localTitleHeight = playlistTitle->fontMetrics().height();
+    const int localTabHeight = playlistTabs->fontMetrics().height();
+    const int localListHeight = playlistView->fontMetrics().height();
+
+    playlistTabs->setCurrentIndex(1);
+    QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+                 QStringLiteral("live"));
+    QCOMPARE(playlistPanel->size(), localPanelSize);
+    QCOMPARE(playlistTitle->fontMetrics().height(), localTitleHeight);
+    QCOMPARE(playlistTabs->fontMetrics().height(), localTabHeight);
+    QCOMPARE(playlistView->fontMetrics().height(), localListHeight);
+    panelWidths.at(index) = playlistPanel->width();
+    listFontHeights.at(index) = playlistView->fontMetrics().height();
+  }
+
+  QVERIFY(panelWidths.at(0) < panelWidths.at(1));
+  QVERIFY(panelWidths.at(1) < panelWidths.at(2));
+  QVERIFY(listFontHeights.at(0) < listFontHeights.at(1));
+  QVERIFY(listFontHeights.at(1) < listFontHeights.at(2));
+}
+
+void MainWindowTest::keepsPresentationModesInsideResponsiveBounds() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  auto *const centralSurface =
+      requiredChild<QWidget>(harness.window, "centralSurface");
+  auto *const headerPanel =
+      requiredChild<QWidget>(harness.window, "headerPanel");
+  auto *const videoOutput =
+      requiredChild<VideoOutputWidget>(harness.window, "videoOutputWidget");
+  auto *const playlistPanel =
+      requiredChild<QWidget>(harness.window, "playlistPanel");
+  auto *const mediaCard = requiredChild<QWidget>(harness.window, "mediaCard");
+  auto *const transportPanel =
+      requiredChild<QWidget>(harness.window, "transportPanel");
+  auto *const progressSlider =
+      requiredChild<QSlider>(harness.window, "progressSlider");
+  auto *const playlistTabs =
+      requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  auto *const livePlaylistLoadButton =
+      requiredChild<QPushButton>(harness.window, "livePlaylistLoadButton");
+  auto *const livePlaylistLocateButton =
+      requiredChild<QPushButton>(harness.window, "livePlaylistLocateButton");
+  const std::array<QWidget *, 10> timelineControls{
+      requiredChild<QToolButton>(harness.window, "previousButton"),
+      requiredChild<QToolButton>(harness.window, "playPauseButton"),
+      requiredChild<QToolButton>(harness.window, "nextButton"),
+      requiredChild<QToolButton>(harness.window, "stopButton"),
+      requiredChild<QToolButton>(harness.window, "volumeButton"),
+      requiredChild<QToolButton>(harness.window, "lyricsButton"),
+      requiredChild<QToolButton>(harness.window, "playbackRateButton"),
+      requiredChild<QToolButton>(harness.window, "keyboardSeekStepButton"),
+      requiredChild<QToolButton>(harness.window, "playbackModeButton"),
+      requiredChild<QToolButton>(harness.window, "fullScreenButton"),
+  };
+  const QList<QWidget *> responsiveWidgets{
+      centralSurface, headerPanel, videoOutput, playlistPanel,
+      mediaCard,      transportPanel, progressSlider,
+  };
+
+  const QSize initialWindowSize = harness.window.size();
+  playlistTabs->setCurrentIndex(1);
+  QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+               QStringLiteral("live"));
+  QCOMPARE(harness.window.size(), initialWindowSize);
+  playlistTabs->setCurrentIndex(0);
+  QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+               QStringLiteral("video"));
+  QCOMPARE(harness.window.size(), initialWindowSize);
+
+  const auto verifyVisibleBounds = [&]() {
+    QCoreApplication::processEvents();
+    QVERIFY(progressSlider->width() >= 100);
+    for (auto *const widget : responsiveWidgets) {
+      if (widget->isVisible()) {
+        QVERIFY(harness.window.rect().contains(
+            geometryInsideWindow(*widget, harness.window)));
+      }
+    }
+    for (auto *const control : timelineControls) {
+      QVERIFY(control->isVisible());
+      QVERIFY(harness.window.rect().contains(
+          geometryInsideWindow(*control, harness.window)));
+    }
+  };
+
+  const std::array<QSize, 3> sizes{
+      QSize(960, 720), QSize(1200, 800), harness.window.minimumSize()};
+  for (const QSize &size : sizes) {
+    harness.window.resize(size);
+    QTRY_COMPARE(harness.window.size(), size);
+
+    playlistTabs->setCurrentIndex(0);
+    harness.presenter.openLocalFile(QStringLiteral("C:/video/layout.mp4"));
+    QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+                 QStringLiteral("video"));
+    QCOMPARE(harness.window.size(), size);
+    verifyVisibleBounds();
+
+    harness.presenter.openLocalFile(QStringLiteral("C:/audio/layout.mp3"));
+    QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+                 QStringLiteral("audio"));
+    QCOMPARE(harness.window.size(), size);
+    verifyVisibleBounds();
+
+    playlistTabs->setCurrentIndex(1);
+    QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+                 QStringLiteral("live"));
+    QCOMPARE(harness.window.size(), size);
+    verifyVisibleBounds();
+    for (int index = 0; index < playlistTabs->count(); ++index) {
+      const int textWidth = playlistTabs->fontMetrics().horizontalAdvance(
+          playlistTabs->tabText(index));
+      QVERIFY(playlistTabs->tabRect(index).width() >= textWidth + 8);
+    }
+    const std::array<QPushButton *, 2> liveButtons{
+        livePlaylistLoadButton, livePlaylistLocateButton};
+    for (auto *const button : liveButtons) {
+      const int textWidth =
+          button->fontMetrics().horizontalAdvance(button->text());
+      QVERIFY(button->width() >= textWidth + 10);
+    }
+  }
+}
+
 void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   GuiHarness harness;
   harness.window.show();
@@ -3146,7 +3302,7 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
       volumeButton,       lyricsButton,     playbackRateButton, seekStepButton,
       playbackModeButton, fullScreenButton,
   };
-  QVERIFY(harness.window.rect().contains(
+  QTRY_VERIFY(harness.window.rect().contains(
       geometryInsideWindow(*openButton, harness.window)));
   QVERIFY(harness.window.rect().contains(
       geometryInsideWindow(*progressSlider, harness.window)));
@@ -3174,7 +3330,7 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   harness.window.resize(1200, 800);
   QTRY_VERIFY(videoOutput->size().width() > initialSize.width());
   QTRY_VERIFY(videoOutput->size().height() > initialSize.height());
-  QVERIFY(harness.window.rect().contains(
+  QTRY_VERIFY(harness.window.rect().contains(
       geometryInsideWindow(*openButton, harness.window)));
   QVERIFY(harness.window.rect().contains(
       geometryInsideWindow(*progressSlider, harness.window)));

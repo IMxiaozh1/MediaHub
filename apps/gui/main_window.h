@@ -24,6 +24,7 @@ class QPoint;
 class QPushButton;
 class QFrame;
 class QEvent;
+class QResizeEvent;
 class QSlider;
 class QStackedLayout;
 class QTabBar;
@@ -105,6 +106,8 @@ class MainWindow final : public QMainWindow {
   void closeEvent(QCloseEvent* event) override;
   // 调用线程：GUI 主线程。同步全屏动作与按钮文字。
   void changeEvent(QEvent* event) override;
+  // 调用线程：GUI 主线程。窗口跨过响应式阈值时更新播放列表排版。
+  void resizeEvent(QResizeEvent* event) override;
   // 调用线程：GUI 主线程。处理快捷键长按，并阻止右键双击激活列表项。
   bool eventFilter(QObject* watched, QEvent* event) override;
   // 调用线程：GUI 主线程。只接受包含本地文件的拖放数据。
@@ -120,6 +123,7 @@ class MainWindow final : public QMainWindow {
   void updateFullScreenText();
   void togglePlaylistVisibility();
   void updatePlaylistToggleAppearance();
+  void updatePlaylistResponsiveStyle();
   void applyPresentationMode(UiPresentationMode mode);
   void showPlaylistContextMenu(const QPoint& position);
   void renameContextPlaylistItem();
@@ -190,6 +194,7 @@ class MainWindow final : public QMainWindow {
   QList<QWidget*> fullScreenChrome_;
   QList<int> playlistContextRows_;
   QStringList recentNetworkUrls_;
+  QString playlistResponsiveSize_;
   QAbstractItemModel* localPlaylistModel_{nullptr};
   QAbstractItemModel* livePlaylistModel_{nullptr};
   int keyboardSeekStepSeconds_{5};
