@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(MediaHub VERSION 0.3.0 LANGUAGES CXX)
+project(MediaHub VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -136,6 +136,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
     mediahub_enable_warnings(mediahub_engine_vlc)
 
     add_library(mediahub_gui_support STATIC
+        apps/gui/app_state_store.cpp
+        apps/gui/app_state_store.h
         apps/gui/engine_event_bridge.cpp
         apps/gui/engine_event_bridge.h
         apps/gui/lyrics_service.cpp
@@ -144,6 +146,11 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/lyrics_view.h
         apps/gui/live_playlist_service.cpp
         apps/gui/live_playlist_service.h
+        apps/gui/live_source_memo.h
+        apps/gui/live_source_memo_dialog.cpp
+        apps/gui/live_source_memo_dialog.h
+        apps/gui/live_url_history_dialog.cpp
+        apps/gui/live_url_history_dialog.h
         apps/gui/main_window.cpp
         apps/gui/main_window.h
         apps/gui/player_presenter.cpp
@@ -154,6 +161,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/resources/mediahub_gui.qrc
         apps/gui/seek_slider.cpp
         apps/gui/seek_slider.h
+        apps/gui/shortcut_help_dialog.cpp
+        apps/gui/shortcut_help_dialog.h
         apps/gui/shutdown_watchdog.cpp
         apps/gui/shutdown_watchdog.h
         apps/gui/ui_theme.cpp

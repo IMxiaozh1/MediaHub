@@ -4,8 +4,10 @@
 #include <QMainWindow>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 #include <optional>
 
+#include "live_source_memo.h"
 #include "mediahub/core/media_types.h"
 #include "player_view_state.h"
 #include "ui_theme.h"
@@ -68,11 +70,19 @@ class MainWindow final : public QMainWindow {
   [[nodiscard]] const QStringList& recentNetworkUrls() const noexcept;
   // 调用线程：GUI 主线程。Ctrl+L 识别清单后同步显示到直播清单输入框。
   void setLivePlaylistUrl(const QString& url);
+  [[nodiscard]] QString livePlaylistUrl() const;
+  // 调用线程：GUI 主线程。历史只用于选择和删除，不会自动载入清单。
+  void setLivePlaylistHistoryUrls(const QStringList& urls);
+  // 调用线程：GUI 主线程。直播源备忘只显示和编辑，不触发播放或网络请求。
+  void setLiveSourceMemos(const QVector<LiveSourceMemo>& memos);
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
   void networkUrlSelected(const QString& url);
   void livePlaylistLoadRequested(const QString& url);
+  void livePlaylistLoadCancelRequested();
+  void livePlaylistHistoryChanged(const QStringList& urls);
+  void liveSourceMemosChanged(const QVector<LiveSourceMemo>& memos);
   void playlistKindSelected(int kindIndex);
   void playRequested();
   void pauseRequested();
@@ -88,6 +98,7 @@ class MainWindow final : public QMainWindow {
   void playbackRateRequested(double rate);
   void temporaryFastPlaybackRequested(bool enabled);
   void muteToggled();
+  void muteStateRequested(bool isMuted);
   void lyricsToggled();
   void previousRequested();
   void nextRequested();
@@ -118,6 +129,9 @@ class MainWindow final : public QMainWindow {
  private:
   void chooseLocalFile();
   void chooseNetworkUrl();
+  void showLiveUrlHistory();
+  void showLiveSourceMemo();
+  void showShortcutHelp();
   void toggleFullScreen();
   void exitFullScreen();
   void updateFullScreenText();
@@ -161,6 +175,7 @@ class MainWindow final : public QMainWindow {
   QToolButton* playbackRateButton_{nullptr};
   QToolButton* playbackModeButton_{nullptr};
   QToolButton* playlistToggleButton_{nullptr};
+  QToolButton* livePlaylistHistoryButton_{nullptr};
   QTabBar* playlistKindTabs_{nullptr};
   QLineEdit* livePlaylistUrlEdit_{nullptr};
   QPushButton* livePlaylistLoadButton_{nullptr};
@@ -194,6 +209,8 @@ class MainWindow final : public QMainWindow {
   QList<QWidget*> fullScreenChrome_;
   QList<int> playlistContextRows_;
   QStringList recentNetworkUrls_;
+  QStringList livePlaylistHistoryUrls_;
+  QVector<LiveSourceMemo> liveSourceMemos_;
   QString playlistResponsiveSize_;
   QAbstractItemModel* localPlaylistModel_{nullptr};
   QAbstractItemModel* livePlaylistModel_{nullptr};
@@ -203,6 +220,7 @@ class MainWindow final : public QMainWindow {
   int currentLivePlaybackIndex_{-1};
   bool isPlaylistExpanded_{true};
   bool isLivePlaylistActive_{false};
+  bool isLivePlaylistLoading_{false};
   bool canEditPlaylist_{false};
   bool canPlayCurrentItem_{false};
   bool canPauseCurrentItem_{false};

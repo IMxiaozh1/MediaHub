@@ -49,8 +49,11 @@
 #include <initializer_list>
 
 #include "lyrics_view.h"
+#include "live_source_memo_dialog.h"
+#include "live_url_history_dialog.h"
 #include "playlist_model.h"
 #include "seek_slider.h"
+#include "shortcut_help_dialog.h"
 #include "video_output_widget.h"
 
 #ifdef Q_OS_WIN
@@ -82,6 +85,7 @@ enum class ControlIcon {
   Pause,
   Stop,
   Refresh,
+  History,
   Volume,
   Muted,
   FullScreen,
@@ -155,6 +159,13 @@ QIcon controlIcon(const ControlIcon icon) {
       painter.drawArc(QRectF(3.5, 3.5, 13, 13), 35 * 16, 285 * 16);
       painter.drawLine(QPointF(15.5, 3.5), QPointF(15.5, 8));
       painter.drawLine(QPointF(15.5, 3.5), QPointF(11, 3.5));
+      break;
+    case ControlIcon::History:
+      painter.drawArc(QRectF(3.5, 3.5, 13, 13), 55 * 16, 285 * 16);
+      painter.drawLine(QPointF(4, 4), QPointF(4, 8));
+      painter.drawLine(QPointF(4, 4), QPointF(8, 4));
+      painter.drawLine(QPointF(10, 6), QPointF(10, 10));
+      painter.drawLine(QPointF(10, 10), QPointF(13, 12));
       break;
     case ControlIcon::Volume:
     case ControlIcon::Muted: {
@@ -551,10 +562,26 @@ MainWindow::MainWindow(QWidget* const parent)
   auto* const viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
   fullScreenAction_ = viewMenu->addAction(QStringLiteral("进入全屏(&F)"));
   fullScreenAction_->setObjectName(QStringLiteral("fullScreenAction"));
-  fullScreenAction_->setShortcut(QKeySequence(Qt::Key_F11));
+  auto* const fullScreenShortcut =
+      new QShortcut(QKeySequence(Qt::Key_F11), this);
+  fullScreenShortcut->setObjectName(QStringLiteral("fullScreenShortcut"));
+  fullScreenShortcut->setContext(Qt::WindowShortcut);
+  fullScreenShortcut->setAutoRepeat(false);
   auto* const exitFullScreenAction = new QAction(this);
   exitFullScreenAction->setShortcut(QKeySequence(Qt::Key_Escape));
   addAction(exitFullScreenAction);
+  auto* const helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+  auto* const shortcutHelpAction =
+      helpMenu->addAction(QStringLiteral("快捷键(&K)..."));
+  shortcutHelpAction->setObjectName(QStringLiteral("shortcutHelpAction"));
+  connect(shortcutHelpAction, &QAction::triggered, this,
+          &MainWindow::showShortcutHelp);
+  auto* const liveSourceMemoAction =
+      helpMenu->addAction(QStringLiteral("直播源(&L)..."));
+  liveSourceMemoAction->setObjectName(
+      QStringLiteral("liveSourceMemoAction"));
+  connect(liveSourceMemoAction, &QAction::triggered, this,
+          &MainWindow::showLiveSourceMemo);
 
   auto* const playbackShortcut =
       new QShortcut(QKeySequence(Qt::Key_Space), this);
@@ -573,6 +600,20 @@ MainWindow::MainWindow(QWidget* const parent)
       new QShortcut(QKeySequence(Qt::Key_Down), this);
   volumeDownShortcut->setObjectName(QStringLiteral("volumeDownShortcut"));
   volumeDownShortcut->setContext(Qt::WindowShortcut);
+  auto* const muteShortcut = new QShortcut(
+      QKeySequence(static_cast<int>(Qt::CTRL) |
+                   static_cast<int>(Qt::Key_Down)),
+      this);
+  muteShortcut->setObjectName(QStringLiteral("muteShortcut"));
+  muteShortcut->setContext(Qt::WindowShortcut);
+  muteShortcut->setAutoRepeat(false);
+  auto* const unmuteShortcut = new QShortcut(
+      QKeySequence(static_cast<int>(Qt::CTRL) |
+                   static_cast<int>(Qt::Key_Up)),
+      this);
+  unmuteShortcut->setObjectName(QStringLiteral("unmuteShortcut"));
+  unmuteShortcut->setContext(Qt::WindowShortcut);
+  unmuteShortcut->setAutoRepeat(false);
   auto* const seekBackwardShortcut =
       new QShortcut(QKeySequence(Qt::Key_Left), this);
   seekBackwardShortcut->setObjectName(QStringLiteral("seekBackwardShortcut"));
@@ -678,6 +719,14 @@ MainWindow::MainWindow(QWidget* const parent)
   livePlaylistUrlEdit_->setPlaceholderText(
       QStringLiteral("https://example.com/list.m3u"));
   livePlaylistUrlEdit_->setClearButtonEnabled(true);
+  livePlaylistHistoryButton_ = new QToolButton(livePlaylistTools_);
+  livePlaylistHistoryButton_->setObjectName(
+      QStringLiteral("livePlaylistHistoryButton"));
+  configureTransportButton(livePlaylistHistoryButton_,
+                           QStringLiteral("历史直播源"),
+                           QStringLiteral("历史直播源"),
+                           ControlIcon::History);
+  livePlaylistHistoryButton_->setFixedSize(32, 32);
   livePlaylistLoadButton_ =
       new QPushButton(QStringLiteral("载入 / 刷新清单"), livePlaylistTools_);
   livePlaylistLoadButton_->setObjectName(
@@ -755,12 +804,16 @@ MainWindow::MainWindow(QWidget* const parent)
       livePlaylistContextMenu_->addAction(QStringLiteral("收藏"));
   livePlaylistFavoriteAction_->setObjectName(
       QStringLiteral("livePlaylistFavoriteAction"));
+  auto* const livePlaylistUrlRow = new QHBoxLayout();
+  livePlaylistUrlRow->setSpacing(6);
+  livePlaylistUrlRow->addWidget(livePlaylistUrlEdit_, 1);
+  livePlaylistUrlRow->addWidget(livePlaylistHistoryButton_);
   auto* const livePlaylistButtonRow = new QHBoxLayout();
   livePlaylistButtonRow->setSpacing(6);
   livePlaylistButtonRow->addWidget(livePlaylistLoadButton_, 1);
   livePlaylistButtonRow->addWidget(livePlaylistLocateButton_, 1);
   livePlaylistToolsLayout->addWidget(livePlaylistSourceLabel);
-  livePlaylistToolsLayout->addWidget(livePlaylistUrlEdit_);
+  livePlaylistToolsLayout->addLayout(livePlaylistUrlRow);
   livePlaylistToolsLayout->addLayout(livePlaylistButtonRow);
   livePlaylistToolsLayout->addWidget(livePlaylistStatusLabel_);
 
@@ -1038,12 +1091,18 @@ MainWindow::MainWindow(QWidget* const parent)
             emit playlistKindSelected(kindIndex);
           });
   const auto requestLivePlaylistLoad = [this] {
+    if (isLivePlaylistLoading_) {
+      emit livePlaylistLoadCancelRequested();
+      return;
+    }
     emit livePlaylistLoadRequested(livePlaylistUrlEdit_->text().trimmed());
   };
   connect(livePlaylistLoadButton_, &QPushButton::clicked, this,
           requestLivePlaylistLoad);
   connect(livePlaylistUrlEdit_, &QLineEdit::returnPressed, this,
           requestLivePlaylistLoad);
+  connect(livePlaylistHistoryButton_, &QToolButton::clicked, this,
+          &MainWindow::showLiveUrlHistory);
   connect(livePlaylistLocateButton_, &QPushButton::clicked, this, [this] {
     if (!isLivePlaylistActive_ || currentLivePlaybackIndex_ < 0) {
       return;
@@ -1066,6 +1125,10 @@ MainWindow::MainWindow(QWidget* const parent)
           [this] { emit volumeStepRequested(kKeyboardVolumeStep); });
   connect(volumeDownShortcut, &QShortcut::activated, this,
           [this] { emit volumeStepRequested(-kKeyboardVolumeStep); });
+  connect(muteShortcut, &QShortcut::activated, this,
+          [this] { emit muteStateRequested(true); });
+  connect(unmuteShortcut, &QShortcut::activated, this,
+          [this] { emit muteStateRequested(false); });
   connect(seekBackwardShortcut, &QShortcut::activated, this,
           [this] { emit seekRelativeRequested(-keyboardSeekStepSeconds_); });
   connect(previousShortcut, &QShortcut::activated, this,
@@ -1194,6 +1257,8 @@ MainWindow::MainWindow(QWidget* const parent)
           &MainWindow::toggleFullScreen);
   connect(fullScreenAction_, &QAction::triggered, this,
           &MainWindow::toggleFullScreen);
+  connect(fullScreenShortcut, &QShortcut::activated, this,
+          &MainWindow::toggleFullScreen);
   connect(exitFullScreenAction, &QAction::triggered, this,
           &MainWindow::exitFullScreen);
   connect(videoOutput_, &VideoOutputWidget::surfaceReady, this,
@@ -1262,10 +1327,12 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   openNetworkAction_->setEnabled(viewState.canOpen);
   showPlaylistKind(viewState.isLivePlaylistActive ? 1 : 0);
   openButton_->setEnabled(viewState.canOpen);
+  isLivePlaylistLoading_ = viewState.isLivePlaylistLoading;
   livePlaylistUrlEdit_->setEnabled(!viewState.isLivePlaylistLoading);
-  livePlaylistLoadButton_->setEnabled(!viewState.isLivePlaylistLoading);
+  livePlaylistHistoryButton_->setEnabled(!viewState.isLivePlaylistLoading);
+  livePlaylistLoadButton_->setEnabled(true);
   livePlaylistLoadButton_->setText(viewState.isLivePlaylistLoading
-                                       ? QStringLiteral("正在载入...")
+                                       ? QStringLiteral("取消载入")
                                        : QStringLiteral("载入 / 刷新清单"));
   livePlaylistStatusLabel_->setText(viewState.livePlaylistStatusText);
   playPauseButton_->setEnabled(viewState.canPlay || viewState.canPause);
@@ -1523,6 +1590,7 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
                                    : QStringLiteral("播放列表"));
   livePlaylistTools_->setVisible(showsLivePlaylist);
   livePlaylistUrlEdit_->setVisible(showsLivePlaylist);
+  livePlaylistHistoryButton_->setVisible(showsLivePlaylist);
   livePlaylistLoadButton_->setVisible(showsLivePlaylist);
   livePlaylistLocateButton_->setVisible(showsLivePlaylist);
   livePlaylistStatusLabel_->setVisible(showsLivePlaylist);
@@ -1667,6 +1735,53 @@ const QStringList& MainWindow::recentNetworkUrls() const noexcept {
 
 void MainWindow::setLivePlaylistUrl(const QString& url) {
   livePlaylistUrlEdit_->setText(url);
+}
+
+QString MainWindow::livePlaylistUrl() const {
+  return livePlaylistUrlEdit_->text().trimmed();
+}
+
+void MainWindow::setLivePlaylistHistoryUrls(const QStringList& urls) {
+  livePlaylistHistoryUrls_ = urls;
+}
+
+void MainWindow::setLiveSourceMemos(
+    const QVector<LiveSourceMemo>& memos) {
+  liveSourceMemos_ = memos;
+}
+
+void MainWindow::showLiveUrlHistory() {
+  LiveUrlHistoryDialog dialog(livePlaylistHistoryUrls_, this);
+  const int result = dialog.exec();
+  const QStringList& updatedHistory = dialog.historyUrls();
+  bool historyChanged = updatedHistory.size() != livePlaylistHistoryUrls_.size();
+  for (int index = 0; !historyChanged && index < updatedHistory.size();
+       ++index) {
+    historyChanged = updatedHistory.at(index) != livePlaylistHistoryUrls_.at(index);
+  }
+  if (historyChanged) {
+    livePlaylistHistoryUrls_ = dialog.historyUrls();
+    emit livePlaylistHistoryChanged(livePlaylistHistoryUrls_);
+  }
+  if (result == QDialog::Accepted && !dialog.selectedUrl().isEmpty()) {
+    livePlaylistUrlEdit_->setText(dialog.selectedUrl());
+    livePlaylistUrlEdit_->setFocus();
+  }
+}
+
+void MainWindow::showLiveSourceMemo() {
+  LiveSourceMemoDialog dialog(liveSourceMemos_, this);
+  connect(&dialog, &LiveSourceMemoDialog::memosSaved, this,
+          [this](const QVector<LiveSourceMemo>& memos) {
+            liveSourceMemos_ = memos;
+            emit liveSourceMemosChanged(liveSourceMemos_);
+          });
+  dialog.exec();
+}
+
+void MainWindow::showShortcutHelp() {
+  ShortcutHelpDialog dialog(this);
+  dialog.exec();
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* const event) {

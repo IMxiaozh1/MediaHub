@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 #include <chrono>
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@
 
 #include "engine_event_bridge.h"
 #include "live_playlist_service.h"
+#include "live_source_memo.h"
 #include "lyrics_service.h"
 #include "mediahub/core/playback_state_machine.h"
 #include "mediahub/core/player_engine.h"
@@ -24,6 +26,7 @@ class QTimer;
 namespace mediahub::gui {
 
 class MainWindow;
+class AppStateStore;
 
 // 集中处理用户命令、播放状态机和控件快照，不接触任何具体播放内核类型。
 class PlayerPresenter final : public QObject {
@@ -34,7 +37,8 @@ class PlayerPresenter final : public QObject {
                   MainWindow& window, QObject* parent = nullptr,
                   logging::Logger* logger = nullptr,
                   LyricsService* lyricsService = nullptr,
-                  LivePlaylistService* livePlaylistService = nullptr);
+                  LivePlaylistService* livePlaylistService = nullptr,
+                  AppStateStore* appStateStore = nullptr);
   ~PlayerPresenter() override;
 
   // 调用线程：GUI 主线程。路径来自文件选择器，使用 UTF-8 交给核心接口。
@@ -69,6 +73,7 @@ class PlayerPresenter final : public QObject {
   void requestRelativeSeek(int seconds);
   void requestVolume(int volume);
   void requestVolumeStep(int delta);
+  void requestMuted(bool isMuted);
   void requestPlaybackRate(double rate);
   void requestTemporaryFastPlayback(bool enabled);
   void applyPlaybackRate(double rate);
@@ -85,6 +90,7 @@ class PlayerPresenter final : public QObject {
   void changePlaybackMode(int modeIndex);
   void changePlaylistKind(int kindIndex);
   void requestLivePlaylistLoad(const QString& playlistUrl);
+  void cancelLivePlaylistLoad();
   void startLivePlaylistLoad(const QString& playlistUrl,
                              bool fallsBackToDirectPlayback);
   void openDirectNetworkUrl(const QString& normalizedUrl);
@@ -101,6 +107,11 @@ class PlayerPresenter final : public QObject {
   void handleError(core::PlaybackError error);
   void handleNetworkOpenTimeout();
   void rememberNetworkUrl(const QString& url);
+  void rememberLivePlaylistUrl(const QString& url);
+  void updateLivePlaylistHistory(const QStringList& urls);
+  void updateLiveSourceMemos(const QVector<LiveSourceMemo>& memos);
+  void restoreAppState();
+  void persistAppState() noexcept;
   void openCurrentPlaylistItem(PlaylistKind playlistKind,
                                bool isNetworkRefresh = false);
   void openCurrentPlaybackItem(bool isNetworkRefresh = false);
@@ -123,6 +134,7 @@ class PlayerPresenter final : public QObject {
   LyricsService* lyricsService_{nullptr};
   std::unique_ptr<LivePlaylistService> ownedLivePlaylistService_;
   LivePlaylistService* livePlaylistService_{nullptr};
+  AppStateStore* appStateStore_{nullptr};
   QTimer* networkOpenTimeoutTimer_{nullptr};
   core::PlaybackStateMachine stateMachine_;
   core::Playlist localPlaylist_;
@@ -140,6 +152,10 @@ class PlayerPresenter final : public QObject {
   QString mediaName_{QStringLiteral("未选择媒体")};
   QString currentSourcePath_;
   QStringList recentNetworkUrls_;
+  QStringList livePlaylistUrlHistory_;
+  QVector<LiveSourceMemo> liveSourceMemos_;
+  QString lastLivePlaylistUrl_;
+  QString activeLivePlaylistRequestUrl_;
   QString pendingPlaylistProbeUrl_;
   QString livePlaylistStatusText_{QStringLiteral("输入远程 M3U/M3U8 清单 URL")};
   int volume_{100};

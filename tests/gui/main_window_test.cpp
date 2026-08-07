@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include <QAction>
+#include <QAbstractButton>
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
@@ -9,6 +10,8 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFont>
 #include <QFrame>
@@ -18,6 +21,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -26,7 +30,9 @@
 #include <QSignalSpy>
 #include <QSlider>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QTabBar>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextBrowser>
@@ -46,6 +52,7 @@
 #include <utility>
 
 #include "engine_event_bridge.h"
+#include "app_state_store.h"
 #include "fakes/fake_player_engine.h"
 #include "lyrics_service.h"
 #include "lyrics_view.h"
@@ -111,6 +118,23 @@ public:
   bool isPending{false};
 };
 
+class FakeAppStateStore final : public AppStateStore {
+public:
+  AppStateSnapshot load() override {
+    ++loadCount;
+    return snapshot;
+  }
+
+  void save(const AppStateSnapshot &value) override {
+    ++saveCount;
+    snapshot = value;
+  }
+
+  AppStateSnapshot snapshot;
+  int loadCount{0};
+  int saveCount{0};
+};
+
 struct GuiHarness {
   std::ostringstream logOutput;
   logging::Logger logger{logOutput};
@@ -121,9 +145,9 @@ struct GuiHarness {
   FakeLivePlaylistService livePlaylistService;
   PlayerPresenter presenter;
 
-  GuiHarness()
+  explicit GuiHarness(AppStateStore *const appStateStore = nullptr)
       : presenter(engine, eventBridge, window, nullptr, &logger, &lyricsService,
-                  &livePlaylistService) {}
+                  &livePlaylistService, appStateStore) {}
 };
 
 template <typename Widget>
@@ -215,6 +239,13 @@ private slots:
   void doesNotAutomaticallyReconnectInterruptedNetwork();
   void refreshesCurrentNetworkByButtonAndF5();
   void remembersRecentNetworkUrlsForCurrentSession();
+  void roundTripsAppStateThroughSettingsFile();
+  void restoresPersistedStateWithoutStartingPlayback();
+  void persistsPlaylistChangesAndSuccessfulLiveHistory();
+  void fillsAndDeletesLiveUrlHistoryWithoutLoading();
+  void managesLiveSourceMemosWithSaveShortcutAndReturnPrompt();
+  void savesUnsavedLiveSourceMemosWhenWindowCloses();
+  void cancelsLivePlaylistLoadingAndIgnoresLateResult();
   void routesPauseResumeAndStopThroughPresenter();
   void rendersBufferingAsNonInteractiveWait();
   void allowsReplayAfterNaturalEnd();
@@ -236,6 +267,7 @@ private slots:
   void doesNotOpenHoverMenuAfterImmediateLeave();
   void holdsRightKeyAtTwoTimesAndRestoresSelectedRate();
   void routesKeyboardPlaybackVolumeAndSeek();
+  void routesExplicitMuteShortcutsAndLeavesCtrlF5Unused();
   void routesCtrlArrowKeysToPlaylistNavigation();
   void usesConfiguredKeyboardSeekStepAndClampsBoundaries();
   void appliesBurstPositionEventsOnGuiThread();
@@ -258,6 +290,8 @@ private slots:
   void keepsPlaylistGeometryStableAndScalesTypography();
   void keepsPresentationModesInsideResponsiveBounds();
   void resizesVideoSurfaceAndTogglesFullScreen();
+  void togglesFullScreenWithF11();
+  void showsSupportedShortcutsFromHelpMenu();
   void stopsForwardingBeforeWindowCloses();
   void runsShutdownFallbackOnlyAfterTimeout();
   void cancelsShutdownFallbackAfterNormalCleanup();
@@ -1000,7 +1034,8 @@ void MainWindowTest::replacesRemoteLiveListAtomicallyAndKeepsItOnFailure() {
   QTest::mouseClick(loadButton, Qt::LeftButton);
   QCOMPARE(harness.livePlaylistService.loadCount, 1);
   QVERIFY(harness.livePlaylistService.isPending);
-  QVERIFY(!loadButton->isEnabled());
+  QVERIFY(loadButton->isEnabled());
+  QCOMPARE(loadButton->text(), QStringLiteral("取消载入"));
   QVERIFY(statusLabel->text().contains(QStringLiteral("正在读取")));
 
   LivePlaylistLoadResult firstResult;
@@ -1015,6 +1050,7 @@ void MainWindowTest::replacesRemoteLiveListAtomicallyAndKeepsItOnFailure() {
   harness.livePlaylistService.complete(std::move(firstResult));
 
   QVERIFY(loadButton->isEnabled());
+  QCOMPARE(loadButton->text(), QStringLiteral("载入 / 刷新清单"));
   QCOMPARE(playlistView->model()->rowCount(), 2);
   QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
            QStringLiteral("第一路"));
@@ -1313,6 +1349,478 @@ void MainWindowTest::remembersRecentNetworkUrlsForCurrentSession() {
 
   GuiHarness newSession;
   QVERIFY(newSession.window.recentNetworkUrls().isEmpty());
+}
+
+void MainWindowTest::roundTripsAppStateThroughSettingsFile() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString settingsFile =
+      QDir(directory.path()).filePath(QStringLiteral("state.ini"));
+  AppStateSnapshot expected;
+  expected.localPlaylist = {
+      core::MediaItem{"C:/媒体 库/第一首.mp3",
+                      core::MediaSourceKind::LocalFile, "列表名 一"},
+      core::MediaItem{"C:/video/two.mp4", core::MediaSourceKind::LocalFile,
+                      "第二个视频"},
+  };
+  expected.lastLivePlaylistUrl =
+      QStringLiteral("https://example.test/最后清单.m3u?token=private");
+  expected.livePlaylistUrlHistory = QStringList{
+      expected.lastLivePlaylistUrl,
+      QStringLiteral("https://example.test/older.m3u"),
+  };
+  expected.liveSourceMemos = {
+      LiveSourceMemo{QStringLiteral("https://live.example/一号.m3u8"),
+                     QStringLiteral("常用 中文源")},
+      LiveSourceMemo{QStringLiteral("rtmp://live.example/backup"),
+                     QStringLiteral("备用源")},
+  };
+
+  {
+    QSettingsAppStateStore store(settingsFile);
+    store.save(expected);
+  }
+  QSettingsAppStateStore restoredStore(settingsFile);
+  const AppStateSnapshot restored = restoredStore.load();
+
+  QCOMPARE(restored.localPlaylist.size(), expected.localPlaylist.size());
+  for (std::size_t index = 0; index < expected.localPlaylist.size(); ++index) {
+    QCOMPARE(restored.localPlaylist.at(index).source,
+             expected.localPlaylist.at(index).source);
+    QCOMPARE(restored.localPlaylist.at(index).displayName,
+             expected.localPlaylist.at(index).displayName);
+    QCOMPARE(restored.localPlaylist.at(index).kind,
+             core::MediaSourceKind::LocalFile);
+  }
+  QCOMPARE(restored.lastLivePlaylistUrl, expected.lastLivePlaylistUrl);
+  QCOMPARE(restored.livePlaylistUrlHistory,
+           expected.livePlaylistUrlHistory);
+  QCOMPARE(restored.liveSourceMemos.size(), expected.liveSourceMemos.size());
+  for (int index = 0; index < expected.liveSourceMemos.size(); ++index) {
+    QCOMPARE(restored.liveSourceMemos.at(index).sourceUrl,
+             expected.liveSourceMemos.at(index).sourceUrl);
+    QCOMPARE(restored.liveSourceMemos.at(index).note,
+             expected.liveSourceMemos.at(index).note);
+  }
+}
+
+void MainWindowTest::restoresPersistedStateWithoutStartingPlayback() {
+  FakeAppStateStore store;
+  store.snapshot.localPlaylist = {
+      core::MediaItem{"C:/media/one.mp3", core::MediaSourceKind::LocalFile,
+                      "第一首"},
+      core::MediaItem{"C:/media/two.mp4", core::MediaSourceKind::LocalFile,
+                      "第二段"},
+  };
+  store.snapshot.lastLivePlaylistUrl =
+      QStringLiteral("https://example.test/last.m3u");
+  store.snapshot.livePlaylistUrlHistory = QStringList{
+      QStringLiteral("https://example.test/last.m3u"),
+      QStringLiteral("https://example.test/older.m3u"),
+  };
+
+  GuiHarness harness(&store);
+  auto *const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto *const playlistUrlEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistUrlEdit");
+
+  QCOMPARE(store.loadCount, 1);
+  QCOMPARE(playlistView->model()->rowCount(), 2);
+  QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("第一首"));
+  QCOMPARE(playlistView->model()->index(1, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("第二段"));
+  QCOMPARE(playlistUrlEdit->text(), store.snapshot.lastLivePlaylistUrl);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+  QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+
+  playlistUrlEdit->setText(
+      QStringLiteral("https://example.test/edited-before-close.m3u"));
+  harness.presenter.shutdown();
+  QCOMPARE(store.snapshot.lastLivePlaylistUrl,
+           QStringLiteral("https://example.test/edited-before-close.m3u"));
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+}
+
+void MainWindowTest::persistsPlaylistChangesAndSuccessfulLiveHistory() {
+  FakeAppStateStore store;
+  GuiHarness harness(&store);
+  harness.presenter.addLocalFiles({QStringLiteral("C:/list/one.mp3"),
+                                   QStringLiteral("C:/list/two.mp4")});
+  QCOMPARE(store.snapshot.localPlaylist.size(), std::size_t(2));
+
+  harness.window.playlistItemMoveRequested(1, 0);
+  QCOMPARE(store.snapshot.localPlaylist.at(0).displayName,
+           std::string("two.mp4"));
+  harness.window.playlistItemRenameRequested(0, QStringLiteral("置顶视频"));
+  QCOMPARE(QString::fromUtf8(
+               store.snapshot.localPlaylist.at(0).displayName.c_str()),
+           QStringLiteral("置顶视频"));
+  harness.window.playlistItemsRemoveRequested(QList<int>{1});
+  QCOMPARE(store.snapshot.localPlaylist.size(), std::size_t(1));
+
+  auto *const tabs = requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  auto *const urlEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistUrlEdit");
+  auto *const loadButton = requiredChild<QPushButton>(
+      harness.window, "livePlaylistLoadButton");
+  tabs->setCurrentIndex(1);
+  for (int index = 0; index < 22; ++index) {
+    const QString url =
+        QStringLiteral("https://example.test/list/%1.m3u").arg(index);
+    urlEdit->setText(url);
+    QTest::mouseClick(loadButton, Qt::LeftButton);
+    LivePlaylistLoadResult result;
+    result.library.channels = {
+        core::LiveChannel{QStringLiteral("频道 %1").arg(index).toStdString(),
+                          "", "https://stream.example/live", "", "", ""},
+    };
+    harness.livePlaylistService.complete(std::move(result));
+  }
+  QCOMPARE(store.snapshot.livePlaylistUrlHistory.size(), 20);
+  QCOMPARE(store.snapshot.livePlaylistUrlHistory.front(),
+           QStringLiteral("https://example.test/list/21.m3u"));
+  QCOMPARE(store.snapshot.livePlaylistUrlHistory.back(),
+           QStringLiteral("https://example.test/list/2.m3u"));
+
+  urlEdit->setText(QStringLiteral("https://example.test/broken.m3u"));
+  QTest::mouseClick(loadButton, Qt::LeftButton);
+  harness.livePlaylistService.fail(LivePlaylistLoadError::InvalidFormat);
+  QCOMPARE(store.snapshot.lastLivePlaylistUrl,
+           QStringLiteral("https://example.test/broken.m3u"));
+  QVERIFY(!store.snapshot.livePlaylistUrlHistory.contains(
+      QStringLiteral("https://example.test/broken.m3u")));
+}
+
+void MainWindowTest::fillsAndDeletesLiveUrlHistoryWithoutLoading() {
+  FakeAppStateStore store;
+  store.snapshot.lastLivePlaylistUrl =
+      QStringLiteral("https://example.test/current.m3u");
+  store.snapshot.livePlaylistUrlHistory = QStringList{
+      QStringLiteral("https://example.test/one.m3u"),
+      QStringLiteral("https://example.test/two.m3u"),
+  };
+  GuiHarness harness(&store);
+  auto *const tabs = requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  tabs->setCurrentIndex(1);
+  auto *const historyButton = requiredChild<QToolButton>(
+      harness.window, "livePlaylistHistoryButton");
+  auto *const urlEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistUrlEdit");
+  QCOMPARE(historyButton->text(), QString{});
+  QCOMPARE(historyButton->accessibleName(), QStringLiteral("历史直播源"));
+  QCOMPARE(historyButton->toolTip(), QStringLiteral("历史直播源"));
+  QVERIFY(!historyButton->icon().isNull());
+
+  bool selectedFromHistory = false;
+  QTimer::singleShot(0, [&] {
+    auto *const dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    auto *const list = dialog->findChild<QListWidget *>(
+        QStringLiteral("liveUrlHistoryList"));
+    auto *const useButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveUrlHistoryUseButton"));
+    if (list == nullptr || useButton == nullptr) {
+      return;
+    }
+    list->setCurrentRow(1);
+    selectedFromHistory = true;
+    useButton->click();
+  });
+  QTest::mouseClick(historyButton, Qt::LeftButton);
+  QVERIFY(selectedFromHistory);
+  QCOMPARE(urlEdit->text(), QStringLiteral("https://example.test/two.m3u"));
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+
+  bool deletedFromHistory = false;
+  QTimer::singleShot(0, [&] {
+    auto *const dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    auto *const list = dialog->findChild<QListWidget *>(
+        QStringLiteral("liveUrlHistoryList"));
+    auto *const deleteButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveUrlHistoryDeleteButton"));
+    auto *const cancelButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveUrlHistoryCancelButton"));
+    if (list == nullptr || deleteButton == nullptr || cancelButton == nullptr) {
+      return;
+    }
+    list->setCurrentRow(0);
+    deleteButton->click();
+    deletedFromHistory = true;
+    cancelButton->click();
+  });
+  QTest::mouseClick(historyButton, Qt::LeftButton);
+  QVERIFY(deletedFromHistory);
+  QCOMPARE(store.snapshot.livePlaylistUrlHistory,
+           QStringList{QStringLiteral("https://example.test/two.m3u")});
+  QCOMPARE(urlEdit->text(), QStringLiteral("https://example.test/two.m3u"));
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+}
+
+void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
+  FakeAppStateStore store;
+  store.snapshot.liveSourceMemos = {
+      LiveSourceMemo{QStringLiteral("https://live.example/original.m3u8"),
+                     QStringLiteral("原始记录")},
+  };
+  GuiHarness harness(&store);
+  harness.window.show();
+  harness.window.activateWindow();
+  QCoreApplication::processEvents();
+  auto *const memoAction =
+      requiredChild<QAction>(harness.window, "liveSourceMemoAction");
+  auto *const helpMenu = qobject_cast<QMenu *>(memoAction->parent());
+  QVERIFY(helpMenu != nullptr);
+  QVERIFY(helpMenu->title().contains(QStringLiteral("帮助")));
+  bool inspectedDialog = false;
+  bool cancelledSavePrompt = false;
+  bool acceptedSavePrompt = false;
+  bool discardedClosePrompt = false;
+
+  QTimer::singleShot(0, [&] {
+    auto *const dialog =
+        qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    auto *const table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("liveSourceMemoTable"));
+    auto *const addButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveSourceMemoAddButton"));
+    auto *const saveButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveSourceMemoSaveButton"));
+    auto *const returnButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveSourceMemoReturnButton"));
+    auto *const saveShortcut = dialog->findChild<QShortcut *>(
+        QStringLiteral("liveSourceMemoSaveShortcut"));
+    auto *const notice = dialog->findChild<QLabel *>(
+        QStringLiteral("liveSourceMemoNotice"));
+    if (table == nullptr || addButton == nullptr || saveButton == nullptr ||
+        returnButton == nullptr || saveShortcut == nullptr || notice == nullptr) {
+      return;
+    }
+    QVERIFY(!dialog->windowFlags().testFlag(
+        Qt::WindowContextHelpButtonHint));
+    QVERIFY(!dialog->styleSheet().isEmpty());
+    QCOMPARE(dialog->windowTitle(), QStringLiteral("直播源"));
+    QCOMPARE(notice->text(), QStringLiteral("本窗口为方便用户保存直播源"));
+    QCOMPARE(table->columnCount(), 2);
+    QCOMPARE(table->horizontalHeaderItem(0)->text(),
+             QStringLiteral("直播源地址"));
+    QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("备注"));
+    QCOMPARE(saveShortcut->key(), QKeySequence::Save);
+    QCOMPARE(saveShortcut->context(), Qt::WidgetWithChildrenShortcut);
+    QCOMPARE(saveShortcut->parent(), dialog);
+    QCOMPARE(table->rowCount(), 1);
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("原始记录"));
+
+    addButton->click();
+    QCOMPARE(table->rowCount(), 2);
+    table->setFocus();
+    QCoreApplication::processEvents();
+    table->item(1, 0)->setText(
+        QStringLiteral("https://live.example/new.m3u8"));
+    table->item(1, 1)->setText(QStringLiteral("新增备用"));
+    QCoreApplication::processEvents();
+    QCOMPARE(store.snapshot.liveSourceMemos.size(), 1);
+
+    QTimer::singleShot(20, [&] {
+      auto *const confirmation =
+          qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      if (confirmation == nullptr) {
+        return;
+      }
+      auto *const rejectButton = confirmation->findChild<QPushButton *>(
+          QStringLiteral("memoConfirmationRejectButton"));
+      cancelledSavePrompt =
+          confirmation->objectName() ==
+              QStringLiteral("liveSourceMemoSaveConfirmation") &&
+          rejectButton != nullptr;
+      if (rejectButton != nullptr) {
+        rejectButton->click();
+      } else {
+        confirmation->reject();
+      }
+    });
+    saveButton->click();
+    QVERIFY(cancelledSavePrompt);
+    QCOMPARE(store.snapshot.liveSourceMemos.size(), 1);
+    QVERIFY(dialog->isVisible());
+
+    QTimer::singleShot(20, [&] {
+      auto *const confirmation =
+          qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      if (confirmation == nullptr) {
+        return;
+      }
+      auto *const acceptButton = confirmation->findChild<QPushButton *>(
+          QStringLiteral("memoConfirmationAcceptButton"));
+      acceptedSavePrompt =
+          confirmation->objectName() ==
+              QStringLiteral("liveSourceMemoSaveConfirmation") &&
+          acceptButton != nullptr;
+      if (acceptButton != nullptr) {
+        acceptButton->click();
+      } else {
+        confirmation->reject();
+      }
+    });
+    QVERIFY(QMetaObject::invokeMethod(saveShortcut, "activated",
+                                      Qt::DirectConnection));
+    QVERIFY(acceptedSavePrompt);
+    QCOMPARE(store.snapshot.liveSourceMemos.size(), 2);
+    QCOMPARE(store.snapshot.liveSourceMemos.at(1).note,
+             QStringLiteral("新增备用"));
+    QVERIFY(dialog->isVisible());
+
+    table->item(1, 1)->setText(QStringLiteral("这次不保存"));
+    QTimer::singleShot(20, [&] {
+      auto *const confirmation =
+          qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      if (confirmation == nullptr) {
+        return;
+      }
+      auto *const rejectButton = confirmation->findChild<QPushButton *>(
+          QStringLiteral("memoConfirmationRejectButton"));
+      discardedClosePrompt =
+          confirmation->objectName() ==
+              QStringLiteral("liveSourceMemoCloseConfirmation") &&
+          rejectButton != nullptr;
+      if (rejectButton != nullptr) {
+        rejectButton->click();
+      } else {
+        confirmation->reject();
+      }
+    });
+    inspectedDialog = true;
+    returnButton->click();
+    QVERIFY(discardedClosePrompt);
+  });
+  memoAction->trigger();
+
+  QVERIFY(inspectedDialog);
+  QCOMPARE(store.snapshot.liveSourceMemos.size(), 2);
+  QCOMPARE(store.snapshot.liveSourceMemos.at(1).note,
+           QStringLiteral("新增备用"));
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+}
+
+void MainWindowTest::savesUnsavedLiveSourceMemosWhenWindowCloses() {
+  FakeAppStateStore store;
+  GuiHarness harness(&store);
+  harness.window.show();
+  harness.window.activateWindow();
+  QCoreApplication::processEvents();
+  auto *const memoAction =
+      requiredChild<QAction>(harness.window, "liveSourceMemoAction");
+  bool closedWithSave = false;
+  bool acceptedClosePrompt = false;
+
+  QTimer::singleShot(0, [&] {
+    auto *const dialog =
+        qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    auto *const table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("liveSourceMemoTable"));
+    auto *const addButton = dialog->findChild<QPushButton *>(
+        QStringLiteral("liveSourceMemoAddButton"));
+    if (table == nullptr || addButton == nullptr) {
+      return;
+    }
+    addButton->click();
+    table->setFocus();
+    QCoreApplication::processEvents();
+    table->item(0, 0)->setText(
+        QStringLiteral("rtmp://live.example/close-save"));
+    table->item(0, 1)->setText(QStringLiteral("关闭时保存"));
+    QCoreApplication::processEvents();
+    QTimer::singleShot(20, [&] {
+      auto *const confirmation =
+          qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      if (confirmation == nullptr) {
+        return;
+      }
+      auto *const acceptButton = confirmation->findChild<QPushButton *>(
+          QStringLiteral("memoConfirmationAcceptButton"));
+      acceptedClosePrompt =
+          confirmation->objectName() ==
+              QStringLiteral("liveSourceMemoCloseConfirmation") &&
+          acceptButton != nullptr;
+      if (acceptButton != nullptr) {
+        acceptButton->click();
+      } else {
+        confirmation->reject();
+      }
+    });
+    closedWithSave = true;
+    dialog->close();
+  });
+  memoAction->trigger();
+
+  QVERIFY(closedWithSave);
+  QVERIFY(acceptedClosePrompt);
+  QCOMPARE(store.snapshot.liveSourceMemos.size(), 1);
+  QCOMPARE(store.snapshot.liveSourceMemos.front().note,
+           QStringLiteral("关闭时保存"));
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+}
+
+void MainWindowTest::cancelsLivePlaylistLoadingAndIgnoresLateResult() {
+  GuiHarness harness;
+  auto *const tabs = requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  auto *const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto *const urlEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistUrlEdit");
+  auto *const loadButton = requiredChild<QPushButton>(
+      harness.window, "livePlaylistLoadButton");
+  auto *const statusLabel = requiredChild<QLabel>(
+      harness.window, "livePlaylistStatusLabel");
+  tabs->setCurrentIndex(1);
+
+  urlEdit->setText(QStringLiteral("https://example.test/old.m3u"));
+  QTest::mouseClick(loadButton, Qt::LeftButton);
+  LivePlaylistLoadResult oldResult;
+  oldResult.library.channels = {
+      core::LiveChannel{"保留频道", "", "https://stream.example/old", "",
+                        "", ""},
+  };
+  harness.livePlaylistService.complete(std::move(oldResult));
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+
+  urlEdit->setText(QStringLiteral("https://example.test/new.m3u"));
+  QTest::mouseClick(loadButton, Qt::LeftButton);
+  QCOMPARE(loadButton->text(), QStringLiteral("取消载入"));
+  QVERIFY(loadButton->isEnabled());
+  QVERIFY(!urlEdit->isEnabled());
+  QTest::mouseClick(loadButton, Qt::LeftButton);
+  QCOMPARE(harness.livePlaylistService.cancelCount, 1);
+  QCOMPARE(loadButton->text(), QStringLiteral("载入 / 刷新清单"));
+  QVERIFY(urlEdit->isEnabled());
+  QCOMPARE(statusLabel->text(), QStringLiteral("已取消载入直播清单"));
+
+  LivePlaylistLoadResult lateResult;
+  lateResult.library.channels = {
+      core::LiveChannel{"迟到频道", "", "https://stream.example/late", "",
+                        "", ""},
+  };
+  harness.livePlaylistService.complete(std::move(lateResult));
+  harness.livePlaylistService.fail(LivePlaylistLoadError::InvalidFormat);
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+  QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("保留频道"));
+  QCOMPARE(statusLabel->text(), QStringLiteral("已取消载入直播清单"));
 }
 
 void MainWindowTest::routesPauseResumeAndStopThroughPresenter() {
@@ -2190,6 +2698,47 @@ void MainWindowTest::routesKeyboardPlaybackVolumeAndSeek() {
   QCOMPARE(commandCount(emptyHarness, test::FakeEngineCommandKind::Play), 0);
   QCOMPARE(commandCount(emptyHarness, test::FakeEngineCommandKind::Pause), 0);
   QCOMPARE(commandCount(emptyHarness, test::FakeEngineCommandKind::Seek), 0);
+}
+
+void MainWindowTest::routesExplicitMuteShortcutsAndLeavesCtrlF5Unused() {
+  GuiHarness harness;
+  openAndReachPlaying(harness);
+  harness.window.show();
+  harness.window.activateWindow();
+  QCoreApplication::processEvents();
+  auto *const volumeButton =
+      requiredChild<QToolButton>(harness.window, "volumeButton");
+  const int initialMuteCommands =
+      commandCount(harness, test::FakeEngineCommandKind::SetMuted);
+
+  QTest::keyClick(&harness.window, Qt::Key_Down, Qt::ControlModifier);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted),
+               initialMuteCommands + 1);
+  QVERIFY(harness.engine.commands().back().flag);
+  QCOMPARE(volumeButton->accessibleName(), QStringLiteral("已静音"));
+  QTest::keyClick(&harness.window, Qt::Key_Down, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted),
+           initialMuteCommands + 1);
+
+  QTest::keyClick(&harness.window, Qt::Key_Up, Qt::ControlModifier);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted),
+               initialMuteCommands + 2);
+  QVERIFY(!harness.engine.commands().back().flag);
+  QVERIFY(volumeButton->accessibleName().contains(QStringLiteral("音量")));
+  QTest::keyClick(&harness.window, Qt::Key_Up, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted),
+           initialMuteCommands + 2);
+
+  const int opensBeforeCtrlF5 =
+      commandCount(harness, test::FakeEngineCommandKind::Open);
+  QTest::keyClick(&harness.window, Qt::Key_F5, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::SetMuted),
+           initialMuteCommands + 2);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
+           opensBeforeCtrlF5);
 }
 
 void MainWindowTest::routesCtrlArrowKeysToPlaylistNavigation() {
@@ -3366,6 +3915,70 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   QTRY_VERIFY(!harness.window.isFullScreen());
   QCOMPARE(fullScreenButton->accessibleName(), QStringLiteral("进入全屏"));
   QVERIFY(fullScreenButton->isVisible());
+}
+
+void MainWindowTest::togglesFullScreenWithF11() {
+  GuiHarness harness;
+  harness.window.show();
+  harness.window.activateWindow();
+  harness.presenter.openLocalFile(QStringLiteral("C:/video/f11.mp4"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QCoreApplication::processEvents();
+  QVERIFY(requiredChild<QAction>(harness.window, "fullScreenAction")
+              ->isEnabled());
+
+  QTest::keyClick(&harness.window, Qt::Key_F11);
+  QTRY_VERIFY(harness.window.isFullScreen());
+  QTest::keyClick(&harness.window, Qt::Key_F11);
+  QTRY_VERIFY(!harness.window.isFullScreen());
+
+  QTest::keyClick(&harness.window, Qt::Key_F11);
+  QTRY_VERIFY(harness.window.isFullScreen());
+  QTest::keyClick(&harness.window, Qt::Key_Escape);
+  QTRY_VERIFY(!harness.window.isFullScreen());
+}
+
+void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
+  GuiHarness harness;
+  auto *const helpAction =
+      requiredChild<QAction>(harness.window, "shortcutHelpAction");
+  bool inspectedDialog = false;
+  QTimer::singleShot(0, [&] {
+    auto *const dialog =
+        qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    QVERIFY(!dialog->windowFlags().testFlag(
+        Qt::WindowContextHelpButtonHint));
+    QVERIFY(!dialog->styleSheet().isEmpty());
+    QVERIFY(dialog->findChild<QFrame *>(
+                QStringLiteral("shortcutHelpHeader")) != nullptr);
+    auto *const table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("shortcutHelpTable"));
+    auto *const buttons = dialog->findChild<QDialogButtonBox *>(
+        QStringLiteral("shortcutHelpButtons"));
+    if (table == nullptr || buttons == nullptr) {
+      return;
+    }
+    QStringList shortcuts;
+    for (int row = 0; row < table->rowCount(); ++row) {
+      shortcuts.append(table->item(row, 0)->text());
+    }
+    inspectedDialog =
+        shortcuts.contains(QStringLiteral("F5")) &&
+        shortcuts.contains(QStringLiteral("F11")) &&
+        shortcuts.contains(QStringLiteral("Ctrl+下键")) &&
+        shortcuts.contains(QStringLiteral("Ctrl+上键")) &&
+        shortcuts.contains(QStringLiteral("Ctrl+S")) &&
+        !shortcuts.contains(QStringLiteral("Ctrl+F5"));
+    auto *const okButton = buttons->button(QDialogButtonBox::Ok);
+    QCOMPARE(okButton->text(), QStringLiteral("确定"));
+    QVERIFY(okButton->minimumHeight() >= 44);
+    okButton->click();
+  });
+  helpAction->trigger();
+  QVERIFY(inspectedDialog);
 }
 
 void MainWindowTest::stopsForwardingBeforeWindowCloses() {

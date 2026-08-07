@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "app_state_store.h"
 #include "main_window.h"
 #include "mediahub/core/media_types.h"
 
@@ -22,6 +23,7 @@ namespace {
 constexpr std::array<double, 6> kPlaybackRates{0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
 constexpr auto kNetworkOpenTimeout = std::chrono::seconds(15);
 constexpr int kMaxSessionNetworkUrls = 10;
+constexpr int kMaxLivePlaylistUrlHistory = 20;
 
 bool isPlaylistAddress(const QString &address) {
   const QUrl url(address, QUrl::StrictMode);
@@ -284,7 +286,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
                                  MainWindow &window, QObject *const parent,
                                  logging::Logger *const logger,
                                  LyricsService *const lyricsService,
-                                 LivePlaylistService *const livePlaylistService)
+                                 LivePlaylistService *const livePlaylistService,
+                                 AppStateStore *const appStateStore)
     : QObject(parent), engine_(engine), eventBridge_(eventBridge),
       window_(window), logger_(logger),
       ownedLyricsService_(lyricsService == nullptr
@@ -298,6 +301,7 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
       livePlaylistService_(livePlaylistService == nullptr
                                ? ownedLivePlaylistService_.get()
                                : livePlaylistService),
+      appStateStore_(appStateStore),
       localPlaylistModel_(localPlaylist_), livePlaylistModel_(livePlaylist_) {
   livePlaylistModel_.setMarkedPredicate(
       [this](const core::MediaItem& item) {
@@ -315,13 +319,23 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
       static_cast<int>(kNetworkOpenTimeout.count() * 1000));
   connect(networkOpenTimeoutTimer_, &QTimer::timeout, this,
           &PlayerPresenter::handleNetworkOpenTimeout);
+  restoreAppState();
   window_.setPlaylistModels(&localPlaylistModel_, &livePlaylistModel_);
+  window_.setLivePlaylistUrl(lastLivePlaylistUrl_);
+  window_.setLivePlaylistHistoryUrls(livePlaylistUrlHistory_);
+  window_.setLiveSourceMemos(liveSourceMemos_);
   connect(&window_, &MainWindow::localFilesSelected, this,
           &PlayerPresenter::addLocalFiles);
   connect(&window_, &MainWindow::networkUrlSelected, this,
           &PlayerPresenter::openNetworkUrl);
   connect(&window_, &MainWindow::livePlaylistLoadRequested, this,
           &PlayerPresenter::requestLivePlaylistLoad);
+  connect(&window_, &MainWindow::livePlaylistLoadCancelRequested, this,
+          &PlayerPresenter::cancelLivePlaylistLoad);
+  connect(&window_, &MainWindow::livePlaylistHistoryChanged, this,
+          &PlayerPresenter::updateLivePlaylistHistory);
+  connect(&window_, &MainWindow::liveSourceMemosChanged, this,
+          &PlayerPresenter::updateLiveSourceMemos);
   connect(&window_, &MainWindow::playlistKindSelected, this,
           &PlayerPresenter::changePlaylistKind);
   connect(&window_, &MainWindow::playRequested, this,
@@ -352,6 +366,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
           &PlayerPresenter::requestRelativeSeek);
   connect(&window_, &MainWindow::muteToggled, this,
           &PlayerPresenter::toggleMuted);
+  connect(&window_, &MainWindow::muteStateRequested, this,
+          &PlayerPresenter::requestMuted);
   connect(&window_, &MainWindow::lyricsToggled, this,
           &PlayerPresenter::toggleLyrics);
   connect(&window_, &MainWindow::previousRequested, this,
@@ -439,6 +455,7 @@ void PlayerPresenter::addLocalFiles(const QStringList &filePaths) {
   static_cast<void>(localPlaylist_.select(firstNewIndex));
   activePlaylistKind_ = PlaylistKind::Local;
   localPlaylistModel_.refresh();
+  persistAppState();
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "media_batch_added",
                  {{"count", std::to_string(addedCount)}});
@@ -503,27 +520,46 @@ void PlayerPresenter::requestLivePlaylistLoad(const QString &playlistUrl) {
   startLivePlaylistLoad(playlistUrl, false);
 }
 
+void PlayerPresenter::cancelLivePlaylistLoad() {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || !isLivePlaylistLoading_) {
+    return;
+  }
+  livePlaylistService_->cancel();
+  isLivePlaylistLoading_ = false;
+  pendingPlaylistProbeUrl_.clear();
+  activeLivePlaylistRequestUrl_.clear();
+  livePlaylistStatusText_ = QStringLiteral("已取消载入直播清单");
+  render();
+}
+
 void PlayerPresenter::startLivePlaylistLoad(
     const QString &playlistUrl, const bool fallsBackToDirectPlayback) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_) {
     return;
   }
+  const QString normalizedUrl = playlistUrl.trimmed();
   activePlaylistKind_ = PlaylistKind::Live;
   pendingPlaylistProbeUrl_ =
-      fallsBackToDirectPlayback ? playlistUrl : QString{};
+      fallsBackToDirectPlayback ? normalizedUrl : QString{};
+  activeLivePlaylistRequestUrl_ = normalizedUrl;
+  lastLivePlaylistUrl_ = normalizedUrl;
+  persistAppState();
   isLivePlaylistLoading_ = true;
   livePlaylistStatusText_ = QStringLiteral("正在读取并解析直播清单...");
   render();
-  livePlaylistService_->load(playlistUrl);
+  livePlaylistService_->load(normalizedUrl);
 }
 
 void PlayerPresenter::handleLivePlaylistLoaded(LivePlaylistLoadResult result) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_) {
+  if (isShuttingDown_ || !isLivePlaylistLoading_) {
     return;
   }
+  const QString loadedPlaylistUrl = activeLivePlaylistRequestUrl_;
   pendingPlaylistProbeUrl_.clear();
+  activeLivePlaylistRequestUrl_.clear();
 
   std::vector<core::MediaItem> items;
   items.reserve(result.library.channels.size());
@@ -537,6 +573,7 @@ void PlayerPresenter::handleLivePlaylistLoaded(LivePlaylistLoadResult result) {
   livePlaylist_ = std::move(replacement);
   isLivePlaylistLoading_ = false;
   livePlaylistModel_.refresh();
+  rememberLivePlaylistUrl(loadedPlaylistUrl);
   livePlaylistStatusText_ =
       QStringLiteral("已载入 %1 项 · 重复 %2 项 · 跳过 %3 项")
           .arg(static_cast<qulonglong>(livePlaylist_.size()))
@@ -554,10 +591,11 @@ void PlayerPresenter::handleLivePlaylistLoaded(LivePlaylistLoadResult result) {
 void PlayerPresenter::handleLivePlaylistFailure(
     const LivePlaylistLoadError error) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_) {
+  if (isShuttingDown_ || !isLivePlaylistLoading_) {
     return;
   }
   isLivePlaylistLoading_ = false;
+  activeLivePlaylistRequestUrl_.clear();
   if (error == LivePlaylistLoadError::HlsMediaManifest &&
       !pendingPlaylistProbeUrl_.isEmpty()) {
     const QString directUrl = std::exchange(pendingPlaylistProbeUrl_, {});
@@ -648,6 +686,8 @@ void PlayerPresenter::shutdown() noexcept {
   }
 
   isShuttingDown_ = true;
+  lastLivePlaylistUrl_ = window_.livePlaylistUrl();
+  persistAppState();
   networkOpenTimeoutTimer_->stop();
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "shutdown");
@@ -890,6 +930,16 @@ void PlayerPresenter::requestVolumeStep(const int delta) {
   requestVolume((isMuted_ ? 0 : volume_) + delta);
 }
 
+void PlayerPresenter::requestMuted(const bool isMuted) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || isMuted_ == isMuted) {
+    return;
+  }
+  engine_.setMuted(isMuted);
+  isMuted_ = isMuted;
+  render();
+}
+
 void PlayerPresenter::requestPlaybackRate(const double rate) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_) {
@@ -938,14 +988,7 @@ void PlayerPresenter::applyPlaybackRate(const double rate) {
 
 void PlayerPresenter::toggleMuted() {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_) {
-    return;
-  }
-
-  const bool nextMuted = !isMuted_;
-  engine_.setMuted(nextMuted);
-  isMuted_ = nextMuted;
-  render();
+  requestMuted(!isMuted_);
 }
 
 void PlayerPresenter::toggleLyrics() {
@@ -1028,6 +1071,7 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
     static_cast<void>(activePlaylist.remove(*index));
   }
   localPlaylistModel_.refresh();
+  persistAppState();
   if (!wasCurrent) {
     render();
     return;
@@ -1115,6 +1159,7 @@ void PlayerPresenter::movePlaylistItem(const int row, const int targetRow) {
     return;
   }
   localPlaylistModel_.refresh();
+  persistAppState();
   render();
 }
 
@@ -1136,6 +1181,7 @@ void PlayerPresenter::renamePlaylistItem(const int row,
     }
   }
   localPlaylistModel_.refresh();
+  persistAppState();
   render();
 }
 
@@ -1452,6 +1498,126 @@ void PlayerPresenter::rememberNetworkUrl(const QString &url) {
     recentNetworkUrls_.removeLast();
   }
   window_.setRecentNetworkUrls(recentNetworkUrls_);
+}
+
+void PlayerPresenter::rememberLivePlaylistUrl(const QString& url) {
+  const QString normalizedUrl = url.trimmed();
+  if (normalizedUrl.isEmpty()) {
+    return;
+  }
+  QStringList history = livePlaylistUrlHistory_;
+  history.removeAll(normalizedUrl);
+  history.prepend(normalizedUrl);
+  updateLivePlaylistHistory(history);
+}
+
+void PlayerPresenter::updateLivePlaylistHistory(const QStringList& urls) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  QStringList normalized;
+  normalized.reserve(std::min(urls.size(), kMaxLivePlaylistUrlHistory));
+  for (const QString& value : urls) {
+    const QString url = value.trimmed();
+    if (url.isEmpty() || normalized.contains(url)) {
+      continue;
+    }
+    normalized.append(url);
+    if (normalized.size() == kMaxLivePlaylistUrlHistory) {
+      break;
+    }
+  }
+  livePlaylistUrlHistory_ = std::move(normalized);
+  window_.setLivePlaylistHistoryUrls(livePlaylistUrlHistory_);
+  persistAppState();
+}
+
+void PlayerPresenter::updateLiveSourceMemos(
+    const QVector<LiveSourceMemo>& memos) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  QVector<LiveSourceMemo> normalized;
+  normalized.reserve(memos.size());
+  for (const LiveSourceMemo& memo : memos) {
+    const QString sourceUrl = memo.sourceUrl.trimmed();
+    if (sourceUrl.isEmpty()) {
+      continue;
+    }
+    normalized.append(LiveSourceMemo{sourceUrl, memo.note.trimmed()});
+  }
+  liveSourceMemos_ = std::move(normalized);
+  window_.setLiveSourceMemos(liveSourceMemos_);
+  persistAppState();
+}
+
+void PlayerPresenter::restoreAppState() {
+  if (appStateStore_ == nullptr) {
+    return;
+  }
+  try {
+    AppStateSnapshot snapshot = appStateStore_->load();
+    std::vector<core::MediaItem> localItems;
+    localItems.reserve(snapshot.localPlaylist.size());
+    for (auto& item : snapshot.localPlaylist) {
+      if (item.kind == core::MediaSourceKind::LocalFile &&
+          !item.source.empty() && !item.displayName.empty()) {
+        localItems.push_back(std::move(item));
+      }
+    }
+    localPlaylist_.add(std::move(localItems));
+    lastLivePlaylistUrl_ = snapshot.lastLivePlaylistUrl.trimmed();
+    for (const QString& value : snapshot.livePlaylistUrlHistory) {
+      const QString url = value.trimmed();
+      if (!url.isEmpty() && !livePlaylistUrlHistory_.contains(url)) {
+        livePlaylistUrlHistory_.append(url);
+      }
+      if (livePlaylistUrlHistory_.size() == kMaxLivePlaylistUrlHistory) {
+        break;
+      }
+    }
+    for (const LiveSourceMemo& memo : snapshot.liveSourceMemos) {
+      const QString sourceUrl = memo.sourceUrl.trimmed();
+      if (!sourceUrl.isEmpty()) {
+        liveSourceMemos_.append(
+            LiveSourceMemo{sourceUrl, memo.note.trimmed()});
+      }
+    }
+    if (logger_ != nullptr) {
+      logger_->log(
+          logging::LogLevel::Info, "presenter", "app_state_restored",
+          {{"local_items", std::to_string(localPlaylist_.size())},
+           {"live_history", std::to_string(livePlaylistUrlHistory_.size())},
+           {"live_memos", std::to_string(liveSourceMemos_.size())}});
+    }
+  } catch (...) {
+    localPlaylist_.clear();
+    livePlaylistUrlHistory_.clear();
+    liveSourceMemos_.clear();
+    lastLivePlaylistUrl_.clear();
+    if (logger_ != nullptr) {
+      logger_->log(logging::LogLevel::Warning, "presenter",
+                   "app_state_restore_failed");
+    }
+  }
+}
+
+void PlayerPresenter::persistAppState() noexcept {
+  if (appStateStore_ == nullptr) {
+    return;
+  }
+  try {
+    AppStateSnapshot snapshot;
+    snapshot.localPlaylist.reserve(localPlaylist_.size());
+    for (std::size_t index = 0; index < localPlaylist_.size(); ++index) {
+      snapshot.localPlaylist.push_back(localPlaylist_.at(index));
+    }
+    snapshot.lastLivePlaylistUrl = lastLivePlaylistUrl_;
+    snapshot.livePlaylistUrlHistory = livePlaylistUrlHistory_;
+    snapshot.liveSourceMemos = liveSourceMemos_;
+    appStateStore_->save(snapshot);
+  } catch (...) {
+    if (logger_ != nullptr) {
+      logger_->log(logging::LogLevel::Warning, "presenter",
+                   "app_state_save_failed");
+    }
+  }
 }
 
 core::Playlist &

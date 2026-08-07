@@ -5,6 +5,7 @@
 #include <exception>
 #include <iostream>
 
+#include "app_state_store.h"
 #include "engine_event_bridge.h"
 #include "main_window.h"
 #include "mediahub/engine_vlc/vlc_player_engine.h"
@@ -26,11 +27,13 @@ int main(int argc, char* argv[]) {
       logger.log(mediahub::logging::LogLevel::Info, "engine", "initialized");
       mediahub::gui::EngineEventBridge eventBridge;
       mediahub::gui::MainWindow mainWindow;
+      mediahub::gui::QSettingsAppStateStore appStateStore;
       QObject::connect(&mainWindow, &mediahub::gui::MainWindow::closing,
                        &mainWindow,
                        [&shutdownWatchdog] { shutdownWatchdog.arm(); });
       mediahub::gui::PlayerPresenter presenter(engine, eventBridge, mainWindow,
-                                               nullptr, &logger);
+                                               nullptr, &logger, nullptr,
+                                               nullptr, &appStateStore);
       mainWindow.show();
       const QStringList arguments = application.arguments();
       if (arguments.size() > 1) {
