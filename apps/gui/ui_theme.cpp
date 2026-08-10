@@ -673,6 +673,7 @@ const QString& mainWindowStyleSheet() {
       QTabBar#playlistKindTabs[responsiveSize="compact"]::tab,
       QListView#playlistView[responsiveSize="compact"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="compact"],
+      QLineEdit#livePlaylistSearchEdit[responsiveSize="compact"],
       QLabel#livePlaylistStatusLabel[responsiveSize="compact"],
       QPushButton#livePlaylistLoadButton[responsiveSize="compact"],
       QPushButton#livePlaylistLocateButton[responsiveSize="compact"] {
@@ -687,6 +688,7 @@ const QString& mainWindowStyleSheet() {
       QTabBar#playlistKindTabs[responsiveSize="normal"]::tab,
       QListView#playlistView[responsiveSize="normal"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="normal"],
+      QLineEdit#livePlaylistSearchEdit[responsiveSize="normal"],
       QLabel#livePlaylistStatusLabel[responsiveSize="normal"],
       QPushButton#livePlaylistLoadButton[responsiveSize="normal"],
       QPushButton#livePlaylistLocateButton[responsiveSize="normal"] {
@@ -701,6 +703,7 @@ const QString& mainWindowStyleSheet() {
       QTabBar#playlistKindTabs[responsiveSize="large"]::tab,
       QListView#playlistView[responsiveSize="large"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="large"],
+      QLineEdit#livePlaylistSearchEdit[responsiveSize="large"],
       QLabel#livePlaylistStatusLabel[responsiveSize="large"],
       QPushButton#livePlaylistLoadButton[responsiveSize="large"],
       QPushButton#livePlaylistLocateButton[responsiveSize="large"] {
@@ -715,6 +718,7 @@ const QString& mainWindowStyleSheet() {
       QTabBar#playlistKindTabs[responsiveSize="extraLarge"]::tab,
       QListView#playlistView[responsiveSize="extraLarge"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="extraLarge"],
+      QLineEdit#livePlaylistSearchEdit[responsiveSize="extraLarge"],
       QLabel#livePlaylistStatusLabel[responsiveSize="extraLarge"],
       QPushButton#livePlaylistLoadButton[responsiveSize="extraLarge"],
       QPushButton#livePlaylistLocateButton[responsiveSize="extraLarge"] {

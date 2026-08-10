@@ -532,7 +532,7 @@ MainWindow::MainWindow(QWidget* const parent)
     : QMainWindow(parent), windowIconManager_(this) {
   setWindowTitle(QStringLiteral("MediaHub"));
   windowIconManager_.apply();
-  resize(960, 720);
+  resize(1200, 800);
   setMinimumSize(760, 640);
   setAcceptDrops(true);
   qApp->installEventFilter(this);
@@ -827,8 +827,8 @@ MainWindow::MainWindow(QWidget* const parent)
   livePlaylistUrlRow->addWidget(livePlaylistHistoryButton_);
   auto* const livePlaylistButtonRow = new QHBoxLayout();
   livePlaylistButtonRow->setSpacing(6);
-  livePlaylistButtonRow->addWidget(livePlaylistLoadButton_, 1);
-  livePlaylistButtonRow->addWidget(livePlaylistLocateButton_, 1);
+  livePlaylistButtonRow->addWidget(livePlaylistLoadButton_, 7);
+  livePlaylistButtonRow->addWidget(livePlaylistLocateButton_, 5);
   livePlaylistToolsLayout->addWidget(livePlaylistSourceLabel);
   livePlaylistToolsLayout->addLayout(livePlaylistUrlRow);
   livePlaylistToolsLayout->addLayout(livePlaylistButtonRow);

@@ -386,7 +386,7 @@ void MainWindowTest::hasFormalInitialLayout() {
   QCOMPARE(harness.window.windowTitle(), QStringLiteral("MediaHub"));
   QVERIFY(!harness.window.windowIcon().isNull());
   QVERIFY(harness.window.windowIcon().actualSize(QSize(32, 32)).isValid());
-  QCOMPARE(harness.window.size(), QSize(960, 720));
+  QCOMPARE(harness.window.size(), QSize(1200, 800));
   QVERIFY(!harness.window.isVisible());
   QVERIFY(
       requiredChild<QAction>(harness.window, "openFileAction")->isEnabled());
@@ -4012,11 +4012,15 @@ void MainWindowTest::keepsPlaylistGeometryStableAndScalesTypography() {
       requiredChild<QTabBar>(harness.window, "playlistKindTabs");
   auto *const playlistView =
       requiredChild<QListView>(harness.window, "playlistView");
+  auto *const livePlaylistSearch =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistSearchEdit");
 
-  const std::array<QSize, 3> sizes{
-      harness.window.minimumSize(), QSize(960, 720), QSize(1200, 800)};
-  std::array<int, 3> panelWidths{};
-  std::array<int, 3> listFontHeights{};
+  const std::array<QSize, 4> sizes{harness.window.minimumSize(),
+                                  QSize(960, 720), QSize(1200, 800),
+                                  QSize(1600, 900)};
+  std::array<int, 4> panelWidths{};
+  std::array<int, 4> listFontHeights{};
+  std::array<int, 4> searchFontHeights{};
   for (std::size_t index = 0; index < sizes.size(); ++index) {
     const QSize size = sizes.at(index);
     harness.window.resize(size);
@@ -4039,12 +4043,15 @@ void MainWindowTest::keepsPlaylistGeometryStableAndScalesTypography() {
     QCOMPARE(playlistView->fontMetrics().height(), localListHeight);
     panelWidths.at(index) = playlistPanel->width();
     listFontHeights.at(index) = playlistView->fontMetrics().height();
+    searchFontHeights.at(index) =
+        livePlaylistSearch->fontMetrics().height();
   }
 
-  QVERIFY(panelWidths.at(0) < panelWidths.at(1));
-  QVERIFY(panelWidths.at(1) < panelWidths.at(2));
-  QVERIFY(listFontHeights.at(0) < listFontHeights.at(1));
-  QVERIFY(listFontHeights.at(1) < listFontHeights.at(2));
+  for (std::size_t index = 1; index < sizes.size(); ++index) {
+    QVERIFY(panelWidths.at(index - 1) < panelWidths.at(index));
+    QVERIFY(listFontHeights.at(index - 1) < listFontHeights.at(index));
+    QVERIFY(searchFontHeights.at(index - 1) < searchFontHeights.at(index));
+  }
 }
 
 void MainWindowTest::keepsPresentationModesInsideResponsiveBounds() {
@@ -4147,7 +4154,13 @@ void MainWindowTest::keepsPresentationModesInsideResponsiveBounds() {
     for (auto *const button : liveButtons) {
       const int textWidth =
           button->fontMetrics().horizontalAdvance(button->text());
-      QVERIFY(button->width() >= textWidth + 10);
+      QVERIFY2(button->width() >= textWidth + 10,
+               qPrintable(QStringLiteral("窗口 %1x%2，按钮“%3”宽度 %4，文本宽度 %5")
+                              .arg(size.width())
+                              .arg(size.height())
+                              .arg(button->text())
+                              .arg(button->width())
+                              .arg(textWidth)));
     }
   }
 }
@@ -4158,7 +4171,6 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   QCoreApplication::processEvents();
   auto *const videoOutput =
       requiredChild<VideoOutputWidget>(harness.window, "videoOutputWidget");
-  const QSize initialSize = videoOutput->size();
   auto *const openButton =
       requiredChild<QPushButton>(harness.window, "openFileButton");
   auto *const fullScreenButton =
@@ -4215,6 +4227,9 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   QVERIFY(harness.window.rect().contains(
       geometryInsideWindow(*playlistView, harness.window)));
 
+  harness.window.resize(960, 720);
+  QTRY_COMPARE(harness.window.size(), QSize(960, 720));
+  const QSize initialSize = videoOutput->size();
   harness.window.resize(1200, 800);
   QTRY_VERIFY(videoOutput->size().width() > initialSize.width());
   QTRY_VERIFY(videoOutput->size().height() > initialSize.height());
