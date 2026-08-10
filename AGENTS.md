@@ -9,11 +9,11 @@ MediaHub 是一个 C++20/Qt5/CMake 桌面播放器项目：`apps/gui/main.cpp` �
 GoogleTest 测试，`mediahub_gui_tests` 承载 Qt Test。`docs/` 保存规划、设计、
 学习、测试和交付文档。
 
-开始新的开发会话或切换阶段前，必须先阅读 `docs/交接文档.md`，核对当前阶段、
+开始新的开发会话或切换阶段前，必须先阅读 `docs/02-开发交接.md`，核对当前阶段、
 环境状态、未完成事项和下一步边界。每个阶段实现、验证或提交状态发生变化后，
 同步更新该交接文档，避免依赖聊天记录传递上下文。
 
-项目扩展时遵循 `docs/设计/项目结构.md`：公共核心头文件放入
+项目扩展时遵循 `docs/设计/03-项目结构.md`：公共核心头文件放入
 `include/mediahub/core/`，实现放入 `src/core/`，内核实现放入
 `src/engine_vlc/`，GUI 代码放入 `apps/gui/`，测试分别放入 `tests/unit/`、
 `tests/integration/` 和 `tests/gui/`。
@@ -65,7 +65,7 @@ RAII、值语义、`enum class` 和显式单参数构造函数。C 库句柄必�
 类型使用 `PascalCase`，函数、参数和局部变量使用 `lowerCamelCase`，私有
 成员使用 `lowerCamelCase_`，常量使用 `kPascalCase`，命名空间和文件名
 使用 `snake_case`。布尔值以 `is`、`has`、`can` 等开头。完整规则见
-`docs/设计/代码规范.md`；项目目前尚未配置自动格式化工具。
+`docs/设计/04-代码规范.md`；项目目前尚未配置自动格式化工具。
 
 项目自有代码的注释必须使用中文，并遵循 Google C++ Style Guide 的 Comments
 章节。公共接口和非显然的类型必须说明用途、输入、输出及约束；实现注释重点
