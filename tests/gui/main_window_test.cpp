@@ -15,6 +15,8 @@
 #include <QFile>
 #include <QFont>
 #include <QFrame>
+#include <QHeaderView>
+#include <QImage>
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -1836,6 +1838,13 @@ void MainWindowTest::fillsAndDeletesLiveUrlHistoryWithoutLoading() {
     if (list == nullptr || useButton == nullptr) {
       return;
     }
+    QVERIFY(!dialog->windowFlags().testFlag(
+        Qt::WindowContextHelpButtonHint));
+    QVERIFY(!dialog->styleSheet().isEmpty());
+    QVERIFY(list->alternatingRowColors());
+    QVERIFY(useButton->isDefault());
+    QVERIFY(useButton->minimumHeight() >= 46);
+    QVERIFY(useButton->minimumWidth() >= 142);
     list->setCurrentRow(1);
     selectedFromHistory = true;
     useButton->click();
@@ -1905,9 +1914,12 @@ void MainWindowTest::opensLiveSourceMemoWithCtrlM() {
 
 void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
   FakeAppStateStore store;
+  const QString longNote = QStringLiteral(
+      "这个备注用于记录主线路、备用线路、节目区域、维护时间和切换说明，默认视图中"
+      "必须完整换行显示，不能等到点击编辑后才能阅读。");
   store.snapshot.liveSourceMemos = {
       LiveSourceMemo{QStringLiteral("https://live.example/original.m3u8"),
-                     QStringLiteral("原始记录")},
+                     longNote},
   };
   GuiHarness harness(&store);
   harness.window.show();
@@ -1954,11 +1966,18 @@ void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
     QCOMPARE(table->horizontalHeaderItem(0)->text(),
              QStringLiteral("直播源地址"));
     QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("备注"));
+    QVERIFY(table->wordWrap());
+    QCOMPARE(table->textElideMode(), Qt::ElideNone);
+    QCOMPARE(table->verticalHeader()->sectionResizeMode(0),
+             QHeaderView::ResizeToContents);
     QCOMPARE(saveShortcut->key(), QKeySequence::Save);
     QCOMPARE(saveShortcut->context(), Qt::WidgetWithChildrenShortcut);
     QCOMPARE(saveShortcut->parent(), dialog);
     QCOMPARE(table->rowCount(), 1);
-    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("原始记录"));
+    QCOMPARE(table->item(0, 1)->text(), longNote);
+    QCoreApplication::processEvents();
+    QVERIFY(table->rowHeight(0) >
+            table->verticalHeader()->minimumSectionSize());
 
     addButton->click();
     QCOMPARE(table->rowCount(), 2);
@@ -4328,8 +4347,19 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
         shortcuts.contains(QStringLiteral("Ctrl+S")) &&
         !shortcuts.contains(QStringLiteral("Ctrl+F5"));
     auto *const okButton = buttons->button(QDialogButtonBox::Ok);
+    QCOMPARE(okButton->objectName(), QStringLiteral("shortcutHelpOkButton"));
     QCOMPARE(okButton->text(), QStringLiteral("确定"));
-    QVERIFY(okButton->minimumHeight() >= 44);
+    QVERIFY(okButton->isDefault());
+    QVERIFY(okButton->minimumHeight() >= 50);
+    QVERIFY(okButton->minimumWidth() >= 168);
+    QVERIFY(!okButton->styleSheet().isEmpty());
+    QCoreApplication::processEvents();
+    const QImage renderedButton = okButton->grab().toImage();
+    QVERIFY(!renderedButton.isNull());
+    const QColor renderedBackground = renderedButton.pixelColor(
+        12, renderedButton.height() / 2);
+    QVERIFY(renderedBackground.blue() > renderedBackground.red() + 80);
+    QVERIFY(renderedBackground.blue() > renderedBackground.green() + 30);
     okButton->click();
   });
   helpAction->trigger();

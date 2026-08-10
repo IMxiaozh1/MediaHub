@@ -368,12 +368,15 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
   table_->setHorizontalHeaderLabels(
       {QStringLiteral("直播源地址"), QStringLiteral("备注")});
   table_->verticalHeader()->setVisible(false);
-  table_->verticalHeader()->setDefaultSectionSize(44);
+  table_->verticalHeader()->setMinimumSectionSize(52);
+  table_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
   table_->horizontalHeader()->setFixedHeight(42);
   table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
   table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
   table_->setColumnWidth(1, 280);
   table_->setAlternatingRowColors(true);
+  table_->setWordWrap(true);
+  table_->setTextElideMode(Qt::ElideNone);
   table_->setSelectionBehavior(QAbstractItemView::SelectRows);
   table_->setSelectionMode(QAbstractItemView::SingleSelection);
   table_->setEditTriggers(QAbstractItemView::DoubleClicked |
@@ -419,7 +422,16 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
   saveShortcut->setAutoRepeat(false);
 
   connect(table_, &QTableWidget::cellChanged, this,
-          [this] { markDirty(); });
+          [this](const int row, const int) {
+            table_->resizeRowToContents(row);
+            markDirty();
+          });
+  connect(table_->horizontalHeader(), &QHeaderView::sectionResized, this,
+          [this](const int logicalIndex, const int, const int) {
+            if (logicalIndex == 1) {
+              table_->resizeRowsToContents();
+            }
+          });
   connect(table_, &QTableWidget::itemSelectionChanged, this,
           &LiveSourceMemoDialog::updateControls);
   connect(addButton, &QPushButton::clicked, this,
@@ -449,8 +461,13 @@ void LiveSourceMemoDialog::closeEvent(QCloseEvent* const event) {
 void LiveSourceMemoDialog::appendRow(const LiveSourceMemo& memo) {
   const int row = table_->rowCount();
   table_->insertRow(row);
-  table_->setItem(row, 0, new QTableWidgetItem(memo.sourceUrl));
-  table_->setItem(row, 1, new QTableWidgetItem(memo.note));
+  auto* const sourceItem = new QTableWidgetItem(memo.sourceUrl);
+  sourceItem->setTextAlignment(Qt::AlignLeft | Qt::AlignTop);
+  table_->setItem(row, 0, sourceItem);
+  auto* const noteItem = new QTableWidgetItem(memo.note);
+  noteItem->setTextAlignment(Qt::AlignLeft | Qt::AlignTop);
+  table_->setItem(row, 1, noteItem);
+  table_->resizeRowToContents(row);
 }
 
 void LiveSourceMemoDialog::addEmptyRow() {

@@ -137,24 +137,6 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
           color: #71847b;
           font-size: 11px;
       }
-      QDialogButtonBox#shortcutHelpButtons QPushButton {
-          background: #ffd166;
-          border: 2px solid #ffe5a6;
-          border-radius: 9px;
-          color: #241900;
-          font-size: 14px;
-          font-weight: 700;
-          min-width: 132px;
-          padding: 11px 20px;
-      }
-      QDialogButtonBox#shortcutHelpButtons QPushButton:hover {
-          background: #ffe292;
-          border-color: #fff0c4;
-      }
-      QDialogButtonBox#shortcutHelpButtons QPushButton:pressed {
-          background: #e9b848;
-          border-color: #e9b848;
-      }
   )"));
 
   auto* const layout = new QVBoxLayout(this);
@@ -239,10 +221,36 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
       new QDialogButtonBox(QDialogButtonBox::Ok, Qt::Horizontal, this);
   buttons->setObjectName(QStringLiteral("shortcutHelpButtons"));
   auto* const okButton = buttons->button(QDialogButtonBox::Ok);
+  okButton->setObjectName(QStringLiteral("shortcutHelpOkButton"));
   okButton->setText(QStringLiteral("确定"));
   okButton->setCursor(Qt::PointingHandCursor);
   okButton->setDefault(true);
-  okButton->setMinimumHeight(44);
+  okButton->setMinimumSize(168, 50);
+  okButton->setStyleSheet(QStringLiteral(R"(
+      QPushButton#shortcutHelpOkButton {
+          background-color: #147df5;
+          border: 3px solid #d7ebff;
+          border-radius: 9px;
+          color: #ffffff;
+          font-family: "Microsoft YaHei UI";
+          font-size: 16px;
+          font-weight: 700;
+          min-height: 50px;
+          min-width: 168px;
+          padding: 0 26px;
+      }
+      QPushButton#shortcutHelpOkButton:hover {
+          background-color: #45a2ff;
+          border-color: #ffffff;
+      }
+      QPushButton#shortcutHelpOkButton:pressed {
+          background-color: #0c60c4;
+          border-color: #b8dcff;
+      }
+      QPushButton#shortcutHelpOkButton:focus {
+          border-color: #ffffff;
+      }
+  )"));
   connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
   footerLayout->addWidget(buttons);
   layout->addLayout(footerLayout);
