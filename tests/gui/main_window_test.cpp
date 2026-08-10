@@ -252,6 +252,7 @@ private slots:
   void removesMissingRecentLocalMediaWithoutOpeningEngine();
   void fillsAndDeletesLiveUrlHistoryWithoutLoading();
   void opensLiveSourceMemoWithCtrlM();
+  void keepsArrowKeysInsideLiveSourceMemoEditor();
   void managesLiveSourceMemosWithSaveShortcutAndReturnPrompt();
   void savesUnsavedLiveSourceMemosWhenWindowCloses();
   void cancelsLivePlaylistLoadingAndIgnoresLateResult();
@@ -1910,6 +1911,54 @@ void MainWindowTest::opensLiveSourceMemoWithCtrlM() {
   QVERIFY(openedFromShortcut);
   QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
   QCOMPARE(harness.livePlaylistService.loadCount, 0);
+}
+
+void MainWindowTest::keepsArrowKeysInsideLiveSourceMemoEditor() {
+  FakeAppStateStore store;
+  store.snapshot.liveSourceMemos = {
+      LiveSourceMemo{QStringLiteral("https://live.example/channel.m3u8"),
+                     QStringLiteral("主线路")},
+  };
+  GuiHarness harness(&store);
+  harness.window.show();
+  harness.window.activateWindow();
+  QCoreApplication::processEvents();
+  auto *const memoAction =
+      requiredChild<QAction>(harness.window, "liveSourceMemoAction");
+  QSignalSpy seekSpy(&harness.window, &MainWindow::seekRelativeRequested);
+  bool inspectedEditor = false;
+  int cursorPositionAfterLeft = -1;
+  int cursorPositionAfterRight = -1;
+
+  QTimer::singleShot(0, [&] {
+    auto *const dialog =
+        qobject_cast<QDialog *>(QApplication::activeModalWidget());
+    QVERIFY(dialog != nullptr);
+    auto *const table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("liveSourceMemoTable"));
+    QVERIFY(table != nullptr);
+    table->setCurrentCell(0, 0);
+    table->editItem(table->item(0, 0));
+    QCoreApplication::processEvents();
+
+    auto *const editor =
+        qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    QVERIFY(editor != nullptr);
+    QVERIFY(table->isAncestorOf(editor));
+    editor->setCursorPosition(1);
+    QTest::keyClick(editor, Qt::Key_Left);
+    cursorPositionAfterLeft = editor->cursorPosition();
+    QTest::keyClick(editor, Qt::Key_Right);
+    cursorPositionAfterRight = editor->cursorPosition();
+    inspectedEditor = true;
+    dialog->reject();
+  });
+  memoAction->trigger();
+
+  QVERIFY(inspectedEditor);
+  QCOMPARE(cursorPositionAfterLeft, 0);
+  QCOMPARE(cursorPositionAfterRight, 1);
+  QCOMPARE(seekSpy.count(), 0);
 }
 
 void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {

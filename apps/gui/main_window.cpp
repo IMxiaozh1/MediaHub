@@ -1716,6 +1716,10 @@ bool MainWindow::eventFilter(QObject* const watched, QEvent* const event) {
       event->type() != QEvent::KeyRelease) {
     return QMainWindow::eventFilter(watched, event);
   }
+  const auto* const watchedWidget = qobject_cast<QWidget*>(watched);
+  if (watchedWidget == nullptr || watchedWidget->window() != this) {
+    return QMainWindow::eventFilter(watched, event);
+  }
 
   auto* const keyEvent = static_cast<QKeyEvent*>(event);
   if (keyEvent->key() != Qt::Key_Right ||
