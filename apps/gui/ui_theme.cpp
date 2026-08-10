@@ -260,17 +260,21 @@ const QString& mainWindowStyleSheet() {
           color: #d69a43;
           font-weight: 700;
       }
-      QLineEdit#livePlaylistUrlEdit {
+      QLineEdit#livePlaylistUrlEdit,
+      QLineEdit#livePlaylistSearchEdit {
           border-radius: 5px;
           padding: 7px 8px;
       }
-      QLineEdit#livePlaylistUrlEdit[themeMode="audio"] {
+      QLineEdit#livePlaylistUrlEdit[themeMode="audio"],
+      QLineEdit#livePlaylistSearchEdit[themeMode="audio"] {
           background: #f8fbfa;
           border: 1px solid #c6d8d0;
           color: #1d2d27;
       }
       QLineEdit#livePlaylistUrlEdit[themeMode="video"],
-      QLineEdit#livePlaylistUrlEdit[themeMode="live"] {
+      QLineEdit#livePlaylistUrlEdit[themeMode="live"],
+      QLineEdit#livePlaylistSearchEdit[themeMode="video"],
+      QLineEdit#livePlaylistSearchEdit[themeMode="live"] {
           background: #121417;
           border: 1px solid #404349;
           color: #eceeec;
@@ -278,7 +282,8 @@ const QString& mainWindowStyleSheet() {
           font-size: 11px;
           selection-background-color: #98692d;
       }
-      QLineEdit#livePlaylistUrlEdit:focus {
+      QLineEdit#livePlaylistUrlEdit:focus,
+      QLineEdit#livePlaylistSearchEdit:focus {
           border-color: #e5a342;
       }
       QLabel#livePlaylistStatusLabel {

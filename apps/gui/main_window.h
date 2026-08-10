@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QVector>
 #include <optional>
+#include <vector>
 
 #include "live_source_memo.h"
 #include "mediahub/core/media_types.h"
@@ -39,6 +40,11 @@ namespace mediahub::gui {
 class VideoOutputWidget;
 class LyricsView;
 struct LyricsResult;
+
+struct RecentLocalMediaItem {
+  QString filePath;
+  QString label;
+};
 
 // 主窗口只负责布局、采集用户输入和渲染展示快照。
 class MainWindow final : public QMainWindow {
@@ -75,6 +81,8 @@ class MainWindow final : public QMainWindow {
   void setLivePlaylistHistoryUrls(const QStringList& urls);
   // 调用线程：GUI 主线程。直播源备忘只显示和编辑，不触发播放或网络请求。
   void setLiveSourceMemos(const QVector<LiveSourceMemo>& memos);
+  // 调用线程：GUI 主线程。最近播放菜单只展示本机记录，选择后再交给 presenter。
+  void setRecentLocalMedia(const QVector<RecentLocalMediaItem>& items);
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
@@ -83,6 +91,8 @@ class MainWindow final : public QMainWindow {
   void livePlaylistLoadCancelRequested();
   void livePlaylistHistoryChanged(const QStringList& urls);
   void liveSourceMemosChanged(const QVector<LiveSourceMemo>& memos);
+  void recentLocalMediaSelected(const QString& filePath);
+  void recentLocalMediaClearRequested();
   void playlistKindSelected(int kindIndex);
   void playRequested();
   void pauseRequested();
@@ -143,6 +153,7 @@ class MainWindow final : public QMainWindow {
   void renameContextPlaylistItem();
   void selectPlaylistRow(int row);
   void showPlaylistKind(int kindIndex);
+  void applyLivePlaylistFilter();
 
   WindowIconManager windowIconManager_;
   QAction* openAction_{nullptr};
@@ -161,6 +172,7 @@ class MainWindow final : public QMainWindow {
   QAction* livePlaylistStopAction_{nullptr};
   QAction* livePlaylistMarkAction_{nullptr};
   QAction* livePlaylistFavoriteAction_{nullptr};
+  QMenu* recentLocalMediaMenu_{nullptr};
   QSlider* progressSlider_{nullptr};
   QSlider* volumeSlider_{nullptr};
   QToolButton* playPauseButton_{nullptr};
@@ -178,6 +190,7 @@ class MainWindow final : public QMainWindow {
   QToolButton* livePlaylistHistoryButton_{nullptr};
   QTabBar* playlistKindTabs_{nullptr};
   QLineEdit* livePlaylistUrlEdit_{nullptr};
+  QLineEdit* livePlaylistSearchEdit_{nullptr};
   QPushButton* livePlaylistLoadButton_{nullptr};
   QPushButton* livePlaylistLocateButton_{nullptr};
   QListView* playlistView_{nullptr};

@@ -231,6 +231,8 @@ private slots:
   void separatesLocalAndLiveListsWithoutStoppingPlayback();
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
+  void filtersLivePlaylistWithoutChangingSourceRows();
+  void persistsLiveFavoritesButNotUnavailableMarks();
   void replacesRemoteLiveListAtomicallyAndKeepsItOnFailure();
   void keepsNetworkStreamsNonSeekableWhenEngineReportsLiveWindow();
   void rejectsInvalidNetworkUrlBeforeCallingEngine();
@@ -240,8 +242,12 @@ private slots:
   void refreshesCurrentNetworkByButtonAndF5();
   void remembersRecentNetworkUrlsForCurrentSession();
   void roundTripsAppStateThroughSettingsFile();
+  void loadsLegacyV04StateWithoutNewFields();
   void restoresPersistedStateWithoutStartingPlayback();
   void persistsPlaylistChangesAndSuccessfulLiveHistory();
+  void restoresRecentLocalMediaAndResumesOnce();
+  void clearsResumeAfterStopAndNaturalEnd();
+  void removesMissingRecentLocalMediaWithoutOpeningEngine();
   void fillsAndDeletesLiveUrlHistoryWithoutLoading();
   void opensLiveSourceMemoWithCtrlM();
   void managesLiveSourceMemosWithSaveShortcutAndReturnPrompt();
@@ -1012,6 +1018,131 @@ void MainWindowTest::keepsLiveListPositionAndLocatesCurrentPlayback() {
   QVERIFY(scrollBar->value() > 0);
 }
 
+void MainWindowTest::filtersLivePlaylistWithoutChangingSourceRows() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  const QStringList urls{
+      QStringLiteral("https://example.test/Alpha-News.m3u8"),
+      QStringLiteral("https://example.test/中文音乐.m3u8"),
+      QStringLiteral("https://example.test/beta-Sports.m3u8"),
+  };
+  for (const QString& url : urls) {
+    harness.presenter.openNetworkUrl(url);
+  }
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto* const searchEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistSearchEdit");
+  auto* const locateButton = requiredChild<QPushButton>(
+      harness.window, "livePlaylistLocateButton");
+  auto* const model = playlistView->model();
+  QCOMPARE(model->rowCount(), 3);
+
+  searchEdit->setText(QStringLiteral("ALPHA"));
+  QVERIFY(!playlistView->isRowHidden(0));
+  QVERIFY(playlistView->isRowHidden(1));
+  QVERIFY(playlistView->isRowHidden(2));
+  searchEdit->setText(QStringLiteral("中文"));
+  QVERIFY(playlistView->isRowHidden(0));
+  QVERIFY(!playlistView->isRowHidden(1));
+  QVERIFY(playlistView->isRowHidden(2));
+  auto* const liveMenu =
+      requiredChild<QMenu>(harness.window, "livePlaylistContextMenu");
+  auto* const favoriteAction =
+      requiredChild<QAction>(harness.window, "livePlaylistFavoriteAction");
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 1));
+  liveMenu->hide();
+  favoriteAction->trigger();
+  QVERIFY(model->index(1, 0).data(PlaylistModel::kFavoriteRole).toBool());
+
+  const int opensBeforeActivation =
+      commandCount(harness, test::FakeEngineCommandKind::Open);
+  QVERIFY(QMetaObject::invokeMethod(
+      playlistView, "doubleClicked", Qt::DirectConnection,
+      Q_ARG(QModelIndex, model->index(1, 0))));
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
+           opensBeforeActivation + 1);
+  const auto commands = harness.engine.commands();
+  QVERIFY(commands.back().media.has_value());
+  QCOMPARE(QString::fromUtf8(commands.back().media->source.c_str()), urls.at(1));
+
+  searchEdit->setText(QStringLiteral("没有匹配项"));
+  QVERIFY(playlistView->isRowHidden(0));
+  QVERIFY(playlistView->isRowHidden(1));
+  QVERIFY(playlistView->isRowHidden(2));
+  const int stopsBeforeLocate =
+      commandCount(harness, test::FakeEngineCommandKind::Stop);
+  QTest::mouseClick(locateButton, Qt::LeftButton);
+  QCOMPARE(searchEdit->text(), QString{});
+  QCOMPARE(playlistView->currentIndex().row(), 1);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Stop),
+           stopsBeforeLocate);
+
+  searchEdit->setText(QStringLiteral("gamma"));
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/Gamma-Movie.m3u8"));
+  QCOMPARE(model->rowCount(), 4);
+  QVERIFY(!playlistView->isRowHidden(3));
+  searchEdit->clear();
+  for (int row = 0; row < model->rowCount(); ++row) {
+    QVERIFY(!playlistView->isRowHidden(row));
+  }
+}
+
+void MainWindowTest::persistsLiveFavoritesButNotUnavailableMarks() {
+  FakeAppStateStore store;
+  const QString firstUrl =
+      QStringLiteral("https://example.test/live/first.m3u8");
+  const QString secondUrl =
+      QStringLiteral("https://example.test/live/second.m3u8");
+  store.snapshot.favoriteLiveSourceUrls = QStringList{firstUrl};
+
+  {
+    GuiHarness harness(&store);
+    harness.window.show();
+    QCoreApplication::processEvents();
+    harness.presenter.openNetworkUrl(firstUrl);
+    harness.presenter.openNetworkUrl(secondUrl);
+    auto* const view =
+        requiredChild<QListView>(harness.window, "playlistView");
+    auto* const menu =
+        requiredChild<QMenu>(harness.window, "livePlaylistContextMenu");
+    auto* const markAction =
+        requiredChild<QAction>(harness.window, "livePlaylistMarkAction");
+    auto* const favoriteAction =
+        requiredChild<QAction>(harness.window, "livePlaylistFavoriteAction");
+    QVERIFY(view->model()->index(0, 0)
+                .data(PlaylistModel::kFavoriteRole)
+                .toBool());
+
+    QVERIFY(requestPlaylistContextMenu(*view, 0));
+    menu->hide();
+    markAction->trigger();
+    QVERIFY(view->model()->index(0, 0)
+                .data(PlaylistModel::kMarkedRole)
+                .toBool());
+    QVERIFY(requestPlaylistContextMenu(*view, 1));
+    menu->hide();
+    favoriteAction->trigger();
+    QCOMPARE(store.snapshot.favoriteLiveSourceUrls.size(), 2);
+    QVERIFY(store.snapshot.favoriteLiveSourceUrls.contains(firstUrl));
+    QVERIFY(store.snapshot.favoriteLiveSourceUrls.contains(secondUrl));
+  }
+
+  GuiHarness restored(&store);
+  restored.presenter.openNetworkUrl(firstUrl);
+  restored.presenter.openNetworkUrl(secondUrl);
+  auto* const restoredView =
+      requiredChild<QListView>(restored.window, "playlistView");
+  for (int row = 0; row < 2; ++row) {
+    const QModelIndex index = restoredView->model()->index(row, 0);
+    QVERIFY(index.data(PlaylistModel::kFavoriteRole).toBool());
+    QVERIFY(!index.data(PlaylistModel::kMarkedRole).toBool());
+  }
+}
+
 void MainWindowTest::replacesRemoteLiveListAtomicallyAndKeepsItOnFailure() {
   GuiHarness harness;
   harness.window.show();
@@ -1364,11 +1495,18 @@ void MainWindowTest::roundTripsAppStateThroughSettingsFile() {
       core::MediaItem{"C:/video/two.mp4", core::MediaSourceKind::LocalFile,
                       "第二个视频"},
   };
+  expected.recentLocalMedia = {
+      LocalPlaybackRecord{expected.localPlaylist.at(1), 42'000, 180'000},
+  };
   expected.lastLivePlaylistUrl =
       QStringLiteral("https://example.test/最后清单.m3u?token=private");
   expected.livePlaylistUrlHistory = QStringList{
       expected.lastLivePlaylistUrl,
       QStringLiteral("https://example.test/older.m3u"),
+  };
+  expected.favoriteLiveSourceUrls = QStringList{
+      QStringLiteral("https://stream.example/收藏一号.m3u8"),
+      QStringLiteral("https://stream.example/favorite-two.m3u8"),
   };
   expected.liveSourceMemos = {
       LiveSourceMemo{QStringLiteral("https://live.example/一号.m3u8"),
@@ -1394,8 +1532,18 @@ void MainWindowTest::roundTripsAppStateThroughSettingsFile() {
              core::MediaSourceKind::LocalFile);
   }
   QCOMPARE(restored.lastLivePlaylistUrl, expected.lastLivePlaylistUrl);
+  QCOMPARE(restored.recentLocalMedia.size(),
+           expected.recentLocalMedia.size());
+  QCOMPARE(restored.recentLocalMedia.front().item,
+           expected.recentLocalMedia.front().item);
+  QCOMPARE(restored.recentLocalMedia.front().positionMilliseconds,
+           qint64(42'000));
+  QCOMPARE(restored.recentLocalMedia.front().durationMilliseconds,
+           qint64(180'000));
   QCOMPARE(restored.livePlaylistUrlHistory,
            expected.livePlaylistUrlHistory);
+  QCOMPARE(restored.favoriteLiveSourceUrls,
+           expected.favoriteLiveSourceUrls);
   QCOMPARE(restored.liveSourceMemos.size(), expected.liveSourceMemos.size());
   for (int index = 0; index < expected.liveSourceMemos.size(); ++index) {
     QCOMPARE(restored.liveSourceMemos.at(index).sourceUrl,
@@ -1403,6 +1551,39 @@ void MainWindowTest::roundTripsAppStateThroughSettingsFile() {
     QCOMPARE(restored.liveSourceMemos.at(index).note,
              expected.liveSourceMemos.at(index).note);
   }
+}
+
+void MainWindowTest::loadsLegacyV04StateWithoutNewFields() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString settingsFile =
+      QDir(directory.path()).filePath(QStringLiteral("v04-state.ini"));
+  {
+    QSettings settings(settingsFile, QSettings::IniFormat);
+    settings.beginGroup(QStringLiteral("playbackState"));
+    settings.setValue(QStringLiteral("version"), 1);
+    settings.beginWriteArray(QStringLiteral("localPlaylist"));
+    settings.setArrayIndex(0);
+    settings.setValue(QStringLiteral("source"),
+                      QStringLiteral("C:/legacy/旧歌曲.mp3"));
+    settings.setValue(QStringLiteral("displayName"),
+                      QStringLiteral("旧歌曲"));
+    settings.endArray();
+    settings.setValue(QStringLiteral("lastLivePlaylistUrl"),
+                      QStringLiteral("https://example.test/legacy.m3u"));
+    settings.endGroup();
+    settings.sync();
+  }
+
+  QSettingsAppStateStore store(settingsFile);
+  const AppStateSnapshot restored = store.load();
+  QCOMPARE(restored.localPlaylist.size(), std::size_t(1));
+  QCOMPARE(restored.localPlaylist.front().displayName,
+           std::string("旧歌曲"));
+  QCOMPARE(restored.lastLivePlaylistUrl,
+           QStringLiteral("https://example.test/legacy.m3u"));
+  QVERIFY(restored.recentLocalMedia.empty());
+  QVERIFY(restored.favoriteLiveSourceUrls.isEmpty());
 }
 
 void MainWindowTest::restoresPersistedStateWithoutStartingPlayback() {
@@ -1493,6 +1674,133 @@ void MainWindowTest::persistsPlaylistChangesAndSuccessfulLiveHistory() {
            QStringLiteral("https://example.test/broken.m3u"));
   QVERIFY(!store.snapshot.livePlaylistUrlHistory.contains(
       QStringLiteral("https://example.test/broken.m3u")));
+}
+
+void MainWindowTest::restoresRecentLocalMediaAndResumesOnce() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString mediaPath =
+      QDir(directory.path()).filePath(QStringLiteral("长视频.mp4"));
+  QFile mediaFile(mediaPath);
+  QVERIFY(mediaFile.open(QIODevice::WriteOnly));
+  mediaFile.write("MediaHub resume test");
+  mediaFile.close();
+
+  FakeAppStateStore store;
+  const core::MediaItem item{mediaPath.toUtf8().toStdString(),
+                             core::MediaSourceKind::LocalFile,
+                             "长视频.mp4"};
+  store.snapshot.localPlaylist = {item};
+  store.snapshot.recentLocalMedia = {
+      LocalPlaybackRecord{item, 60'000, 120'000},
+  };
+
+  GuiHarness harness(&store);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+  auto* const recentAction =
+      requiredChild<QAction>(harness.window, "recentLocalMediaAction0");
+  QVERIFY(recentAction->text().contains(QStringLiteral("继续 01:00")));
+  recentAction->trigger();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+  QCOMPARE(store.snapshot.localPlaylist.size(), std::size_t(1));
+
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{0ms, 120s, true});
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 1);
+  const auto commandsAfterResume = harness.engine.commands();
+  const auto seekCommand = std::find_if(
+      commandsAfterResume.rbegin(), commandsAfterResume.rend(),
+      [](const test::FakeEngineCommand& command) {
+        return command.kind == test::FakeEngineCommandKind::Seek;
+      });
+  QVERIFY(seekCommand != commandsAfterResume.rend());
+  QCOMPARE(seekCommand->position, 60s);
+
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{60s, 120s, true});
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{61s, 120s, true});
+  QCoreApplication::processEvents();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 1);
+
+  auto* const persistTimer = harness.presenter.findChild<QTimer*>(
+      QStringLiteral("appStatePersistTimer"));
+  QVERIFY(persistTimer != nullptr);
+  persistTimer->setInterval(0);
+  harness.engine.emitPositionChanged(
+      core::PlaybackPosition{70s, 120s, true});
+  QTRY_COMPARE(store.snapshot.recentLocalMedia.front().positionMilliseconds,
+               qint64(70'000));
+}
+
+void MainWindowTest::clearsResumeAfterStopAndNaturalEnd() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString mediaPath =
+      QDir(directory.path()).filePath(QStringLiteral("长音频.wav"));
+  QFile mediaFile(mediaPath);
+  QVERIFY(mediaFile.open(QIODevice::WriteOnly));
+  mediaFile.write("MediaHub stop and end test");
+  mediaFile.close();
+  const core::MediaItem item{mediaPath.toUtf8().toStdString(),
+                             core::MediaSourceKind::LocalFile,
+                             "长音频.wav"};
+
+  FakeAppStateStore stopStore;
+  stopStore.snapshot.localPlaylist = {item};
+  stopStore.snapshot.recentLocalMedia = {
+      LocalPlaybackRecord{item, 60'000, 120'000},
+  };
+  {
+    GuiHarness harness(&stopStore);
+    requiredChild<QAction>(harness.window, "recentLocalMediaAction0")
+        ->trigger();
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    harness.engine.emitStateChanged(core::PlaybackState::Playing);
+    harness.engine.emitPositionChanged(
+        core::PlaybackPosition{60s, 120s, true});
+    QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+    emit harness.window.stopRequested();
+    QCOMPARE(stopStore.snapshot.recentLocalMedia.front().positionMilliseconds,
+             qint64(0));
+  }
+
+  FakeAppStateStore endStore;
+  endStore.snapshot.localPlaylist = {item};
+  endStore.snapshot.recentLocalMedia = {
+      LocalPlaybackRecord{item, 45'000, 120'000},
+  };
+  GuiHarness ended(&endStore);
+  requiredChild<QAction>(ended.window, "recentLocalMediaAction0")->trigger();
+  ended.engine.emitStateChanged(core::PlaybackState::Opening);
+  ended.engine.emitStateChanged(core::PlaybackState::Playing);
+  ended.engine.emitPositionChanged(
+      core::PlaybackPosition{45s, 120s, true});
+  QTRY_COMPARE(statusText(ended), QStringLiteral("正在播放"));
+  ended.engine.emitEndReached();
+  QTRY_COMPARE(endStore.snapshot.recentLocalMedia.front().positionMilliseconds,
+               qint64(0));
+}
+
+void MainWindowTest::removesMissingRecentLocalMediaWithoutOpeningEngine() {
+  FakeAppStateStore store;
+  const core::MediaItem missing{
+      "C:/missing/MediaHub-v0.5-not-found.mp4",
+      core::MediaSourceKind::LocalFile, "已移除视频.mp4"};
+  store.snapshot.recentLocalMedia = {
+      LocalPlaybackRecord{missing, 30'000, 120'000},
+  };
+  GuiHarness harness(&store);
+  requiredChild<QAction>(harness.window, "recentLocalMediaAction0")->trigger();
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+  QVERIFY(store.snapshot.recentLocalMedia.empty());
+  QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")
+              ->text()
+              .contains(QStringLiteral("已不存在")));
 }
 
 void MainWindowTest::fillsAndDeletesLiveUrlHistoryWithoutLoading() {

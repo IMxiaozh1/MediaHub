@@ -10,6 +10,7 @@
 #include <optional>
 #include <unordered_set>
 
+#include "app_state_store.h"
 #include "engine_event_bridge.h"
 #include "live_playlist_service.h"
 #include "live_source_memo.h"
@@ -26,7 +27,6 @@ class QTimer;
 namespace mediahub::gui {
 
 class MainWindow;
-class AppStateStore;
 
 // 集中处理用户命令、播放状态机和控件快照，不接触任何具体播放内核类型。
 class PlayerPresenter final : public QObject {
@@ -110,6 +110,16 @@ class PlayerPresenter final : public QObject {
   void rememberLivePlaylistUrl(const QString& url);
   void updateLivePlaylistHistory(const QStringList& urls);
   void updateLiveSourceMemos(const QVector<LiveSourceMemo>& memos);
+  void openRecentLocalMedia(const QString& filePath);
+  void clearRecentLocalMedia();
+  void rememberCurrentLocalMedia();
+  void clearCurrentLocalResumePosition();
+  void updateCurrentLocalPlaybackProgress();
+  void updateRecentLocalMediaView();
+  void scheduleAppStatePersist();
+  void tryApplyPendingResumePosition();
+  [[nodiscard]] std::optional<std::chrono::milliseconds>
+  resumePositionFor(const core::MediaItem& item) const;
   void restoreAppState();
   void persistAppState() noexcept;
   void openCurrentPlaylistItem(PlaylistKind playlistKind,
@@ -136,6 +146,7 @@ class PlayerPresenter final : public QObject {
   LivePlaylistService* livePlaylistService_{nullptr};
   AppStateStore* appStateStore_{nullptr};
   QTimer* networkOpenTimeoutTimer_{nullptr};
+  QTimer* appStatePersistTimer_{nullptr};
   core::PlaybackStateMachine stateMachine_;
   core::Playlist localPlaylist_;
   core::Playlist livePlaylist_;
@@ -149,11 +160,13 @@ class PlayerPresenter final : public QObject {
   core::PlaybackPosition position_;
   std::optional<std::chrono::milliseconds> seekPreviewPosition_;
   std::optional<std::chrono::milliseconds> pendingRestartPosition_;
+  std::optional<std::chrono::milliseconds> pendingResumePosition_;
   QString mediaName_{QStringLiteral("未选择媒体")};
   QString currentSourcePath_;
   QStringList recentNetworkUrls_;
   QStringList livePlaylistUrlHistory_;
   QVector<LiveSourceMemo> liveSourceMemos_;
+  std::vector<LocalPlaybackRecord> recentLocalMedia_;
   QString lastLivePlaylistUrl_;
   QString activeLivePlaylistRequestUrl_;
   QString pendingPlaylistProbeUrl_;
@@ -180,6 +193,7 @@ class PlayerPresenter final : public QObject {
   bool isPreparingMedia_{false};
   bool isRestartPlayRequested_{false};
   bool isTemporaryFastPlayback_{false};
+  bool isResumeSeekRequested_{false};
   // 只有当前媒体实际开始播放后，它的结束事件才有资格推进列表。
   bool hasCurrentMediaStarted_{false};
   bool isShuttingDown_{false};

@@ -67,7 +67,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         gui.stage10_coverage
         gui.v03_scale_125
         gui.v03_scale_150
-        PROPERTIES TIMEOUT 60
+        PROPERTIES TIMEOUT 120
     )
     set_tests_properties(gui.v03_scale_125 PROPERTIES
         ENVIRONMENT "QT_SCALE_FACTOR=1.25"

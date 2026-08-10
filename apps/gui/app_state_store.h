@@ -3,6 +3,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QtGlobal>
 #include <memory>
 #include <vector>
 
@@ -13,11 +14,20 @@ class QSettings;
 
 namespace mediahub::gui {
 
+// 本地媒体最近播放与断点记录；完整路径只写入用户本机配置。
+struct LocalPlaybackRecord {
+  core::MediaItem item;
+  qint64 positionMilliseconds{0};
+  qint64 durationMilliseconds{-1};
+};
+
 // 保存可跨进程恢复的界面状态；恢复内容不得隐式触发播放或网络请求。
 struct AppStateSnapshot {
   std::vector<core::MediaItem> localPlaylist;
+  std::vector<LocalPlaybackRecord> recentLocalMedia;
   QString lastLivePlaylistUrl;
   QStringList livePlaylistUrlHistory;
+  QStringList favoriteLiveSourceUrls;
   QVector<LiveSourceMemo> liveSourceMemos;
 };
 

@@ -556,6 +556,11 @@ MainWindow::MainWindow(QWidget* const parent)
   openNetworkAction_->setObjectName(QStringLiteral("openNetworkAction"));
   openNetworkAction_->setShortcut(
       QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_L)));
+  recentLocalMediaMenu_ =
+      fileMenu->addMenu(QStringLiteral("最近播放(&R)"));
+  recentLocalMediaMenu_->setObjectName(
+      QStringLiteral("recentLocalMediaMenu"));
+  setRecentLocalMedia({});
   fileMenu->addSeparator();
   auto* const exitAction = fileMenu->addAction(QStringLiteral("退出(&X)"));
   exitAction->setShortcut(QKeySequence::Quit);
@@ -748,6 +753,14 @@ MainWindow::MainWindow(QWidget* const parent)
   livePlaylistStatusLabel_->setObjectName(
       QStringLiteral("livePlaylistStatusLabel"));
   livePlaylistStatusLabel_->setWordWrap(true);
+  livePlaylistSearchEdit_ = new QLineEdit(playlistPanel_);
+  livePlaylistSearchEdit_->setObjectName(
+      QStringLiteral("livePlaylistSearchEdit"));
+  livePlaylistSearchEdit_->setAccessibleName(
+      QStringLiteral("搜索当前直播清单"));
+  livePlaylistSearchEdit_->setPlaceholderText(
+      QStringLiteral("搜索当前清单中的频道"));
+  livePlaylistSearchEdit_->setClearButtonEnabled(true);
   playlistView_ = new QListView(playlistPanel_);
   playlistView_->setObjectName(QStringLiteral("playlistView"));
   playlistView_->setAccessibleName(QStringLiteral("播放列表"));
@@ -824,6 +837,7 @@ MainWindow::MainWindow(QWidget* const parent)
   playlistLayout->addWidget(playlistTitleLabel_);
   playlistLayout->addWidget(playlistKindTabs_);
   playlistLayout->addWidget(livePlaylistTools_);
+  playlistLayout->addWidget(livePlaylistSearchEdit_);
   playlistLayout->addWidget(playlistView_, 1);
   playlistLayout->addWidget(openButton_);
   mediaWorkspace->addWidget(playlistPanel_, 1);
@@ -1105,11 +1119,16 @@ MainWindow::MainWindow(QWidget* const parent)
           requestLivePlaylistLoad);
   connect(livePlaylistUrlEdit_, &QLineEdit::returnPressed, this,
           requestLivePlaylistLoad);
+  connect(livePlaylistSearchEdit_, &QLineEdit::textChanged, this,
+          &MainWindow::applyLivePlaylistFilter);
   connect(livePlaylistHistoryButton_, &QToolButton::clicked, this,
           &MainWindow::showLiveUrlHistory);
   connect(livePlaylistLocateButton_, &QPushButton::clicked, this, [this] {
     if (!isLivePlaylistActive_ || currentLivePlaybackIndex_ < 0) {
       return;
+    }
+    if (playlistView_->isRowHidden(currentLivePlaybackIndex_)) {
+      livePlaylistSearchEdit_->clear();
     }
     selectPlaylistRow(currentLivePlaybackIndex_);
     playlistView_->scrollTo(
@@ -1569,11 +1588,21 @@ void MainWindow::setPlaylistModels(QAbstractItemModel* const localModel,
                                    QAbstractItemModel* const liveModel) {
   localPlaylistModel_ = localModel;
   livePlaylistModel_ = liveModel;
+  if (livePlaylistModel_ != nullptr) {
+    connect(livePlaylistModel_, &QAbstractItemModel::modelReset, this,
+            &MainWindow::applyLivePlaylistFilter, Qt::UniqueConnection);
+  }
   showPlaylistKind(isLivePlaylistActive_ ? 1 : 0);
 }
 
 void MainWindow::showPlaylistKind(const int kindIndex) {
   const bool showsLivePlaylist = kindIndex == 1;
+  if (!showsLivePlaylist && isLivePlaylistActive_ &&
+      playlistView_->model() == livePlaylistModel_) {
+    for (int row = 0; row < playlistView_->model()->rowCount(); ++row) {
+      playlistView_->setRowHidden(row, false);
+    }
+  }
   isLivePlaylistActive_ = showsLivePlaylist;
   const QSignalBlocker blocker(playlistKindTabs_);
   playlistKindTabs_->setCurrentIndex(showsLivePlaylist ? 1 : 0);
@@ -1598,7 +1627,26 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
   livePlaylistLoadButton_->setVisible(showsLivePlaylist);
   livePlaylistLocateButton_->setVisible(showsLivePlaylist);
   livePlaylistStatusLabel_->setVisible(showsLivePlaylist);
+  livePlaylistSearchEdit_->setVisible(showsLivePlaylist);
   openButton_->setVisible(!showsLivePlaylist);
+  if (showsLivePlaylist) {
+    applyLivePlaylistFilter();
+  }
+}
+
+void MainWindow::applyLivePlaylistFilter() {
+  if (!isLivePlaylistActive_ || playlistView_->model() == nullptr ||
+      playlistView_->model() != livePlaylistModel_) {
+    return;
+  }
+  const QString query = livePlaylistSearchEdit_->text().trimmed();
+  for (int row = 0; row < livePlaylistModel_->rowCount(); ++row) {
+    const QString displayName =
+        livePlaylistModel_->index(row, 0).data(Qt::UserRole).toString();
+    playlistView_->setRowHidden(
+        row, !query.isEmpty() &&
+                 !displayName.contains(query, Qt::CaseInsensitive));
+  }
 }
 
 void MainWindow::closeEvent(QCloseEvent* const event) {
@@ -1752,6 +1800,35 @@ void MainWindow::setLivePlaylistHistoryUrls(const QStringList& urls) {
 void MainWindow::setLiveSourceMemos(
     const QVector<LiveSourceMemo>& memos) {
   liveSourceMemos_ = memos;
+}
+
+void MainWindow::setRecentLocalMedia(
+    const QVector<RecentLocalMediaItem>& items) {
+  recentLocalMediaMenu_->clear();
+  if (items.isEmpty()) {
+    auto* const emptyAction =
+        recentLocalMediaMenu_->addAction(QStringLiteral("暂无记录"));
+    emptyAction->setObjectName(QStringLiteral("emptyRecentLocalMediaAction"));
+    emptyAction->setEnabled(false);
+  } else {
+    for (int index = 0; index < items.size(); ++index) {
+      const RecentLocalMediaItem& item = items.at(index);
+      auto* const action = recentLocalMediaMenu_->addAction(item.label);
+      action->setObjectName(
+          QStringLiteral("recentLocalMediaAction%1").arg(index));
+      connect(action, &QAction::triggered, this,
+              [this, filePath = item.filePath] {
+                emit recentLocalMediaSelected(filePath);
+              });
+    }
+    recentLocalMediaMenu_->addSeparator();
+  }
+  auto* const clearAction =
+      recentLocalMediaMenu_->addAction(QStringLiteral("清空最近播放"));
+  clearAction->setObjectName(QStringLiteral("clearRecentLocalMediaAction"));
+  clearAction->setEnabled(!items.isEmpty());
+  connect(clearAction, &QAction::triggered, this,
+          &MainWindow::recentLocalMediaClearRequested);
 }
 
 void MainWindow::showLiveUrlHistory() {

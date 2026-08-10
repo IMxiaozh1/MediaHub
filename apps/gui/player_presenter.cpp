@@ -1,6 +1,7 @@
 #include "player_presenter.h"
 
 #include <QByteArray>
+#include <QDir>
 #include <QFileInfo>
 #include <QThread>
 #include <QTimer>
@@ -24,6 +25,11 @@ constexpr std::array<double, 6> kPlaybackRates{0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
 constexpr auto kNetworkOpenTimeout = std::chrono::seconds(15);
 constexpr int kMaxSessionNetworkUrls = 10;
 constexpr int kMaxLivePlaylistUrlHistory = 20;
+constexpr int kMaxFavoriteLiveSources = 5000;
+constexpr int kMaxRecentLocalMedia = 20;
+constexpr auto kMinimumResumePosition = std::chrono::seconds(10);
+constexpr auto kResumeEndGuard = std::chrono::seconds(10);
+constexpr auto kAppStatePersistDelay = std::chrono::seconds(5);
 
 bool isPlaylistAddress(const QString &address) {
   const QUrl url(address, QUrl::StrictMode);
@@ -148,6 +154,21 @@ bool isAudioFile(const QString &filePath) {
          suffix == QStringLiteral("flac") || suffix == QStringLiteral("aac") ||
          suffix == QStringLiteral("m4a") || suffix == QStringLiteral("ogg") ||
          suffix == QStringLiteral("opus") || suffix == QStringLiteral("wma");
+}
+
+QString localPathIdentity(const QString& filePath) {
+  return QDir::fromNativeSeparators(QDir::cleanPath(filePath)).toCaseFolded();
+}
+
+std::optional<std::chrono::milliseconds> resumePosition(
+    const LocalPlaybackRecord& record) {
+  if (record.durationMilliseconds <= 0 ||
+      record.positionMilliseconds < kMinimumResumePosition.count() ||
+      record.durationMilliseconds - record.positionMilliseconds <
+          kResumeEndGuard.count()) {
+    return std::nullopt;
+  }
+  return std::chrono::milliseconds(record.positionMilliseconds);
 }
 
 QString formatTime(const std::chrono::milliseconds value) {
@@ -319,11 +340,22 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
       static_cast<int>(kNetworkOpenTimeout.count() * 1000));
   connect(networkOpenTimeoutTimer_, &QTimer::timeout, this,
           &PlayerPresenter::handleNetworkOpenTimeout);
+  appStatePersistTimer_ = new QTimer(this);
+  appStatePersistTimer_->setObjectName(
+      QStringLiteral("appStatePersistTimer"));
+  appStatePersistTimer_->setSingleShot(true);
+  appStatePersistTimer_->setInterval(
+      static_cast<int>(kAppStatePersistDelay.count() * 1000));
+  connect(appStatePersistTimer_, &QTimer::timeout, this, [this] {
+    persistAppState();
+    updateRecentLocalMediaView();
+  });
   restoreAppState();
   window_.setPlaylistModels(&localPlaylistModel_, &livePlaylistModel_);
   window_.setLivePlaylistUrl(lastLivePlaylistUrl_);
   window_.setLivePlaylistHistoryUrls(livePlaylistUrlHistory_);
   window_.setLiveSourceMemos(liveSourceMemos_);
+  updateRecentLocalMediaView();
   connect(&window_, &MainWindow::localFilesSelected, this,
           &PlayerPresenter::addLocalFiles);
   connect(&window_, &MainWindow::networkUrlSelected, this,
@@ -336,6 +368,10 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
           &PlayerPresenter::updateLivePlaylistHistory);
   connect(&window_, &MainWindow::liveSourceMemosChanged, this,
           &PlayerPresenter::updateLiveSourceMemos);
+  connect(&window_, &MainWindow::recentLocalMediaSelected, this,
+          &PlayerPresenter::openRecentLocalMedia);
+  connect(&window_, &MainWindow::recentLocalMediaClearRequested, this,
+          &PlayerPresenter::clearRecentLocalMedia);
   connect(&window_, &MainWindow::playlistKindSelected, this,
           &PlayerPresenter::changePlaylistKind);
   connect(&window_, &MainWindow::playRequested, this,
@@ -628,6 +664,13 @@ void PlayerPresenter::openCurrentPlaylistItem(const PlaylistKind playlistKind,
   if (item == nullptr) {
     return;
   }
+  if (currentPlaybackItem_.has_value() &&
+      currentPlaybackItem_->source != item->source) {
+    updateCurrentLocalPlaybackProgress();
+    if (appStatePersistTimer_->isActive()) {
+      persistAppState();
+    }
+  }
   currentPlaybackItem_ = *item;
   currentPlaybackKind_ = playlistKind;
   openCurrentPlaybackItem(isNetworkRefresh);
@@ -665,7 +708,10 @@ void PlayerPresenter::openCurrentPlaybackItem(const bool isNetworkRefresh) {
                                      static_cast<int>(item.source.size())));
   isPreparingMedia_ = true;
   pendingRestartPosition_.reset();
+  pendingResumePosition_ =
+      isNetworkRefresh ? std::nullopt : resumePositionFor(item);
   isRestartPlayRequested_ = false;
+  isResumeSeekRequested_ = false;
   lastAppliedPlaybackRate_ = 1.0;
   hasCurrentMediaStarted_ = false;
   window_.clearPlaybackError();
@@ -685,17 +731,21 @@ void PlayerPresenter::shutdown() noexcept {
     return;
   }
 
+  updateCurrentLocalPlaybackProgress();
   isShuttingDown_ = true;
   lastLivePlaylistUrl_ = window_.livePlaylistUrl();
   persistAppState();
   networkOpenTimeoutTimer_->stop();
+  appStatePersistTimer_->stop();
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "shutdown");
   }
   isAutoPlayPending_ = false;
   isSeeking_ = false;
   pendingRestartPosition_.reset();
+  pendingResumePosition_.reset();
   isRestartPlayRequested_ = false;
+  isResumeSeekRequested_ = false;
   hasCurrentMediaStarted_ = false;
   seekPreviewPosition_.reset();
   livePlaylistService_->cancel();
@@ -770,11 +820,18 @@ void PlayerPresenter::requestStop() {
     isAutoPlayPending_ = false;
     isSeeking_ = false;
     pendingRestartPosition_.reset();
+    pendingResumePosition_.reset();
     isRestartPlayRequested_ = false;
+    isResumeSeekRequested_ = false;
     hasCurrentMediaStarted_ = false;
     seekPreviewPosition_.reset();
     isNetworkRefreshPending_ = false;
     isNetworkDisconnected_ = false;
+    if (!isNetworkMedia_) {
+      clearCurrentLocalResumePosition();
+      persistAppState();
+      updateRecentLocalMediaView();
+    }
     if (cancelsNetworkOperation) {
       networkOpenTimeoutTimer_->stop();
       isNetworkOpenPending_ = false;
@@ -860,6 +917,8 @@ void PlayerPresenter::submitSeek(const std::chrono::milliseconds target) {
       stateMachine_.state() == core::PlaybackState::Ended;
   isSeeking_ = false;
   seekPreviewPosition_.reset();
+  pendingResumePosition_.reset();
+  isResumeSeekRequested_ = false;
   position_.current = boundedPosition(target, position_.total);
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Info, "presenter", "seek_requested",
@@ -1084,7 +1143,9 @@ void PlayerPresenter::removePlaylistItems(QList<int> rows) {
   isAutoPlayPending_ = false;
   isSeeking_ = false;
   pendingRestartPosition_.reset();
+  pendingResumePosition_.reset();
   isRestartPlayRequested_ = false;
+  isResumeSeekRequested_ = false;
   seekPreviewPosition_.reset();
   position_ = {};
   mediaName_ = QStringLiteral("未选择媒体");
@@ -1148,6 +1209,7 @@ void PlayerPresenter::toggleLivePlaylistFavorite(const int row) {
     favoriteLiveSources_.erase(favoriteItem);
   }
   livePlaylistModel_.refreshItem(row);
+  persistAppState();
 }
 
 void PlayerPresenter::movePlaylistItem(const int row, const int targetRow) {
@@ -1242,7 +1304,9 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
   }
   if (state == core::PlaybackState::Failed) {
     pendingRestartPosition_.reset();
+    pendingResumePosition_.reset();
     isRestartPlayRequested_ = false;
+    isResumeSeekRequested_ = false;
   }
 
   const auto result = stateMachine_.transitionTo(state);
@@ -1264,6 +1328,14 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     const double effectiveRate = isTemporaryFastPlayback_ ? 2.0 : playbackRate_;
     applyPlaybackRate(effectiveRate);
     hasCurrentMediaStarted_ = true;
+    if (!isNetworkMedia_) {
+      rememberCurrentLocalMedia();
+      tryApplyPendingResumePosition();
+    }
+  } else if (state == core::PlaybackState::Paused && !isNetworkMedia_) {
+    updateCurrentLocalPlaybackProgress();
+    persistAppState();
+    updateRecentLocalMediaView();
   } else if (state == core::PlaybackState::Stopped ||
              state == core::PlaybackState::Failed) {
     if (isNetworkMedia_) {
@@ -1324,7 +1396,20 @@ void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
         position.total = total;
       }
     }
+    if (pendingResumePosition_.has_value() && isResumeSeekRequested_) {
+      const auto confirmationFloor =
+          *pendingResumePosition_ - std::chrono::seconds(2);
+      if (position.current >= confirmationFloor) {
+        pendingResumePosition_.reset();
+        isResumeSeekRequested_ = false;
+      } else {
+        position.current =
+            boundedPosition(*pendingResumePosition_, position.total);
+      }
+    }
     position_ = std::move(position);
+    tryApplyPendingResumePosition();
+    updateCurrentLocalPlaybackProgress();
     if (!isSeeking_) {
       render();
     }
@@ -1343,6 +1428,7 @@ void PlayerPresenter::handleDurationChanged(const OptionalDuration duration) {
                duration.has_value()) {
       position_.current = *duration;
     }
+    tryApplyPendingResumePosition();
     if (!isSeeking_) {
       render();
     }
@@ -1404,9 +1490,17 @@ void PlayerPresenter::handleEndReached() {
     return;
   }
 
+  if (position_.total.has_value()) {
+    position_.current = *position_.total;
+  }
   hasCurrentMediaStarted_ = false;
   pendingRestartPosition_.reset();
+  pendingResumePosition_.reset();
   isRestartPlayRequested_ = false;
+  isResumeSeekRequested_ = false;
+  clearCurrentLocalResumePosition();
+  persistAppState();
+  updateRecentLocalMediaView();
   if (currentPlaybackKind_.has_value() &&
       playlist(*currentPlaybackKind_).advanceAfterEnd()) {
     playlistModel(*currentPlaybackKind_).refresh();
@@ -1414,9 +1508,6 @@ void PlayerPresenter::handleEndReached() {
     return;
   }
 
-  if (position_.total.has_value()) {
-    position_.current = *position_.total;
-  }
   const auto result = stateMachine_.transitionTo(core::PlaybackState::Ended);
   if (result != core::PlaybackTransitionResult::Rejected) {
     isSeeking_ = false;
@@ -1437,7 +1528,9 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
   isAutoPlayPending_ = false;
   isSeeking_ = false;
   pendingRestartPosition_.reset();
+  pendingResumePosition_.reset();
   isRestartPlayRequested_ = false;
+  isResumeSeekRequested_ = false;
   seekPreviewPosition_.reset();
   isPreparingMedia_ = false;
   hasCurrentMediaStarted_ = false;
@@ -1547,6 +1640,188 @@ void PlayerPresenter::updateLiveSourceMemos(
   persistAppState();
 }
 
+void PlayerPresenter::openRecentLocalMedia(const QString& filePath) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || filePath.trimmed().isEmpty()) {
+    return;
+  }
+  const QString identity = localPathIdentity(filePath);
+  const QFileInfo fileInfo(filePath);
+  if (!fileInfo.exists() || !fileInfo.isFile()) {
+    recentLocalMedia_.erase(
+        std::remove_if(recentLocalMedia_.begin(), recentLocalMedia_.end(),
+                       [&identity](const LocalPlaybackRecord& record) {
+                         return localPathIdentity(fromUtf8(record.item.source)) ==
+                                identity;
+                       }),
+        recentLocalMedia_.end());
+    persistAppState();
+    updateRecentLocalMediaView();
+    window_.showPlaybackError(
+        QStringLiteral("最近播放文件已不存在，记录已移除。"));
+    return;
+  }
+
+  for (std::size_t index = 0; index < localPlaylist_.size(); ++index) {
+    if (localPathIdentity(fromUtf8(localPlaylist_.at(index).source)) ==
+        identity) {
+      static_cast<void>(localPlaylist_.select(index));
+      activePlaylistKind_ = PlaylistKind::Local;
+      localPlaylistModel_.refresh();
+      openCurrentPlaylistItem(PlaylistKind::Local);
+      return;
+    }
+  }
+  addLocalFiles(QStringList{filePath});
+}
+
+void PlayerPresenter::clearRecentLocalMedia() {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || recentLocalMedia_.empty()) {
+    return;
+  }
+  recentLocalMedia_.clear();
+  pendingResumePosition_.reset();
+  isResumeSeekRequested_ = false;
+  persistAppState();
+  updateRecentLocalMediaView();
+}
+
+void PlayerPresenter::rememberCurrentLocalMedia() {
+  if (currentPlaybackKind_ != PlaylistKind::Local ||
+      !currentPlaybackItem_.has_value()) {
+    return;
+  }
+  const QString identity =
+      localPathIdentity(fromUtf8(currentPlaybackItem_->source));
+  LocalPlaybackRecord record{*currentPlaybackItem_, 0, -1};
+  const auto existing = std::find_if(
+      recentLocalMedia_.begin(), recentLocalMedia_.end(),
+      [&identity](const LocalPlaybackRecord& value) {
+        return localPathIdentity(fromUtf8(value.item.source)) == identity;
+      });
+  if (existing != recentLocalMedia_.end()) {
+    record.positionMilliseconds = existing->positionMilliseconds;
+    record.durationMilliseconds = existing->durationMilliseconds;
+    recentLocalMedia_.erase(existing);
+  }
+  recentLocalMedia_.insert(recentLocalMedia_.begin(), std::move(record));
+  if (recentLocalMedia_.size() > kMaxRecentLocalMedia) {
+    recentLocalMedia_.resize(kMaxRecentLocalMedia);
+  }
+  persistAppState();
+  updateRecentLocalMediaView();
+}
+
+void PlayerPresenter::clearCurrentLocalResumePosition() {
+  if (currentPlaybackKind_ != PlaylistKind::Local ||
+      !currentPlaybackItem_.has_value()) {
+    return;
+  }
+  const QString identity =
+      localPathIdentity(fromUtf8(currentPlaybackItem_->source));
+  const auto record = std::find_if(
+      recentLocalMedia_.begin(), recentLocalMedia_.end(),
+      [&identity](const LocalPlaybackRecord& value) {
+        return localPathIdentity(fromUtf8(value.item.source)) == identity;
+      });
+  if (record != recentLocalMedia_.end()) {
+    record->positionMilliseconds = 0;
+    if (position_.total.has_value()) {
+      record->durationMilliseconds = position_.total->count();
+    }
+  }
+}
+
+void PlayerPresenter::updateCurrentLocalPlaybackProgress() {
+  if (isNetworkMedia_ || currentPlaybackKind_ != PlaylistKind::Local ||
+      !currentPlaybackItem_.has_value() ||
+      pendingResumePosition_.has_value()) {
+    return;
+  }
+  const QString identity =
+      localPathIdentity(fromUtf8(currentPlaybackItem_->source));
+  const auto record = std::find_if(
+      recentLocalMedia_.begin(), recentLocalMedia_.end(),
+      [&identity](const LocalPlaybackRecord& value) {
+        return localPathIdentity(fromUtf8(value.item.source)) == identity;
+      });
+  if (record == recentLocalMedia_.end()) {
+    return;
+  }
+
+  const qint64 duration =
+      position_.total.has_value() ? position_.total->count() : -1;
+  LocalPlaybackRecord candidate = *record;
+  candidate.durationMilliseconds = duration;
+  candidate.positionMilliseconds = position_.current.count();
+  if (!resumePosition(candidate).has_value()) {
+    candidate.positionMilliseconds = 0;
+  }
+  if (record->positionMilliseconds == candidate.positionMilliseconds &&
+      record->durationMilliseconds == candidate.durationMilliseconds) {
+    return;
+  }
+  record->positionMilliseconds = candidate.positionMilliseconds;
+  record->durationMilliseconds = candidate.durationMilliseconds;
+  scheduleAppStatePersist();
+}
+
+void PlayerPresenter::updateRecentLocalMediaView() {
+  QVector<RecentLocalMediaItem> items;
+  items.reserve(static_cast<int>(recentLocalMedia_.size()));
+  for (const LocalPlaybackRecord& record : recentLocalMedia_) {
+    QString label = fromUtf8(record.item.displayName);
+    if (const auto position = resumePosition(record); position.has_value()) {
+      label = QStringLiteral("%1  —  继续 %2").arg(label,
+                                                   formatTime(*position));
+    }
+    items.append(RecentLocalMediaItem{fromUtf8(record.item.source), label});
+  }
+  window_.setRecentLocalMedia(items);
+}
+
+void PlayerPresenter::scheduleAppStatePersist() {
+  if (appStateStore_ != nullptr && !isShuttingDown_ &&
+      !appStatePersistTimer_->isActive()) {
+    appStatePersistTimer_->start();
+  }
+}
+
+void PlayerPresenter::tryApplyPendingResumePosition() {
+  if (!pendingResumePosition_.has_value() || isResumeSeekRequested_ ||
+      isNetworkMedia_ || currentPlaybackKind_ != PlaylistKind::Local ||
+      stateMachine_.state() != core::PlaybackState::Playing ||
+      !position_.isSeekable || !position_.total.has_value()) {
+    return;
+  }
+  const auto target =
+      boundedPosition(*pendingResumePosition_, position_.total);
+  if (target < kMinimumResumePosition ||
+      *position_.total - target < kResumeEndGuard) {
+    pendingResumePosition_.reset();
+    return;
+  }
+  isResumeSeekRequested_ = true;
+  position_.current = target;
+  engine_.seek(target);
+}
+
+std::optional<std::chrono::milliseconds> PlayerPresenter::resumePositionFor(
+    const core::MediaItem& item) const {
+  if (item.kind != core::MediaSourceKind::LocalFile) {
+    return std::nullopt;
+  }
+  const QString identity = localPathIdentity(fromUtf8(item.source));
+  const auto record = std::find_if(
+      recentLocalMedia_.begin(), recentLocalMedia_.end(),
+      [&identity](const LocalPlaybackRecord& value) {
+        return localPathIdentity(fromUtf8(value.item.source)) == identity;
+      });
+  return record == recentLocalMedia_.end() ? std::nullopt
+                                           : resumePosition(*record);
+}
+
 void PlayerPresenter::restoreAppState() {
   if (appStateStore_ == nullptr) {
     return;
@@ -1572,6 +1847,40 @@ void PlayerPresenter::restoreAppState() {
         break;
       }
     }
+    for (const QString& value : snapshot.favoriteLiveSourceUrls) {
+      const QString url = value.trimmed();
+      if (!url.isEmpty()) {
+        favoriteLiveSources_.insert(utf8String(url));
+      }
+      if (favoriteLiveSources_.size() == kMaxFavoriteLiveSources) {
+        break;
+      }
+    }
+    for (LocalPlaybackRecord& record : snapshot.recentLocalMedia) {
+      if (record.item.kind != core::MediaSourceKind::LocalFile ||
+          record.item.source.empty() || record.item.displayName.empty()) {
+        continue;
+      }
+      const QString identity = localPathIdentity(fromUtf8(record.item.source));
+      const bool isDuplicate = std::any_of(
+          recentLocalMedia_.begin(), recentLocalMedia_.end(),
+          [&identity](const LocalPlaybackRecord& existing) {
+            return localPathIdentity(fromUtf8(existing.item.source)) ==
+                   identity;
+          });
+      if (isDuplicate) {
+        continue;
+      }
+      record.positionMilliseconds =
+          std::max<qint64>(0, record.positionMilliseconds);
+      if (!resumePosition(record).has_value()) {
+        record.positionMilliseconds = 0;
+      }
+      recentLocalMedia_.push_back(std::move(record));
+      if (recentLocalMedia_.size() == kMaxRecentLocalMedia) {
+        break;
+      }
+    }
     for (const LiveSourceMemo& memo : snapshot.liveSourceMemos) {
       const QString sourceUrl = memo.sourceUrl.trimmed();
       if (!sourceUrl.isEmpty()) {
@@ -1584,11 +1893,15 @@ void PlayerPresenter::restoreAppState() {
           logging::LogLevel::Info, "presenter", "app_state_restored",
           {{"local_items", std::to_string(localPlaylist_.size())},
            {"live_history", std::to_string(livePlaylistUrlHistory_.size())},
+           {"live_favorites", std::to_string(favoriteLiveSources_.size())},
+           {"recent_local", std::to_string(recentLocalMedia_.size())},
            {"live_memos", std::to_string(liveSourceMemos_.size())}});
     }
   } catch (...) {
     localPlaylist_.clear();
     livePlaylistUrlHistory_.clear();
+    favoriteLiveSources_.clear();
+    recentLocalMedia_.clear();
     liveSourceMemos_.clear();
     lastLivePlaylistUrl_.clear();
     if (logger_ != nullptr) {
@@ -1599,6 +1912,9 @@ void PlayerPresenter::restoreAppState() {
 }
 
 void PlayerPresenter::persistAppState() noexcept {
+  if (appStatePersistTimer_ != nullptr) {
+    appStatePersistTimer_->stop();
+  }
   if (appStateStore_ == nullptr) {
     return;
   }
@@ -1610,6 +1926,14 @@ void PlayerPresenter::persistAppState() noexcept {
     }
     snapshot.lastLivePlaylistUrl = lastLivePlaylistUrl_;
     snapshot.livePlaylistUrlHistory = livePlaylistUrlHistory_;
+    snapshot.recentLocalMedia = recentLocalMedia_;
+    snapshot.favoriteLiveSourceUrls.reserve(
+        static_cast<int>(favoriteLiveSources_.size()));
+    for (const std::string& source : favoriteLiveSources_) {
+      snapshot.favoriteLiveSourceUrls.append(fromUtf8(source));
+    }
+    std::sort(snapshot.favoriteLiveSourceUrls.begin(),
+              snapshot.favoriteLiveSourceUrls.end());
     snapshot.liveSourceMemos = liveSourceMemos_;
     appStateStore_->save(snapshot);
   } catch (...) {
