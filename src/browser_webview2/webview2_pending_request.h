@@ -57,6 +57,22 @@ inline HRESULT firstFailure(const HRESULT current,
     return FAILED(current) ? current : candidate;
 }
 
+// 标准权限准备失败时不依赖 Args3，也必须拒绝并完成已取得的 deferral。
+template <typename BaseArgs, typename Args3, typename Deferral>
+HRESULT completePermissionRejection(BaseArgs* const baseArgs,
+                                    Args3* const args3,
+                                    Deferral* const deferral) noexcept {
+    if (baseArgs == nullptr || deferral == nullptr) {
+        return E_POINTER;
+    }
+    HRESULT result =
+        baseArgs->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+    if (args3 != nullptr) {
+        result = firstFailure(result, args3->put_SavesInProfile(FALSE));
+    }
+    return firstFailure(result, deferral->Complete());
+}
+
 template <typename Args, typename Deferral>
 HRESULT completePermissionDecision(
     Args* const args, Deferral* const deferral,
@@ -72,6 +88,21 @@ HRESULT completePermissionDecision(
         wantsAllow && SUCCEEDED(result) ? COREWEBVIEW2_PERMISSION_STATE_ALLOW
                                        : COREWEBVIEW2_PERMISSION_STATE_DENY;
     result = firstFailure(result, args->put_State(state));
+    return firstFailure(result, deferral->Complete());
+}
+
+// 屏幕捕获没有 Profile 记忆语义，只有显式“仅本次允许”才解除取消状态。
+template <typename Args, typename Deferral>
+HRESULT completeScreenCaptureDecision(
+    Args* const args, Deferral* const deferral,
+    const gui::BrowserPermissionDecision decision) noexcept {
+    if (args == nullptr || deferral == nullptr) {
+        return E_POINTER;
+    }
+    const BOOL isCancelled =
+        decision == gui::BrowserPermissionDecision::AllowOnce ? FALSE : TRUE;
+    HRESULT result = args->put_Cancel(isCancelled);
+    result = firstFailure(result, args->put_Handled(TRUE));
     return firstFailure(result, deferral->Complete());
 }
 
@@ -128,14 +159,21 @@ inline bool isSafeDownloadDestination(const QString& destination) {
     return !reservedName.match(stem).hasMatch();
 }
 
-template <typename Args, typename Deferral>
-HRESULT completeDownloadPathDecision(Args* const args, Deferral* const deferral,
+template <typename Args, typename Operation, typename Deferral>
+HRESULT completeDownloadCancellation(Args* args, Operation* operation,
+                                     Deferral* deferral) noexcept;
+
+template <typename Args, typename Operation, typename Deferral>
+HRESULT completeDownloadPathDecision(Args* const args, Operation* const operation,
+                                     Deferral* const deferral,
                                      const QString& destination) {
-    if (args == nullptr || deferral == nullptr) {
+    if (args == nullptr || operation == nullptr || deferral == nullptr) {
         return E_POINTER;
     }
     if (!isSafeDownloadDestination(destination)) {
-        return E_INVALIDARG;
+        return firstFailure(
+            E_INVALIDARG,
+            completeDownloadCancellation(args, operation, deferral));
     }
     const std::wstring nativeDestination =
         QDir::toNativeSeparators(QDir::cleanPath(destination)).toStdWString();
@@ -143,7 +181,16 @@ HRESULT completeDownloadPathDecision(Args* const args, Deferral* const deferral,
     if (SUCCEEDED(result)) {
         result = args->put_Cancel(FALSE);
     }
-    return firstFailure(result, deferral->Complete());
+    if (FAILED(result)) {
+        return firstFailure(
+            result, completeDownloadCancellation(args, operation, deferral));
+    }
+    const HRESULT completeResult = deferral->Complete();
+    if (FAILED(completeResult)) {
+        static_cast<void>(args->put_Cancel(TRUE));
+        static_cast<void>(operation->Cancel());
+    }
+    return completeResult;
 }
 
 template <typename Args, typename Operation, typename Deferral>
@@ -155,6 +202,28 @@ HRESULT completeDownloadCancellation(Args* const args, Operation* const operatio
     HRESULT result = args->put_Cancel(TRUE);
     result = firstFailure(result, operation->Cancel());
     return firstFailure(result, deferral->Complete());
+}
+
+// 协调下载从待决定到活动状态；任一失败都会在返回前撤销订阅并完成 deferral。
+template <typename Active, typename Register, typename Store, typename Complete,
+          typename Reject, typename Remove>
+HRESULT startDownloadTransaction(Active& active, Register&& registerActive,
+                                 Store&& storeActive, Complete&& completeDecision,
+                                 Reject&& rejectPending, Remove&& removeActive) {
+    const HRESULT registrationResult = registerActive(active);
+    if (FAILED(registrationResult)) {
+        active.resetSubscriptions();
+        return firstFailure(registrationResult, rejectPending());
+    }
+    if (!storeActive(active)) {
+        active.resetSubscriptions();
+        return firstFailure(E_UNEXPECTED, rejectPending());
+    }
+    const HRESULT decisionResult = completeDecision();
+    if (FAILED(decisionResult)) {
+        removeActive();
+    }
+    return decisionResult;
 }
 
 }  // namespace mediahub::browser_webview2

@@ -15,10 +15,12 @@
 
 #include <cstdint>
 #include <functional>
+#include <sstream>
 
 #include "browser_event_listener.h"
 #include "browser_profile_directory.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
+#include "mediahub/logging/logger.h"
 #include "webview2_default_deny.h"
 #include "webview2_pending_request.h"
 #include "webview2_state.h"
@@ -171,6 +173,17 @@ class FakeDownloadOperation final {
     HRESULT result{S_OK};
 };
 
+class FakeActiveDownload final {
+ public:
+    void resetSubscriptions() noexcept {
+        ++resetCalls;
+        hasSubscription = false;
+    }
+
+    int resetCalls{0};
+    bool hasSubscription{false};
+};
+
 // 调用线程：GUI 主线程，在有界事件循环中等待明确谓词。
 bool waitUntil(const std::function<bool()>& predicate, const qint64 timeoutMilliseconds) {
     QElapsedTimer timer;
@@ -316,7 +329,10 @@ class WebView2BrowserTest final : public QObject {
     void navigationUsesCurrentGenerationForHistory();
     void defaultDenyPoliciesApplyExactArguments();
     void pendingSensitiveDecisionsCompleteExactlyOnce();
+    void permissionRejectionCompletesWithoutArgs3();
+    void screenCaptureDecisionsAllowOnlyOnce();
     void downloadDecisionRejectsUnsafeDestination();
+    void downloadStartFailuresCompleteAndCleanSubscriptions();
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
     void requiresEverySensitiveHandlerBeforeReady();
@@ -510,6 +526,18 @@ void WebView2BrowserTest::pendingSensitiveDecisionsCompleteExactlyOnce() {
     QCOMPARE(permission.state, COREWEBVIEW2_PERMISSION_STATE_ALLOW);
     QCOMPARE(permissionDeferral.calls, 1);
 
+    FakePermissionDecisionArgs deniedPermission;
+    FakeDeferral deniedPermissionDeferral;
+    QCOMPARE(completePermissionDecision(
+                 &deniedPermission, &deniedPermissionDeferral,
+                 gui::BrowserPermissionDecision::Deny),
+             S_OK);
+    QCOMPARE(deniedPermission.saveCalls, 1);
+    QCOMPARE(deniedPermission.savesInProfile, FALSE);
+    QCOMPARE(deniedPermission.stateCalls, 1);
+    QCOMPARE(deniedPermission.state, COREWEBVIEW2_PERMISSION_STATE_DENY);
+    QCOMPARE(deniedPermissionDeferral.calls, 1);
+
     FakePermissionDecisionArgs allowOnce;
     FakeDeferral allowOnceDeferral;
     QCOMPARE(completePermissionDecision(
@@ -527,6 +555,14 @@ void WebView2BrowserTest::pendingSensitiveDecisionsCompleteExactlyOnce() {
     QCOMPARE(external.cancel, FALSE);
     QCOMPARE(externalDeferral.calls, 1);
 
+    FakeCancelArgs deniedExternal;
+    FakeDeferral deniedExternalDeferral;
+    QCOMPARE(completeExternalProtocolDecision(
+                 &deniedExternal, &deniedExternalDeferral, false),
+             S_OK);
+    QCOMPARE(deniedExternal.cancel, TRUE);
+    QCOMPARE(deniedExternalDeferral.calls, 1);
+
     FakeCertificateArgs certificate;
     FakeDeferral certificateDeferral;
     QCOMPARE(completeCertificateDecision(
@@ -536,6 +572,89 @@ void WebView2BrowserTest::pendingSensitiveDecisionsCompleteExactlyOnce() {
     QCOMPARE(certificate.action,
              COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);
     QCOMPARE(certificateDeferral.calls, 1);
+
+    FakeCertificateArgs safeCertificate;
+    FakeDeferral safeCertificateDeferral;
+    QCOMPARE(completeCertificateDecision(
+                 &safeCertificate, &safeCertificateDeferral,
+                 gui::BrowserCertificateDecision::ReturnToSafety),
+             S_OK);
+    QCOMPARE(safeCertificate.action,
+             COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);
+    QCOMPARE(safeCertificateDeferral.calls, 1);
+}
+
+void WebView2BrowserTest::permissionRejectionCompletesWithoutArgs3() {
+    FakePermissionArgs baseArgs;
+    FakePermissionDecisionArgs args3;
+    FakeDeferral deferral;
+    QCOMPARE(completePermissionRejection(&baseArgs, &args3, &deferral), S_OK);
+    QCOMPARE(baseArgs.calls, 1);
+    QCOMPARE(baseArgs.state, COREWEBVIEW2_PERMISSION_STATE_DENY);
+    QCOMPARE(args3.saveCalls, 1);
+    QCOMPARE(args3.savesInProfile, FALSE);
+    QCOMPARE(deferral.calls, 1);
+
+    FakePermissionArgs noArgs3Base;
+    FakeDeferral noArgs3Deferral;
+    QCOMPARE(completePermissionRejection(
+                 &noArgs3Base,
+                 static_cast<FakePermissionDecisionArgs*>(nullptr),
+                 &noArgs3Deferral),
+             S_OK);
+    QCOMPARE(noArgs3Base.calls, 1);
+    QCOMPARE(noArgs3Base.state, COREWEBVIEW2_PERMISSION_STATE_DENY);
+    QCOMPARE(noArgs3Deferral.calls, 1);
+
+    FakePermissionArgs failedArgs3Base;
+    FakePermissionDecisionArgs failedArgs3;
+    failedArgs3.saveResult = E_FAIL;
+    FakeDeferral failedArgs3Deferral;
+    QCOMPARE(completePermissionRejection(
+                 &failedArgs3Base, &failedArgs3, &failedArgs3Deferral),
+             E_FAIL);
+    QCOMPARE(failedArgs3Base.calls, 1);
+    QCOMPARE(failedArgs3Base.state, COREWEBVIEW2_PERMISSION_STATE_DENY);
+    QCOMPARE(failedArgs3.saveCalls, 1);
+    QCOMPARE(failedArgs3Deferral.calls, 1);
+}
+
+void WebView2BrowserTest::screenCaptureDecisionsAllowOnlyOnce() {
+    FakeDownloadArgs allowOnce;
+    FakeDeferral allowOnceDeferral;
+    QCOMPARE(completeScreenCaptureDecision(
+                 &allowOnce, &allowOnceDeferral,
+                 gui::BrowserPermissionDecision::AllowOnce),
+             S_OK);
+    QCOMPARE(allowOnce.cancelCalls, 1);
+    QCOMPARE(allowOnce.cancel, FALSE);
+    QCOMPARE(allowOnce.handledCalls, 1);
+    QCOMPARE(allowOnce.handled, TRUE);
+    QCOMPARE(allowOnceDeferral.calls, 1);
+
+    FakeDownloadArgs denied;
+    FakeDeferral deniedDeferral;
+    QCOMPARE(completeScreenCaptureDecision(
+                 &denied, &deniedDeferral,
+                 gui::BrowserPermissionDecision::Deny),
+             S_OK);
+    QCOMPARE(denied.cancelCalls, 1);
+    QCOMPARE(denied.cancel, TRUE);
+    QCOMPARE(denied.handledCalls, 1);
+    QCOMPARE(denied.handled, TRUE);
+    QCOMPARE(deniedDeferral.calls, 1);
+
+    FakeDownloadArgs rememberRejected;
+    FakeDeferral rememberRejectedDeferral;
+    QCOMPARE(completeScreenCaptureDecision(
+                 &rememberRejected, &rememberRejectedDeferral,
+                 gui::BrowserPermissionDecision::RememberForOrigin),
+             S_OK);
+    QCOMPARE(rememberRejected.cancelCalls, 1);
+    QCOMPARE(rememberRejected.cancel, TRUE);
+    QCOMPARE(rememberRejected.handledCalls, 1);
+    QCOMPARE(rememberRejected.handled, TRUE);
+    QCOMPARE(rememberRejectedDeferral.calls, 1);
 }
 
 void WebView2BrowserTest::downloadDecisionRejectsUnsafeDestination() {
@@ -557,7 +676,9 @@ void WebView2BrowserTest::downloadDecisionRejectsUnsafeDestination() {
     QVERIFY(isSafeDownloadDestination(newPath));
     FakeDownloadDecisionArgs args;
     FakeDeferral deferral;
-    QCOMPARE(completeDownloadPathDecision(&args, &deferral, newPath), S_OK);
+    FakeDownloadOperation pathOperation;
+    QCOMPARE(completeDownloadPathDecision(&args, &pathOperation, &deferral, newPath),
+             S_OK);
     QCOMPARE(args.pathCalls, 1);
     QCOMPARE(QDir::fromNativeSeparators(args.path),
              QDir::fromNativeSeparators(newPath));
@@ -575,6 +696,80 @@ void WebView2BrowserTest::downloadDecisionRejectsUnsafeDestination() {
     QCOMPARE(cancelArgs.cancel, TRUE);
     QCOMPARE(operation.cancelCalls, 1);
     QCOMPARE(cancelDeferral.calls, 1);
+}
+
+void WebView2BrowserTest::downloadStartFailuresCompleteAndCleanSubscriptions() {
+    struct ProbeResult final {
+        HRESULT result{S_OK};
+        bool didRemoveStoredDownload{false};
+        int argsCancelCalls{0};
+        BOOL argsCancel{FALSE};
+        int operationCancelCalls{0};
+        int deferralCalls{0};
+        int subscriptionResetCalls{0};
+        bool hasSubscription{false};
+    };
+    const auto runFailure = [](const HRESULT registrationResult,
+                               const bool canStore,
+                               const QString& destination) -> ProbeResult {
+        FakeDownloadDecisionArgs args;
+        FakeDownloadOperation operation;
+        FakeDeferral deferral;
+        FakeActiveDownload active;
+        bool didRemoveStoredDownload = false;
+
+        const HRESULT result = startDownloadTransaction(
+            active,
+            [registrationResult](FakeActiveDownload& candidate) {
+                candidate.hasSubscription = true;
+                return registrationResult;
+            },
+            [canStore](FakeActiveDownload&) { return canStore; },
+            [&] {
+                return completeDownloadPathDecision(
+                    &args, &operation, &deferral, destination);
+            },
+            [&] {
+                return completeDownloadCancellation(&args, &operation, &deferral);
+            },
+            [&] {
+                didRemoveStoredDownload = true;
+                active.resetSubscriptions();
+            });
+
+        return {result,
+                didRemoveStoredDownload,
+                args.cancelCalls,
+                args.cancel,
+                operation.cancelCalls,
+                deferral.calls,
+                active.resetCalls,
+                active.hasSubscription};
+    };
+    const auto verifyFailure = [](const ProbeResult& probe,
+                                  const HRESULT expectedResult,
+                                  const bool expectedRemoval) {
+        QCOMPARE(probe.result, expectedResult);
+        QCOMPARE(probe.didRemoveStoredDownload, expectedRemoval);
+        QCOMPARE(probe.argsCancelCalls, 1);
+        QCOMPARE(probe.argsCancel, TRUE);
+        QCOMPARE(probe.operationCancelCalls, 1);
+        QCOMPARE(probe.deferralCalls, 1);
+        QCOMPARE(probe.subscriptionResetCalls, 1);
+        QVERIFY(!probe.hasSubscription);
+    };
+
+    const auto registrationFailure =
+        runFailure(E_FAIL, true, QStringLiteral("C:/unused.bin"));
+    verifyFailure(registrationFailure, E_FAIL, false);
+
+    const auto storageFailure =
+        runFailure(S_OK, false, QStringLiteral("C:/unused.bin"));
+    verifyFailure(storageFailure, E_UNEXPECTED, false);
+
+    const auto destinationRace =
+        runFailure(S_OK, true, QStringLiteral("relative-after-dialog.bin"));
+    verifyFailure(destinationRace, E_INVALIDARG, true);
 }
 
 void WebView2BrowserTest::rejectsEmptyAndRelativeProfilePaths() {
@@ -621,6 +816,7 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
 
     const QStringList requiredRegistrations{
         QStringLiteral("registerPermissionRequested()"),
+        QStringLiteral("registerScreenCaptureStarting()"),
         QStringLiteral("registerDownloadStarting()"),
         QStringLiteral("registerServerCertificateErrorDetected()"),
         QStringLiteral("registerLaunchingExternalUriScheme()"),
@@ -640,10 +836,22 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     };
     const QList<QPair<QString, QStringList>> handlerPolicies{
         {handlerSegment(QStringLiteral("HRESULT registerPermissionRequested()"),
-                        QStringLiteral("HRESULT registerDownloadStarting()")),
+                        QStringLiteral("HRESULT registerScreenCaptureStarting()")),
          {QStringLiteral("GetDeferral"),
-          QStringLiteral("denyPermission(args)"),
+          QStringLiteral("rejectPermissionRequest(args)"),
           QStringLiteral("pendingPermissions_.insert"),
+          QStringLiteral("onPermissionRequested")}},
+        {handlerSegment(QStringLiteral("HRESULT registerScreenCaptureStarting()"),
+                        QStringLiteral("HRESULT registerDownloadStarting()")),
+         {QStringLiteral("ICoreWebView2_27"),
+          QStringLiteral("add_ScreenCaptureStarting"),
+          QStringLiteral("put_Cancel(TRUE)"),
+          QStringLiteral("put_Handled(TRUE)"),
+          QStringLiteral("get_OriginalSourceFrameInfo"),
+          QStringLiteral("get_Source"),
+          QStringLiteral("GetDeferral"),
+          QStringLiteral("pendingScreenCaptures_.insert"),
+          QStringLiteral("BrowserPermissionKind::ScreenCapture"),
           QStringLiteral("onPermissionRequested")}},
         {handlerSegment(QStringLiteral("HRESULT registerDownloadStarting()"),
                         QStringLiteral(
@@ -675,6 +883,40 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
             QVERIFY2(segment.contains(policy), qPrintable(policy));
         }
     }
+    const QString permissionHandler = handlerSegment(
+        QStringLiteral("HRESULT registerPermissionRequested()"),
+        QStringLiteral("HRESULT registerScreenCaptureStarting()"));
+    const int denyIndex = permissionHandler.indexOf(
+        QStringLiteral("args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY)"));
+    const int baseDeferralIndex =
+        permissionHandler.indexOf(QStringLiteral("baseArgs->GetDeferral"));
+    const int args2Index =
+        permissionHandler.indexOf(QStringLiteral("baseArgs.As(&args2)"));
+    const int args3Index =
+        permissionHandler.indexOf(QStringLiteral("baseArgs.As(&args3)"));
+    const int validationIndex =
+        permissionHandler.indexOf(QStringLiteral("origin.isEmpty()"));
+    const int rejectionIndex = permissionHandler.indexOf(
+        QStringLiteral("completePermissionRejection"));
+    QVERIFY(denyIndex >= 0);
+    QVERIFY(baseDeferralIndex > denyIndex);
+    QVERIFY(args2Index > baseDeferralIndex);
+    QVERIFY(args3Index > args2Index);
+    QVERIFY(validationIndex > args3Index);
+    QVERIFY(rejectionIndex > validationIndex);
+    QVERIFY(permissionHandler.contains(QStringLiteral("listener_ == nullptr")));
+    QVERIFY(!permissionHandler.contains(
+        QStringLiteral("FAILED(deferralStatus) || deferral == nullptr")));
+    const QString screenCaptureHandler = handlerSegment(
+        QStringLiteral("HRESULT registerScreenCaptureStarting()"),
+        QStringLiteral("HRESULT registerDownloadStarting()"));
+    QVERIFY(!screenCaptureHandler.contains(
+        QStringLiteral("FAILED(deferralResult) || deferral == nullptr")));
+    QVERIFY(screenCaptureHandler.contains(
+        QStringLiteral("pendingScreenCaptures_.insert")));
+    QVERIFY(source.contains(
+        QStringLiteral("pendingScreenCaptures_.take(requestId)")));
+    QVERIFY(source.contains(QStringLiteral("pendingScreenCaptures_.takeAll()")));
     const QString newWindowHandler =
         handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),
                        QStringLiteral("HRESULT registerNavigationStarting()"));
@@ -682,6 +924,7 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
 
     const QStringList requiredBindMarkers{
         QStringLiteral("permissionRequested_.bind"),
+        QStringLiteral("screenCaptureStarting_.bind"),
         QStringLiteral("downloadStarting_.bind"),
         QStringLiteral("serverCertificateErrorDetected_.bind"),
         QStringLiteral("launchingExternalUriScheme_.bind"),
@@ -721,6 +964,7 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     QVERIFY(source.contains(QStringLiteral("ClearServerCertificateErrorActions")));
     const QStringList requiredResetMarkers{
         QStringLiteral("permissionRequested_.reset"),
+        QStringLiteral("screenCaptureStarting_.reset"),
         QStringLiteral("downloadStarting_.reset"),
         QStringLiteral("serverCertificateErrorDetected_.reset"),
         QStringLiteral("launchingExternalUriScheme_.reset"),
@@ -752,7 +996,9 @@ void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {
     QTemporaryDir testProfile;
     QVERIFY(testProfile.isValid());
 
-    WebView2BrowserBackend backend;
+    std::ostringstream browserLog;
+    logging::Logger logger(browserLog);
+    WebView2BrowserBackend backend(&logger);
     RecordingBrowserListener listener;
     backend.setEventListener(&listener);
     backend.initialize(reinterpret_cast<void*>(testWindow.winId()), testProfile.path(),
@@ -763,7 +1009,11 @@ void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {
     QCOMPARE(listener.generation(), kGeneration);
     QVERIFY(!listener.wasCalledFromWrongThread());
     if (isRuntimeAvailable) {
-        QVERIFY(listener.isReady());
+        QVERIFY2(listener.isReady(),
+                 qPrintable(QStringLiteral("初始化错误 kind=%1 HRESULT=%2 log=%3")
+                                .arg(static_cast<int>(listener.errorKind()))
+                                .arg(listener.errorCode())
+                                .arg(QString::fromStdString(browserLog.str()))));
         QVERIFY(!listener.hasError());
     } else {
         QVERIFY(listener.hasError());

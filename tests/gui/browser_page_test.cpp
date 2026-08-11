@@ -6,6 +6,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 
 #include <limits>
@@ -27,9 +28,13 @@ class BrowserPageTest final : public QObject {
     void requiresConfirmationBeforeClearingBrowsingData();
     void routesNavigationToolbarCommands();
     void routesOriginAwarePermissionChoicesAndRejectsUnsafeRequests();
+    void screenCaptureAllowsOnlyCurrentRequest();
+    void replacedPermissionIgnoresLateUiSignals();
     void confirmsExternalProtocolsAndSessionCertificateExceptions();
     void validatesDownloadDestinationAndTracksOneTask();
+    void downloadTerminalStatesIgnoreStaleRequests();
     void navigationRejectsUnansweredSensitiveRequests();
+    void navigationKeepsStartedDownload();
     void detachesListenerAndShutsDownOnDestruction();
 };
 
@@ -99,10 +104,25 @@ void BrowserPageTest::requiresConfirmationBeforeClearingBrowsingData() {
     QTest::mouseClick(clearButton, Qt::LeftButton);
     dialog = page.findChild<QDialog*>(QStringLiteral("browserClearDataDialog"));
     QVERIFY(dialog != nullptr);
+    backend.emitPermissionRequested(100, QStringLiteral("https://old.example"),
+                                    BrowserPermissionKind::Camera);
+    backend.emitExternalProtocolRequested(
+        101, QStringLiteral("mailto:user@example.com"));
+    backend.emitCertificateErrorRequested(
+        102, QStringLiteral("https://old.example"),
+        QStringLiteral("服务器证书无效"));
+    backend.emitDownloadRequested(103, QStringLiteral("https://old.example"),
+                                  QStringLiteral("old.bin"), 100);
     QTest::mouseClick(
         dialog->findChild<QPushButton*>(QStringLiteral("browserClearDataConfirmButton")),
         Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerExternalProtocol), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerCertificateError), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 1);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::ClearBrowsingData), 1);
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::ClearBrowsingData);
     QCOMPARE(backend.lastCommand().generation, std::uint64_t{2});
 
     backend.emitError(2, BrowserErrorKind::ClearDataFailed, -1);
@@ -198,6 +218,73 @@ void BrowserPageTest::routesOriginAwarePermissionChoicesAndRejectsUnsafeRequests
                                     BrowserPermissionKind::Camera);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 5);
     QCOMPARE(backend.lastCommand().requestId, std::uint64_t{11});
+    QCOMPARE(backend.lastCommand().permissionDecision,
+             BrowserPermissionDecision::Deny);
+}
+
+void BrowserPageTest::screenCaptureAllowsOnlyCurrentRequest() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+
+    backend.emitPermissionRequested(12, QStringLiteral("https://share.example"),
+                                    BrowserPermissionKind::ScreenCapture);
+    auto* dialog = page.findChild<BrowserPermissionDialog*>(
+        QStringLiteral("browserPermissionDialog"));
+    QVERIFY(dialog != nullptr);
+    QCOMPARE(dialog->permissionText(), QStringLiteral("屏幕捕获"));
+    QVERIFY(dialog->findChild<QPushButton*>(
+                       QStringLiteral("browserPermissionAllowOnceButton"))
+                ->isEnabled());
+    QVERIFY(!dialog->findChild<QPushButton*>(
+                        QStringLiteral("browserPermissionRememberButton"))
+                 ->isEnabled());
+    auto* limitation = dialog->findChild<QLabel*>(
+        QStringLiteral("browserPermissionLimitationLabel"));
+    QVERIFY(limitation != nullptr);
+    QVERIFY(limitation->text().contains(QStringLiteral("仅本次")));
+
+    QTest::mouseClick(dialog->findChild<QPushButton*>(
+                          QStringLiteral("browserPermissionAllowOnceButton")),
+                      Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 1);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{12});
+    QCOMPARE(backend.lastCommand().permissionDecision,
+             BrowserPermissionDecision::AllowOnce);
+}
+
+void BrowserPageTest::replacedPermissionIgnoresLateUiSignals() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+
+    backend.emitPermissionRequested(60, QStringLiteral("https://old.example"),
+                                    BrowserPermissionKind::Camera);
+    auto* oldDialog = page.findChild<BrowserPermissionDialog*>(
+        QStringLiteral("browserPermissionDialog"));
+    QVERIFY(oldDialog != nullptr);
+    auto* oldAllow = oldDialog->findChild<QPushButton*>(
+        QStringLiteral("browserPermissionAllowOnceButton"));
+    auto* oldTimeout = oldDialog->findChild<QTimer*>(
+        QStringLiteral("browserPermissionTimeout"));
+    QVERIFY(oldAllow != nullptr);
+    QVERIFY(oldTimeout != nullptr);
+
+    backend.emitPermissionRequested(61, QStringLiteral("https://new.example"),
+                                    BrowserPermissionKind::Microphone);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 1);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{60});
+    QCOMPARE(backend.lastCommand().permissionDecision,
+             BrowserPermissionDecision::Deny);
+
+    oldAllow->click();
+    QVERIFY(QMetaObject::invokeMethod(oldTimeout, "timeout", Qt::DirectConnection));
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 1);
+
+    auto* currentDialog = page.findChild<BrowserPermissionDialog*>(
+        QStringLiteral("browserPermissionDialog"));
+    QVERIFY(currentDialog != nullptr);
+    currentDialog->reject();
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 2);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{61});
     QCOMPARE(backend.lastCommand().permissionDecision,
              BrowserPermissionDecision::Deny);
 }
@@ -330,6 +417,32 @@ void BrowserPageTest::validatesDownloadDestinationAndTracksOneTask() {
     QCOMPARE(backend.lastCommand().requestId, std::uint64_t{41});
 }
 
+void BrowserPageTest::downloadTerminalStatesIgnoreStaleRequests() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    auto* download = page.findChild<BrowserDownloadWidget*>(
+        QStringLiteral("browserDownloadWidget"));
+    QVERIFY(download != nullptr);
+
+    backend.emitDownloadRequested(70, QStringLiteral("https://files.example"),
+                                  QStringLiteral("failed.bin"), 200);
+    backend.emitDownloadUpdated(70, BrowserDownloadState::Failed, 25, 200);
+    QVERIFY(download->isTerminal());
+    QVERIFY(download->stateText().contains(QStringLiteral("失败")));
+
+    backend.emitDownloadRequested(71, QStringLiteral("https://files.example"),
+                                  QStringLiteral("cancelled.bin"), 300);
+    QVERIFY(!download->isTerminal());
+    const QString waitingState = download->stateText();
+    backend.emitDownloadUpdated(70, BrowserDownloadState::Cancelled, 25, 200);
+    QCOMPARE(download->requestId(), std::uint64_t{71});
+    QCOMPARE(download->stateText(), waitingState);
+
+    backend.emitDownloadUpdated(71, BrowserDownloadState::Cancelled, 30, 300);
+    QVERIFY(download->isTerminal());
+    QVERIFY(download->stateText().contains(QStringLiteral("取消")));
+}
+
 void BrowserPageTest::navigationRejectsUnansweredSensitiveRequests() {
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
@@ -355,6 +468,32 @@ void BrowserPageTest::navigationRejectsUnansweredSensitiveRequests() {
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerExternalProtocol), 1);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerCertificateError), 1);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 1);
+    QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
+}
+
+void BrowserPageTest::navigationKeepsStartedDownload() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    backend.emitDownloadRequested(80, QStringLiteral("https://files.example"),
+                                  QStringLiteral("active.bin"), 500);
+    auto* download = page.findChild<BrowserDownloadWidget*>(
+        QStringLiteral("browserDownloadWidget"));
+    QVERIFY(download != nullptr);
+    download->submitDestination(
+        directory.filePath(QStringLiteral("active.bin")));
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ChooseDownloadPath), 1);
+
+    auto* addressEdit =
+        page.findChild<QLineEdit*>(QStringLiteral("browserAddressEdit"));
+    addressEdit->setText(QStringLiteral("next.example"));
+    QTest::keyClick(addressEdit, Qt::Key_Return);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 0);
     QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
 }
 

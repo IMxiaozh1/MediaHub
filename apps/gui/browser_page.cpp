@@ -603,6 +603,7 @@ void BrowserPage::confirmClearBrowsingData() {
         state_ == BrowserPageState::ClearingData) {
         return;
     }
+    rejectUnansweredSensitiveRequests();
     ++generation_;
     state_ = BrowserPageState::ClearingData;
     statusLabel_->setText(QStringLiteral("正在清除网页数据..."));
@@ -625,7 +626,9 @@ void BrowserPage::resolvePermission(
     if (!pendingPermissionId_.has_value() || *pendingPermissionId_ != requestId) {
         return;
     }
-    if (pendingPermissionKind_ == BrowserPermissionKind::Other) {
+    if (pendingPermissionKind_ == BrowserPermissionKind::Other ||
+        (pendingPermissionKind_ == BrowserPermissionKind::ScreenCapture &&
+         decision == BrowserPermissionDecision::RememberForOrigin)) {
         decision = BrowserPermissionDecision::Deny;
     }
     pendingPermissionId_.reset();

@@ -129,6 +129,47 @@ QString certificateErrorDescription(const COREWEBVIEW2_WEB_ERROR_STATUS status) 
     }
 }
 
+// 调用线程：WebView2 权限事件所在 GUI STA；生命周期失效时不得访问后端实例。
+HRESULT rejectPermissionRequest(
+    ICoreWebView2PermissionRequestedEventArgs* const args) noexcept {
+    if (args == nullptr) {
+        return E_POINTER;
+    }
+    HRESULT result = args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+    ComPtr<ICoreWebView2Deferral> deferral;
+    const HRESULT deferralResult = args->GetDeferral(&deferral);
+    result = firstFailure(result, deferralResult);
+    if (deferral == nullptr) {
+        return FAILED(result) ? result : E_POINTER;
+    }
+    ComPtr<ICoreWebView2PermissionRequestedEventArgs> baseArgs(args);
+    ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args3;
+    static_cast<void>(baseArgs.As(&args3));
+    return firstFailure(
+        result,
+        completePermissionRejection(baseArgs.Get(), args3.Get(), deferral.Get()));
+}
+
+// 调用线程：WebView2 屏幕捕获事件所在 GUI STA；生命周期失效时不得访问后端实例。
+HRESULT rejectScreenCaptureRequest(
+    ICoreWebView2ScreenCaptureStartingEventArgs* const args) noexcept {
+    if (args == nullptr) {
+        return E_POINTER;
+    }
+    HRESULT result = args->put_Cancel(TRUE);
+    result = firstFailure(result, args->put_Handled(TRUE));
+    ComPtr<ICoreWebView2Deferral> deferral;
+    const HRESULT deferralResult = args->GetDeferral(&deferral);
+    result = firstFailure(result, deferralResult);
+    if (deferral == nullptr) {
+        return FAILED(result) ? result : E_POINTER;
+    }
+    return firstFailure(
+        result,
+        completeScreenCaptureDecision(
+            args, deferral.Get(), gui::BrowserPermissionDecision::Deny));
+}
+
 }  // namespace
 
 class WebView2BrowserBackend::Impl final {
@@ -144,6 +185,14 @@ class WebView2BrowserBackend::Impl final {
     struct PendingExternalProtocol final {
         ComPtr<ICoreWebView2LaunchingExternalUriSchemeEventArgs> args;
         ComPtr<ICoreWebView2Deferral> deferral;
+        std::uint64_t lifecycleSerial{0};
+        std::uint64_t generation{0};
+    };
+
+    struct PendingScreenCapture final {
+        ComPtr<ICoreWebView2ScreenCaptureStartingEventArgs> args;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        QString origin;
         std::uint64_t lifecycleSerial{0};
         std::uint64_t generation{0};
     };
@@ -172,6 +221,11 @@ class WebView2BrowserBackend::Impl final {
         std::int64_t totalBytes{-1};
         std::uint64_t lifecycleSerial{0};
         bool isCancelRequested{false};
+
+        void resetSubscriptions() noexcept {
+            stateChanged.reset();
+            bytesReceivedChanged.reset();
+        }
     };
 
  public:
@@ -493,18 +547,34 @@ class WebView2BrowserBackend::Impl final {
     void answerPermission(const std::uint64_t requestId,
                           gui::BrowserPermissionDecision decision) noexcept {
         std::optional<PendingPermission> pending = pendingPermissions_.take(requestId);
-        if (!pending.has_value()) {
+        if (pending.has_value()) {
+            if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
+                pending->generation != generation_ ||
+                pending->kind == gui::BrowserPermissionKind::Other) {
+                decision = gui::BrowserPermissionDecision::Deny;
+            }
+            logOperationFailure(
+                "permission_decision_failed",
+                completePermissionDecision(pending->args.Get(),
+                                           pending->deferral.Get(), decision));
             return;
         }
-        if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
-            pending->generation != generation_ ||
-            pending->kind == gui::BrowserPermissionKind::Other) {
+
+        std::optional<PendingScreenCapture> screenCapture =
+            pendingScreenCaptures_.take(requestId);
+        if (!screenCapture.has_value()) {
+            return;
+        }
+        if (isShuttingDown_ ||
+            screenCapture->lifecycleSerial != lifecycleSerial_ ||
+            screenCapture->generation != generation_ ||
+            decision != gui::BrowserPermissionDecision::AllowOnce) {
             decision = gui::BrowserPermissionDecision::Deny;
         }
         logOperationFailure(
-            "permission_decision_failed",
-            completePermissionDecision(pending->args.Get(), pending->deferral.Get(),
-                                       decision));
+            "screen_capture_decision_failed",
+            completeScreenCaptureDecision(screenCapture->args.Get(),
+                                          screenCapture->deferral.Get(), decision));
     }
 
     // 调用线程：GUI 主线程。后端再次验证目标，绝不覆盖已有文件。
@@ -529,27 +599,28 @@ class WebView2BrowserBackend::Impl final {
         active.operation = pending->operation;
         active.totalBytes = pending->totalBytes;
         active.lifecycleSerial = pending->lifecycleSerial;
-        HRESULT result = registerActiveDownload(requestId, active);
-        if (FAILED(result)) {
-            static_cast<void>(pending->operation->Cancel());
-            logOperationFailure("download_start_failed", result);
-            return;
-        }
-        const auto [position, inserted] =
-            activeDownloads_.emplace(requestId, std::move(active));
-        if (!inserted) {
-            static_cast<void>(pending->operation->Cancel());
-            logOperationFailure("download_store_failed", E_UNEXPECTED);
-            return;
-        }
-        result = completeDownloadPathDecision(pending->args.Get(),
-                                              pending->deferral.Get(),
-                                              destination);
-        if (FAILED(result)) {
-            static_cast<void>(position->second.operation->Cancel());
-            activeDownloads_.erase(position);
-            logOperationFailure("download_start_failed", result);
-        }
+        const HRESULT result = startDownloadTransaction(
+            active,
+            [this, requestId](ActiveDownload& candidate) {
+                return registerActiveDownload(requestId, candidate);
+            },
+            [this, requestId](ActiveDownload& candidate) {
+                return activeDownloads_
+                    .try_emplace(requestId, std::move(candidate))
+                    .second;
+            },
+            [&pending, &destination] {
+                return completeDownloadPathDecision(
+                    pending->args.Get(), pending->operation.Get(),
+                    pending->deferral.Get(), destination);
+            },
+            [&pending] {
+                return completeDownloadCancellation(
+                    pending->args.Get(), pending->operation.Get(),
+                    pending->deferral.Get());
+            },
+            [this, requestId] { activeDownloads_.erase(requestId); });
+        logOperationFailure("download_start_failed", result);
     }
 
     // 调用线程：GUI 主线程。待选择路径和已开始下载分别只取消一次。
@@ -844,6 +915,13 @@ class WebView2BrowserBackend::Impl final {
                     pending.args.Get(), pending.deferral.Get(),
                     gui::BrowserPermissionDecision::Deny));
         }
+        for (PendingScreenCapture& pending : pendingScreenCaptures_.takeAll()) {
+            logOperationFailure(
+                "screen_capture_shutdown_reject_failed",
+                completeScreenCaptureDecision(
+                    pending.args.Get(), pending.deferral.Get(),
+                    gui::BrowserPermissionDecision::Deny));
+        }
         for (PendingExternalProtocol& pending :
              pendingExternalProtocols_.takeAll()) {
             logOperationFailure(
@@ -969,6 +1047,9 @@ class WebView2BrowserBackend::Impl final {
     HRESULT registerEvents() {
         HRESULT result = registerPermissionRequested();
         if (SUCCEEDED(result)) {
+            result = registerScreenCaptureStarting();
+        }
+        if (SUCCEEDED(result)) {
             result = registerDownloadStarting();
         }
         if (SUCCEEDED(result)) {
@@ -1006,7 +1087,7 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2PermissionRequestedEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
-                        static_cast<void>(denyPermission(args));
+                        static_cast<void>(rejectPermissionRequest(args));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
@@ -1017,39 +1098,48 @@ class WebView2BrowserBackend::Impl final {
                         logOperationFailure("permission_args_missing", E_POINTER);
                         return S_OK;
                     }
-                    HRESULT status = args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                    HRESULT status =
+                        args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                    ComPtr<ICoreWebView2PermissionRequestedEventArgs> baseArgs(args);
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    const HRESULT deferralStatus =
+                        baseArgs->GetDeferral(&deferral);
+                    status = firstFailure(status, deferralStatus);
+                    if (deferral == nullptr) {
+                        logOperationFailure(
+                            "permission_deferral_failed",
+                            FAILED(status) ? status : E_POINTER);
+                        return S_OK;
+                    }
+
+                    ComPtr<ICoreWebView2PermissionRequestedEventArgs2> args2;
+                    ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args3;
+                    HRESULT args2Status = baseArgs.As(&args2);
+                    status = firstFailure(status, args2Status);
+                    if (SUCCEEDED(args2Status)) {
+                        status = firstFailure(status, args2->put_Handled(TRUE));
+                    }
+                    const HRESULT args3Status = baseArgs.As(&args3);
+                    status = firstFailure(status, args3Status);
+
                     COREWEBVIEW2_PERMISSION_KIND rawKind =
                         COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
                     LPWSTR rawUri = nullptr;
-                    if (SUCCEEDED(status)) {
-                        status = args->get_PermissionKind(&rawKind);
-                    }
-                    if (SUCCEEDED(status)) {
-                        status = args->get_Uri(&rawUri);
-                    }
+                    status = firstFailure(
+                        status, args->get_PermissionKind(&rawKind));
+                    status = firstFailure(status, args->get_Uri(&rawUri));
                     CoTaskMemString uri(rawUri);
                     const std::optional<gui::BrowserPermissionKind> kind =
                         supportedPermissionKind(rawKind);
                     const QString origin = normalizedOriginFromUri(uri.get());
                     if (FAILED(status) || !kind.has_value() || origin.isEmpty() ||
                         listener_ == nullptr) {
-                        logOperationFailure("permission_request_rejected", status);
-                        return S_OK;
-                    }
-
-                    ComPtr<ICoreWebView2PermissionRequestedEventArgs> baseArgs(args);
-                    ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args3;
-                    ComPtr<ICoreWebView2Deferral> deferral;
-                    status = baseArgs.As(&args3);
-                    if (SUCCEEDED(status)) {
-                        status = args3->put_Handled(TRUE);
-                    }
-                    if (SUCCEEDED(status)) {
-                        status = args3->GetDeferral(&deferral);
-                    }
-                    if (FAILED(status) || deferral == nullptr) {
-                        logOperationFailure("permission_deferral_failed",
-                                            FAILED(status) ? status : E_POINTER);
+                        const HRESULT rejectionResult =
+                            completePermissionRejection(
+                                baseArgs.Get(), args3.Get(), deferral.Get());
+                        logOperationFailure(
+                            "permission_request_rejected",
+                            firstFailure(status, rejectionResult));
                         return S_OK;
                     }
 
@@ -1080,6 +1170,107 @@ class WebView2BrowserBackend::Impl final {
             permissionRequested_.bind(token, [source](const EventRegistrationToken value) {
                 return source->remove_PermissionRequested(value);
             });
+        }
+        return result;
+    }
+
+    // 调用线程：GUI STA；只注册主 WebView 事件，默认拒绝后等待一次性用户决定。
+    HRESULT registerScreenCaptureStarting() {
+        ComPtr<ICoreWebView2_27> webView27;
+        HRESULT result = webView_.As(&webView27);
+        if (FAILED(result)) {
+            logOperationFailure("screen_capture_interface_unavailable", result);
+            return result;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        result = webView27->add_ScreenCaptureStarting(
+            Callback<ICoreWebView2ScreenCaptureStartingEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2ScreenCaptureStartingEventArgs* const args)
+                    -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        static_cast<void>(rejectScreenCaptureRequest(args));
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        static_cast<void>(rejectScreenCaptureRequest(args));
+                        return S_OK;
+                    }
+                    if (args == nullptr) {
+                        logOperationFailure("screen_capture_args_missing", E_POINTER);
+                        return S_OK;
+                    }
+
+                    HRESULT status = args->put_Cancel(TRUE);
+                    status = firstFailure(status, args->put_Handled(TRUE));
+                    ComPtr<ICoreWebView2FrameInfo> frameInfo;
+                    const HRESULT frameResult =
+                        args->get_OriginalSourceFrameInfo(&frameInfo);
+                    status = firstFailure(status, frameResult);
+                    LPWSTR rawSource = nullptr;
+                    HRESULT sourceResult = E_POINTER;
+                    if (frameInfo != nullptr) {
+                        sourceResult = frameInfo->get_Source(&rawSource);
+                    }
+                    status = firstFailure(status, sourceResult);
+                    CoTaskMemString source(rawSource);
+                    const QString origin = normalizedOriginFromUri(source.get());
+
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    const HRESULT deferralResult = args->GetDeferral(&deferral);
+                    status = firstFailure(status, deferralResult);
+                    if (deferral == nullptr) {
+                        logOperationFailure(
+                            "screen_capture_deferral_failed",
+                            FAILED(status) ? status : E_POINTER);
+                        return S_OK;
+                    }
+                    if (FAILED(status) || origin.isEmpty() || listener_ == nullptr) {
+                        const HRESULT rejectionResult =
+                            completeScreenCaptureDecision(
+                                args, deferral.Get(),
+                                gui::BrowserPermissionDecision::Deny);
+                        logOperationFailure(
+                            "screen_capture_request_rejected",
+                            firstFailure(status, rejectionResult));
+                        return S_OK;
+                    }
+
+                    const std::uint64_t requestId = nextSensitiveRequestId();
+                    PendingScreenCapture pending{args, deferral, origin,
+                                                 lifecycleSerial, generation};
+                    if (!pendingScreenCaptures_.insert(requestId,
+                                                       std::move(pending))) {
+                        logOperationFailure(
+                            "screen_capture_store_failed",
+                            completeScreenCaptureDecision(
+                                args, deferral.Get(),
+                                gui::BrowserPermissionDecision::Deny));
+                        return S_OK;
+                    }
+                    dispatchListener(
+                        generation,
+                        [requestId, origin](gui::BrowserEventListener& listener) {
+                            listener.onPermissionRequested(
+                                requestId, origin,
+                                gui::BrowserPermissionKind::ScreenCapture);
+                        });
+                    schedulePermissionTimeout(requestId, lifecycleSerial);
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            screenCaptureStarting_.bind(
+                token, [webView27](const EventRegistrationToken value) {
+                    return webView27->remove_ScreenCaptureStarting(value);
+                });
+        } else {
+            logOperationFailure("screen_capture_registration_failed", result);
         }
         return result;
     }
@@ -1677,6 +1868,7 @@ class WebView2BrowserBackend::Impl final {
         launchingExternalUriScheme_.reset();
         serverCertificateErrorDetected_.reset();
         downloadStarting_.reset();
+        screenCaptureStarting_.reset();
         permissionRequested_.reset();
         fullScreenChanged_.reset();
         documentTitleChanged_.reset();
@@ -1712,11 +1904,13 @@ class WebView2BrowserBackend::Impl final {
     EventRegistration documentTitleChanged_;
     EventRegistration fullScreenChanged_;
     EventRegistration permissionRequested_;
+    EventRegistration screenCaptureStarting_;
     EventRegistration downloadStarting_;
     EventRegistration serverCertificateErrorDetected_;
     EventRegistration launchingExternalUriScheme_;
     EventRegistration newWindowRequested_;
     PendingRequestStore<PendingPermission> pendingPermissions_;
+    PendingRequestStore<PendingScreenCapture> pendingScreenCaptures_;
     PendingRequestStore<PendingExternalProtocol> pendingExternalProtocols_;
     PendingRequestStore<PendingCertificate> pendingCertificates_;
     PendingRequestStore<PendingDownload> pendingDownloads_;

@@ -30,6 +30,15 @@ BrowserPermissionDialog::BrowserPermissionDialog(const QString& origin,
     layout->addWidget(originLabel_);
     layout->addWidget(new QLabel(QStringLiteral("权限："), this));
     layout->addWidget(permissionLabel_);
+    if (kind == BrowserPermissionKind::ScreenCapture) {
+        auto* limitation = new QLabel(
+            QStringLiteral("当前 WebView2 对屏幕捕获仅本次允许，不能为来源记住。"),
+            this);
+        limitation->setObjectName(
+            QStringLiteral("browserPermissionLimitationLabel"));
+        limitation->setWordWrap(true);
+        layout->addWidget(limitation);
+    }
 
     auto* buttons = new QHBoxLayout();
     auto* denyButton = new QPushButton(QStringLiteral("拒绝"), this);
@@ -41,7 +50,8 @@ BrowserPermissionDialog::BrowserPermissionDialog(const QString& origin,
     rememberButton_->setObjectName(QStringLiteral("browserPermissionRememberButton"));
     const bool canAllow = kind != BrowserPermissionKind::Other;
     allowOnceButton_->setEnabled(canAllow);
-    rememberButton_->setEnabled(canAllow);
+    rememberButton_->setEnabled(
+        canAllow && kind != BrowserPermissionKind::ScreenCapture);
     buttons->addStretch();
     buttons->addWidget(denyButton);
     buttons->addWidget(allowOnceButton_);
