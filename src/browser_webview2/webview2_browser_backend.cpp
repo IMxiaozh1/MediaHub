@@ -337,6 +337,7 @@ class WebView2BrowserBackend::Impl final {
     }
 
  private:
+    // 调用线程：GUI STA 或待投递到 GUI 的回调线程，只读取生命周期状态。
     bool isActive(const std::weak_ptr<int>& weakLifetime,
                   const std::uint64_t lifecycleSerial,
                   const std::uint64_t generation) const noexcept {
@@ -344,6 +345,7 @@ class WebView2BrowserBackend::Impl final {
                lifecycleSerial == lifecycleSerial_ && generation == generation_;
     }
 
+    // 调用线程：WebView2 Environment 完成回调所在的 GUI STA，禁止操作 Qt 控件。
     void createController(const std::weak_ptr<int>& weakLifetime,
                           const std::uint64_t lifecycleSerial,
                           const std::uint64_t generation) {
@@ -373,6 +375,7 @@ class WebView2BrowserBackend::Impl final {
         }
     }
 
+    // 调用线程：WebView2 Controller 完成回调所在的 GUI STA，禁止操作 Qt 控件。
     void finishController(ICoreWebView2Controller* const controller,
                           const std::uint64_t generation) {
         controller_ = controller;
@@ -407,6 +410,7 @@ class WebView2BrowserBackend::Impl final {
         });
     }
 
+    // 调用线程：Controller 完成回调所在的 GUI STA。
     HRESULT configureSettings() {
         ComPtr<ICoreWebView2Settings> settings;
         HRESULT result = webView_->get_Settings(&settings);
@@ -434,8 +438,24 @@ class WebView2BrowserBackend::Impl final {
         return settings4->put_IsGeneralAutofillEnabled(FALSE);
     }
 
+    // 调用线程：创建 WebView2 的 GUI STA；任一安全事件注册失败都阻止进入 ready。
     HRESULT registerEvents() {
-        HRESULT result = registerNavigationStarting();
+        HRESULT result = registerPermissionRequested();
+        if (SUCCEEDED(result)) {
+            result = registerDownloadStarting();
+        }
+        if (SUCCEEDED(result)) {
+            result = registerServerCertificateErrorDetected();
+        }
+        if (SUCCEEDED(result)) {
+            result = registerLaunchingExternalUriScheme();
+        }
+        if (SUCCEEDED(result)) {
+            result = registerNewWindowRequested();
+        }
+        if (SUCCEEDED(result)) {
+            result = registerNavigationStarting();
+        }
         if (SUCCEEDED(result)) {
             result = registerNavigationCompleted();
         }
@@ -448,6 +468,204 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：GUI STA；事件回调只拒绝权限，不直接操作 Qt 控件。
+    HRESULT registerPermissionRequested() {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        const HRESULT result = webView_->add_PermissionRequested(
+            Callback<ICoreWebView2PermissionRequestedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2PermissionRequestedEventArgs* const args) -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        return S_OK;
+                    }
+                    const HRESULT status =
+                        args != nullptr
+                            ? args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY)
+                            : E_POINTER;
+                    logOperationFailure("permission_default_deny_failed", status);
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2> source = webView_;
+            permissionRequested_.bind(token, [source](const EventRegistrationToken value) {
+                return source->remove_PermissionRequested(value);
+            });
+        }
+        return result;
+    }
+
+    // 调用线程：GUI STA；事件回调取消下载并禁止默认下载界面，不接触文件系统。
+    HRESULT registerDownloadStarting() {
+        ComPtr<ICoreWebView2_4> webView4;
+        HRESULT result = webView_.As(&webView4);
+        if (FAILED(result)) {
+            return result;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        result = webView4->add_DownloadStarting(
+            Callback<ICoreWebView2DownloadStartingEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2DownloadStartingEventArgs* const args) -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        return S_OK;
+                    }
+                    HRESULT status = args != nullptr ? args->put_Cancel(TRUE) : E_POINTER;
+                    if (args != nullptr) {
+                        const HRESULT handledStatus = args->put_Handled(TRUE);
+                        if (SUCCEEDED(status)) {
+                            status = handledStatus;
+                        }
+                    }
+                    logOperationFailure("download_default_cancel_failed", status);
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            downloadStarting_.bind(token, [webView4](const EventRegistrationToken value) {
+                return webView4->remove_DownloadStarting(value);
+            });
+        }
+        return result;
+    }
+
+    // 调用线程：GUI STA；事件回调只取消证书错误导航，不读取证书或请求地址。
+    HRESULT registerServerCertificateErrorDetected() {
+        ComPtr<ICoreWebView2_14> webView14;
+        HRESULT result = webView_.As(&webView14);
+        if (FAILED(result)) {
+            return result;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        result = webView14->add_ServerCertificateErrorDetected(
+            Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2ServerCertificateErrorDetectedEventArgs* const args)
+                    -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        return S_OK;
+                    }
+                    const HRESULT status =
+                        args != nullptr
+                            ? args->put_Action(
+                                  COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL)
+                            : E_POINTER;
+                    logOperationFailure("certificate_default_cancel_failed", status);
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            serverCertificateErrorDetected_.bind(
+                token, [webView14](const EventRegistrationToken value) {
+                    return webView14->remove_ServerCertificateErrorDetected(value);
+                });
+        }
+        return result;
+    }
+
+    // 调用线程：GUI STA；事件回调禁止启动外部应用，不读取或记录目标 URI。
+    HRESULT registerLaunchingExternalUriScheme() {
+        ComPtr<ICoreWebView2_18> webView18;
+        HRESULT result = webView_.As(&webView18);
+        if (FAILED(result)) {
+            return result;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        result = webView18->add_LaunchingExternalUriScheme(
+            Callback<ICoreWebView2LaunchingExternalUriSchemeEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2LaunchingExternalUriSchemeEventArgs* const args)
+                    -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        return S_OK;
+                    }
+                    const HRESULT status =
+                        args != nullptr ? args->put_Cancel(TRUE) : E_POINTER;
+                    logOperationFailure("external_uri_default_cancel_failed", status);
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            launchingExternalUriScheme_.bind(
+                token, [webView18](const EventRegistrationToken value) {
+                    return webView18->remove_LaunchingExternalUriScheme(value);
+                });
+        }
+        return result;
+    }
+
+    // 调用线程：GUI STA；事件回调拒绝弹窗，通知最终只在 GUI 主线程执行。
+    HRESULT registerNewWindowRequested() {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        const HRESULT result = webView_->add_NewWindowRequested(
+            Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2NewWindowRequestedEventArgs* const args) -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        return S_OK;
+                    }
+                    const HRESULT status =
+                        args != nullptr ? args->put_Handled(TRUE) : E_POINTER;
+                    logOperationFailure("popup_default_reject_failed", status);
+                    if (SUCCEEDED(status)) {
+                        dispatchListener(generation,
+                                         [](gui::BrowserEventListener& listener) {
+                                             listener.onPopupRejected();
+                                         });
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2> source = webView_;
+            newWindowRequested_.bind(token, [source](const EventRegistrationToken value) {
+                return source->remove_NewWindowRequested(value);
+            });
+        }
+        return result;
+    }
+
+    // 调用线程：GUI STA；事件回调只更新稳定导航状态，禁止操作 Qt 控件。
     HRESULT registerNavigationStarting() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -489,6 +707,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：GUI STA；事件回调通过 dispatchListener 投递，不直接操作 Qt 控件。
     HRESULT registerNavigationCompleted() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -556,6 +775,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：GUI STA；事件回调不记录标题，并经 GUI 线程监听器更新界面。
     HRESULT registerDocumentTitleChanged() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -581,6 +801,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：GUI STA；事件回调仅投递布尔状态，不直接操作 Qt 控件。
     HRESULT registerFullScreenChanged() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -619,6 +840,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：WebView2 导航或标题事件所在的 GUI STA，界面更新统一经监听器投递。
     void emitNavigationSnapshot(const std::uint64_t generation) {
         if (webView_ == nullptr) {
             return;
@@ -658,6 +880,7 @@ class WebView2BrowserBackend::Impl final {
     }
 
     template <typename CallbackType>
+    // 调用线程：GUI STA 或 WebView2 回调线程；监听器最终只在 GUI 主线程调用。
     void dispatchListener(const std::uint64_t generation, CallbackType callback) {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -682,6 +905,7 @@ class WebView2BrowserBackend::Impl final {
             Qt::QueuedConnection);
     }
 
+    // 调用线程：GUI STA 或 WebView2 回调线程，监听器最终只在 GUI 主线程调用。
     void reportError(const std::uint64_t generation,
                      const gui::BrowserErrorKind kind,
                      const HRESULT result,
@@ -693,12 +917,14 @@ class WebView2BrowserBackend::Impl final {
             });
     }
 
+    // 调用线程：任意调用线程；只记录事件类别和 HRESULT。
     void logOperationFailure(const char* const event, const HRESULT result) noexcept {
         if (FAILED(result)) {
             logFailure(event, result);
         }
     }
 
+    // 调用线程：任意调用线程；不得添加 URL、Profile、标题或凭据字段。
     void logFailure(const char* const event, const HRESULT result) noexcept {
         if (logger_ != nullptr) {
             logger_->log(logging::LogLevel::Error, "browser_webview2", event,
@@ -706,7 +932,13 @@ class WebView2BrowserBackend::Impl final {
         }
     }
 
+    // 调用线程：创建 COM 对象的 GUI STA；必须先撤销全部事件，再关闭 Controller。
     void releaseBrowserResources() noexcept {
+        newWindowRequested_.reset();
+        launchingExternalUriScheme_.reset();
+        serverCertificateErrorDetected_.reset();
+        downloadStarting_.reset();
+        permissionRequested_.reset();
         fullScreenChanged_.reset();
         documentTitleChanged_.reset();
         navigationCompleted_.reset();
@@ -722,6 +954,7 @@ class WebView2BrowserBackend::Impl final {
         parentWindow_ = nullptr;
     }
 
+    // 调用线程：初始化 COM 的 GUI STA，严格配对当前对象持有的初始化引用。
     void releaseComApartment() noexcept {
         if (ownsComApartmentReference_) {
             CoUninitialize();
@@ -739,6 +972,11 @@ class WebView2BrowserBackend::Impl final {
     EventRegistration navigationCompleted_;
     EventRegistration documentTitleChanged_;
     EventRegistration fullScreenChanged_;
+    EventRegistration permissionRequested_;
+    EventRegistration downloadStarting_;
+    EventRegistration serverCertificateErrorDetected_;
+    EventRegistration launchingExternalUriScheme_;
+    EventRegistration newWindowRequested_;
     std::shared_ptr<int> lifetime_;
     std::uint64_t lifecycleSerial_{0};
     std::uint64_t generation_{0};

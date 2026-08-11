@@ -11,6 +11,7 @@ namespace mediahub::browser_webview2 {
 class EventRegistration final {
  public:
     EventRegistration() = default;
+    // 调用线程：创建订阅的 GUI STA，析构时在同一线程撤销事件。
     ~EventRegistration() { reset(); }
 
     EventRegistration(const EventRegistration&) = delete;
@@ -31,6 +32,7 @@ class EventRegistration final {
         return *this;
     }
 
+    // 调用线程：创建事件源的 GUI STA，保存同一 STA 使用的撤销动作。
     void bind(const EventRegistrationToken token,
               std::function<HRESULT(EventRegistrationToken)> revoke) {
         reset();
@@ -38,6 +40,7 @@ class EventRegistration final {
         revoke_ = std::move(revoke);
     }
 
+    // 调用线程：创建事件源的 GUI STA，必须在释放对应 COM 对象前调用。
     void reset() noexcept {
         if (!revoke_) {
             return;

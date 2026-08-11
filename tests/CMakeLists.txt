@@ -120,6 +120,9 @@ if(NOT MEDIAHUB_CORE_ONLY)
     target_link_libraries(mediahub_webview2_tests
         PRIVATE mediahub_browser_webview2 mediahub_gui_support Qt5::Test
     )
+    target_compile_definitions(mediahub_webview2_tests PRIVATE
+        "MEDIAHUB_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+    )
     mediahub_enable_warnings(mediahub_webview2_tests)
     mediahub_deploy_qt(mediahub_webview2_tests)
     add_test(NAME integration.webview2.initialization COMMAND mediahub_webview2_tests)
