@@ -12,16 +12,21 @@
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QThread>
+#include <QTimer>
+#include <QUrl>
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "browser_event_listener.h"
 #include "mediahub/logging/logger.h"
 #include "webview2_default_deny.h"
 #include "webview2_handles.h"
+#include "webview2_pending_request.h"
 #include "webview2_state.h"
 
 namespace mediahub::browser_webview2 {
@@ -55,9 +60,120 @@ RECT toNativeRect(const QRect& bounds) noexcept {
                 bounds.y() + bounds.height()};
 }
 
+QString normalizedOriginFromUri(const wchar_t* const uri) {
+    if (uri == nullptr) {
+        return {};
+    }
+    const QUrl parsed(QString::fromWCharArray(uri), QUrl::StrictMode);
+    const QString scheme = parsed.scheme().toLower();
+    if (!parsed.isValid() || (scheme != QStringLiteral("https") &&
+                              scheme != QStringLiteral("http")) ||
+        parsed.host().isEmpty() || !parsed.userName().isEmpty() ||
+        !parsed.password().isEmpty()) {
+        return {};
+    }
+    QUrl origin;
+    origin.setScheme(scheme);
+    origin.setHost(parsed.host().toLower());
+    origin.setPort(parsed.port(-1));
+    return origin.toString(QUrl::FullyEncoded | QUrl::RemovePath |
+                           QUrl::RemoveQuery | QUrl::RemoveFragment |
+                           QUrl::RemoveUserInfo);
+}
+
+bool isValidExternalTarget(const QString& target) {
+    const QUrl parsed(target, QUrl::StrictMode);
+    const QString scheme = parsed.scheme().toLower();
+    if (!parsed.isValid() || scheme.isEmpty() || target.contains(QLatin1Char('\r')) ||
+        target.contains(QLatin1Char('\n'))) {
+        return false;
+    }
+    return scheme != QStringLiteral("http") && scheme != QStringLiteral("https") &&
+           scheme != QStringLiteral("file") && scheme != QStringLiteral("data") &&
+           scheme != QStringLiteral("javascript") && scheme != QStringLiteral("about") &&
+           scheme != QStringLiteral("blob");
+}
+
+std::optional<gui::BrowserPermissionKind> supportedPermissionKind(
+    const COREWEBVIEW2_PERMISSION_KIND kind) noexcept {
+    switch (kind) {
+    case COREWEBVIEW2_PERMISSION_KIND_CAMERA:
+        return gui::BrowserPermissionKind::Camera;
+    case COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:
+        return gui::BrowserPermissionKind::Microphone;
+    case COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:
+        return gui::BrowserPermissionKind::Geolocation;
+    case COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:
+        return gui::BrowserPermissionKind::Notifications;
+    case COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ:
+        return gui::BrowserPermissionKind::ClipboardRead;
+    default:
+        return std::nullopt;
+    }
+}
+
+QString certificateErrorDescription(const COREWEBVIEW2_WEB_ERROR_STATUS status) {
+    switch (status) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:
+        return QStringLiteral("服务器证书名称与网站不匹配");
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+        return QStringLiteral("服务器证书已过期");
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS:
+        return QStringLiteral("客户端证书包含错误");
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+        return QStringLiteral("服务器证书已被吊销");
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:
+        return QStringLiteral("服务器证书无效");
+    default:
+        return QStringLiteral("服务器证书验证失败");
+    }
+}
+
 }  // namespace
 
 class WebView2BrowserBackend::Impl final {
+    struct PendingPermission final {
+        ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        QString origin;
+        gui::BrowserPermissionKind kind{gui::BrowserPermissionKind::Other};
+        std::uint64_t lifecycleSerial{0};
+        std::uint64_t generation{0};
+    };
+
+    struct PendingExternalProtocol final {
+        ComPtr<ICoreWebView2LaunchingExternalUriSchemeEventArgs> args;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        std::uint64_t lifecycleSerial{0};
+        std::uint64_t generation{0};
+    };
+
+    struct PendingCertificate final {
+        ComPtr<ICoreWebView2ServerCertificateErrorDetectedEventArgs> args;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        QString origin;
+        std::uint64_t lifecycleSerial{0};
+        std::uint64_t generation{0};
+    };
+
+    struct PendingDownload final {
+        ComPtr<ICoreWebView2DownloadStartingEventArgs> args;
+        ComPtr<ICoreWebView2DownloadOperation> operation;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        std::int64_t totalBytes{-1};
+        std::uint64_t lifecycleSerial{0};
+        std::uint64_t generation{0};
+    };
+
+    struct ActiveDownload final {
+        ComPtr<ICoreWebView2DownloadOperation> operation;
+        EventRegistration bytesReceivedChanged;
+        EventRegistration stateChanged;
+        std::int64_t totalBytes{-1};
+        std::uint64_t lifecycleSerial{0};
+        bool isCancelRequested{false};
+    };
+
  public:
     explicit Impl(logging::Logger* const logger) noexcept : logger_(logger) {}
 
@@ -293,6 +409,7 @@ class WebView2BrowserBackend::Impl final {
         }
 
         ComPtr<ICoreWebView2_13> webView13;
+        ComPtr<ICoreWebView2_14> webView14;
         ComPtr<ICoreWebView2Profile> profile;
         ComPtr<ICoreWebView2Profile2> profile2;
         HRESULT result = webView_.As(&webView13);
@@ -301,6 +418,9 @@ class WebView2BrowserBackend::Impl final {
         }
         if (SUCCEEDED(result)) {
             result = profile.As(&profile2);
+        }
+        if (SUCCEEDED(result)) {
+            result = webView_.As(&webView14);
         }
         if (FAILED(result)) {
             reportError(generation, gui::BrowserErrorKind::ClearDataFailed, result,
@@ -313,7 +433,7 @@ class WebView2BrowserBackend::Impl final {
         result = profile2->ClearBrowsingData(
             COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_PROFILE,
             Callback<ICoreWebView2ClearBrowsingDataCompletedHandler>(
-                [this, weakLifetime, lifecycleSerial,
+                [this, weakLifetime, lifecycleSerial, webView14,
                  generation](const HRESULT status) -> HRESULT {
                     if (weakLifetime.expired() ||
                         !isActive(weakLifetime, lifecycleSerial, generation)) {
@@ -323,10 +443,42 @@ class WebView2BrowserBackend::Impl final {
                         reportError(generation, gui::BrowserErrorKind::ClearDataFailed,
                                     status, "clear_data_failed");
                     } else {
-                        dispatchListener(generation,
-                                         [generation](gui::BrowserEventListener& listener) {
-                                             listener.onBrowsingDataCleared(generation);
-                                         });
+                        const HRESULT clearCertificateResult =
+                            webView14->ClearServerCertificateErrorActions(
+                                Callback<
+                                    ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler>(
+                                    [this, weakLifetime, lifecycleSerial,
+                                     generation](const HRESULT certificateStatus)
+                                        -> HRESULT {
+                                        if (weakLifetime.expired() ||
+                                            !isActive(weakLifetime, lifecycleSerial,
+                                                      generation)) {
+                                            return S_OK;
+                                        }
+                                        if (FAILED(certificateStatus)) {
+                                            reportError(
+                                                generation,
+                                                gui::BrowserErrorKind::ClearDataFailed,
+                                                certificateStatus,
+                                                "clear_certificate_actions_failed");
+                                        } else {
+                                            dispatchListener(
+                                                generation,
+                                                [generation](
+                                                    gui::BrowserEventListener& listener) {
+                                                    listener.onBrowsingDataCleared(
+                                                        generation);
+                                                });
+                                        }
+                                        return S_OK;
+                                    })
+                                    .Get());
+                        if (FAILED(clearCertificateResult)) {
+                            reportError(
+                                generation, gui::BrowserErrorKind::ClearDataFailed,
+                                clearCertificateResult,
+                                "clear_certificate_actions_request_failed");
+                        }
                     }
                     return S_OK;
                 })
@@ -337,22 +489,125 @@ class WebView2BrowserBackend::Impl final {
         }
     }
 
-    // 调用线程：GUI 主线程。后续安全阶段实现挂起请求；当前默认拒绝且无副作用。
-    void answerPermission(std::uint64_t,
-                          gui::BrowserPermissionDecision) noexcept {}
+    // 调用线程：GUI 主线程。每个 requestId 只从待决定集合取出并完成一次。
+    void answerPermission(const std::uint64_t requestId,
+                          gui::BrowserPermissionDecision decision) noexcept {
+        std::optional<PendingPermission> pending = pendingPermissions_.take(requestId);
+        if (!pending.has_value()) {
+            return;
+        }
+        if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
+            pending->generation != generation_ ||
+            pending->kind == gui::BrowserPermissionKind::Other) {
+            decision = gui::BrowserPermissionDecision::Deny;
+        }
+        logOperationFailure(
+            "permission_decision_failed",
+            completePermissionDecision(pending->args.Get(), pending->deferral.Get(),
+                                       decision));
+    }
 
-    // 调用线程：GUI 主线程。后续安全阶段实现下载；当前不接触文件系统。
-    void chooseDownloadPath(std::uint64_t, const QString&) noexcept {}
+    // 调用线程：GUI 主线程。后端再次验证目标，绝不覆盖已有文件。
+    void chooseDownloadPath(const std::uint64_t requestId,
+                            const QString& destination) noexcept {
+        std::optional<PendingDownload> pending = pendingDownloads_.take(requestId);
+        if (!pending.has_value()) {
+            return;
+        }
+        if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
+            pending->generation != generation_ ||
+            !isSafeDownloadDestination(destination)) {
+            logOperationFailure(
+                "download_destination_rejected",
+                completeDownloadCancellation(pending->args.Get(),
+                                             pending->operation.Get(),
+                                             pending->deferral.Get()));
+            return;
+        }
 
-    // 调用线程：GUI 主线程。后续安全阶段实现下载；当前没有待取消操作。
-    void cancelDownload(std::uint64_t) noexcept {}
+        ActiveDownload active;
+        active.operation = pending->operation;
+        active.totalBytes = pending->totalBytes;
+        active.lifecycleSerial = pending->lifecycleSerial;
+        HRESULT result = registerActiveDownload(requestId, active);
+        if (FAILED(result)) {
+            static_cast<void>(pending->operation->Cancel());
+            logOperationFailure("download_start_failed", result);
+            return;
+        }
+        const auto [position, inserted] =
+            activeDownloads_.emplace(requestId, std::move(active));
+        if (!inserted) {
+            static_cast<void>(pending->operation->Cancel());
+            logOperationFailure("download_store_failed", E_UNEXPECTED);
+            return;
+        }
+        result = completeDownloadPathDecision(pending->args.Get(),
+                                              pending->deferral.Get(),
+                                              destination);
+        if (FAILED(result)) {
+            static_cast<void>(position->second.operation->Cancel());
+            activeDownloads_.erase(position);
+            logOperationFailure("download_start_failed", result);
+        }
+    }
 
-    // 调用线程：GUI 主线程。后续安全阶段实现外部协议；当前不启动外部应用。
-    void answerExternalProtocol(std::uint64_t, bool) noexcept {}
+    // 调用线程：GUI 主线程。待选择路径和已开始下载分别只取消一次。
+    void cancelDownload(const std::uint64_t requestId) noexcept {
+        std::optional<PendingDownload> pending = pendingDownloads_.take(requestId);
+        if (pending.has_value()) {
+            logOperationFailure(
+                "download_cancel_failed",
+                completeDownloadCancellation(pending->args.Get(),
+                                             pending->operation.Get(),
+                                             pending->deferral.Get()));
+            return;
+        }
+        const auto found = activeDownloads_.find(requestId);
+        if (found == activeDownloads_.end() || found->second.isCancelRequested) {
+            return;
+        }
+        found->second.isCancelRequested = true;
+        logOperationFailure("download_cancel_failed", found->second.operation->Cancel());
+    }
 
-    // 调用线程：GUI 主线程。后续安全阶段实现证书例外；当前不放行证书错误。
-    void answerCertificateError(std::uint64_t,
-                                gui::BrowserCertificateDecision) noexcept {}
+    // 调用线程：GUI 主线程。只有当前存活请求的显式允许会解除 Cancel。
+    void answerExternalProtocol(const std::uint64_t requestId,
+                                bool isAllowed) noexcept {
+        std::optional<PendingExternalProtocol> pending =
+            pendingExternalProtocols_.take(requestId);
+        if (!pending.has_value()) {
+            return;
+        }
+        if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
+            pending->generation != generation_) {
+            isAllowed = false;
+        }
+        logOperationFailure(
+            "external_protocol_decision_failed",
+            completeExternalProtocolDecision(pending->args.Get(),
+                                             pending->deferral.Get(), isAllowed));
+    }
+
+    // 调用线程：GUI 主线程。会话例外只应用于当前 requestId 保存的来源。
+    void answerCertificateError(
+        const std::uint64_t requestId,
+        gui::BrowserCertificateDecision decision) noexcept {
+        std::optional<PendingCertificate> pending =
+            pendingCertificates_.take(requestId);
+        if (!pending.has_value()) {
+            return;
+        }
+        if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
+            pending->generation != generation_ ||
+            pending->origin.isEmpty()) {
+            decision = gui::BrowserCertificateDecision::ReturnToSafety;
+        }
+        logOperationFailure(
+            "certificate_decision_failed",
+            completeCertificateDecision(pending->args.Get(), pending->deferral.Get(),
+                                        decision));
+    }
 
     // 调用线程：GUI 主线程。不执行脚本注入；退出语义由后续全屏阶段接入。
     void exitFullScreen() noexcept {}
@@ -380,6 +635,245 @@ class WebView2BrowserBackend::Impl final {
                   const std::uint64_t generation) const noexcept {
         return !weakLifetime.expired() && !isShuttingDown_ &&
                lifecycleSerial == lifecycleSerial_ && generation == generation_;
+    }
+
+    // 调用线程：GUI STA。requestId 在对象生命周期内单调递增且不使用零值。
+    std::uint64_t nextSensitiveRequestId() noexcept {
+        const std::uint64_t result = nextSensitiveRequestId_++;
+        if (nextSensitiveRequestId_ == 0) {
+            nextSensitiveRequestId_ = 1;
+        }
+        return result == 0 ? nextSensitiveRequestId_++ : result;
+    }
+
+    // 回调线程：GUI 主线程；超时只拒绝仍属于同一生命周期的权限请求。
+    void schedulePermissionTimeout(const std::uint64_t requestId,
+                                   const std::uint64_t lifecycleSerial) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        QTimer::singleShot(30000, QApplication::instance(),
+                           [this, weakLifetime, lifecycleSerial, requestId] {
+                               if (weakLifetime.expired()) {
+                                   return;
+                               }
+                               if (!isShuttingDown_ &&
+                                   lifecycleSerial == lifecycleSerial_) {
+                                   answerPermission(
+                                       requestId,
+                                       gui::BrowserPermissionDecision::Deny);
+                               }
+                           });
+    }
+
+    // 回调线程：GUI 主线程；超时不允许外部协议。
+    void scheduleExternalProtocolTimeout(const std::uint64_t requestId,
+                                         const std::uint64_t lifecycleSerial) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        QTimer::singleShot(30000, QApplication::instance(),
+                           [this, weakLifetime, lifecycleSerial, requestId] {
+                               if (weakLifetime.expired()) {
+                                   return;
+                               }
+                               if (!isShuttingDown_ &&
+                                   lifecycleSerial == lifecycleSerial_) {
+                                   answerExternalProtocol(requestId, false);
+                               }
+                           });
+    }
+
+    // 回调线程：GUI 主线程；证书请求超时返回安全页面。
+    void scheduleCertificateTimeout(const std::uint64_t requestId,
+                                    const std::uint64_t lifecycleSerial) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        QTimer::singleShot(30000, QApplication::instance(),
+                           [this, weakLifetime, lifecycleSerial, requestId] {
+                               if (weakLifetime.expired()) {
+                                   return;
+                               }
+                               if (!isShuttingDown_ &&
+                                   lifecycleSerial == lifecycleSerial_) {
+                                   answerCertificateError(
+                                       requestId,
+                                       gui::BrowserCertificateDecision::ReturnToSafety);
+                               }
+                           });
+    }
+
+    // 回调线程：GUI 主线程；未选择路径的下载超时会被取消并完成 deferral。
+    void scheduleDownloadTimeout(const std::uint64_t requestId,
+                                 const std::uint64_t lifecycleSerial) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        QTimer::singleShot(30000, QApplication::instance(),
+                           [this, weakLifetime, lifecycleSerial, requestId] {
+                               if (weakLifetime.expired()) {
+                                   return;
+                               }
+                               if (!isShuttingDown_ &&
+                                   lifecycleSerial == lifecycleSerial_) {
+                                   cancelDownload(requestId);
+                               }
+                           });
+    }
+
+    // 调用线程：GUI STA；事件回调只读取 operation 数值并投递稳定下载状态。
+    HRESULT registerActiveDownload(const std::uint64_t requestId,
+                                   ActiveDownload& active) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = active.lifecycleSerial;
+        const ComPtr<ICoreWebView2DownloadOperation> operation = active.operation;
+        EventRegistrationToken bytesToken{};
+        HRESULT result = operation->add_BytesReceivedChanged(
+            Callback<ICoreWebView2BytesReceivedChangedEventHandler>(
+                [this, weakLifetime, lifecycleSerial, requestId](
+                    ICoreWebView2DownloadOperation*, IUnknown*) -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    if (!isShuttingDown_ && lifecycleSerial == lifecycleSerial_) {
+                        emitDownloadUpdate(requestId);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &bytesToken);
+        if (FAILED(result)) {
+            return result;
+        }
+        active.bytesReceivedChanged.bind(
+            bytesToken, [operation](const EventRegistrationToken token) {
+                return operation->remove_BytesReceivedChanged(token);
+            });
+
+        EventRegistrationToken stateToken{};
+        result = operation->add_StateChanged(
+            Callback<ICoreWebView2StateChangedEventHandler>(
+                [this, weakLifetime, lifecycleSerial, requestId](
+                    ICoreWebView2DownloadOperation*, IUnknown*) -> HRESULT {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    if (!isShuttingDown_ && lifecycleSerial == lifecycleSerial_) {
+                        emitDownloadUpdate(requestId);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &stateToken);
+        if (FAILED(result)) {
+            active.bytesReceivedChanged.reset();
+            return result;
+        }
+        active.stateChanged.bind(
+            stateToken, [operation](const EventRegistrationToken token) {
+                return operation->remove_StateChanged(token);
+            });
+        return S_OK;
+    }
+
+    // 调用线程：WebView2 下载事件所在 GUI STA；不得记录 URI 或目标路径。
+    void emitDownloadUpdate(const std::uint64_t requestId) {
+        const auto found = activeDownloads_.find(requestId);
+        if (found == activeDownloads_.end()) {
+            return;
+        }
+        ActiveDownload& active = found->second;
+        INT64 receivedBytes = 0;
+        INT64 totalBytes = active.totalBytes;
+        COREWEBVIEW2_DOWNLOAD_STATE rawState =
+            COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+        HRESULT result = active.operation->get_BytesReceived(&receivedBytes);
+        if (SUCCEEDED(result)) {
+            if (FAILED(active.operation->get_TotalBytesToReceive(&totalBytes))) {
+                totalBytes = active.totalBytes;
+            }
+            result = active.operation->get_State(&rawState);
+        }
+        if (FAILED(result)) {
+            logOperationFailure("download_state_read_failed", result);
+            return;
+        }
+
+        gui::BrowserDownloadState state = gui::BrowserDownloadState::InProgress;
+        bool isTerminal = false;
+        if (rawState == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED) {
+            state = gui::BrowserDownloadState::Completed;
+            isTerminal = true;
+        } else if (rawState == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED) {
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason =
+                COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
+            static_cast<void>(active.operation->get_InterruptReason(&reason));
+            state = active.isCancelRequested ||
+                            reason ==
+                                COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED ||
+                            reason ==
+                                COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN
+                        ? gui::BrowserDownloadState::Cancelled
+                        : gui::BrowserDownloadState::Failed;
+            isTerminal = true;
+        }
+        const std::uint64_t generation = generation_;
+        dispatchListener(
+            generation,
+            [requestId, state, receivedBytes,
+             totalBytes](gui::BrowserEventListener& listener) {
+                listener.onDownloadUpdated(requestId, state, receivedBytes,
+                                           totalBytes);
+            });
+        if (isTerminal) {
+            const std::weak_ptr<int> weakLifetime = lifetime_;
+            const std::uint64_t lifecycleSerial = lifecycleSerial_;
+            QMetaObject::invokeMethod(
+                QApplication::instance(),
+                [this, weakLifetime, lifecycleSerial, requestId] {
+                    if (weakLifetime.expired()) {
+                        return;
+                    }
+                    if (lifecycleSerial == lifecycleSerial_) {
+                        activeDownloads_.erase(requestId);
+                    }
+                },
+                Qt::QueuedConnection);
+        }
+    }
+
+    // 调用线程：创建 COM 对象的 GUI STA；关闭时逐项拒绝并完成全部 deferral。
+    void cancelPendingSensitiveRequests() noexcept {
+        for (PendingPermission& pending : pendingPermissions_.takeAll()) {
+            logOperationFailure(
+                "permission_shutdown_reject_failed",
+                completePermissionDecision(
+                    pending.args.Get(), pending.deferral.Get(),
+                    gui::BrowserPermissionDecision::Deny));
+        }
+        for (PendingExternalProtocol& pending :
+             pendingExternalProtocols_.takeAll()) {
+            logOperationFailure(
+                "external_uri_shutdown_reject_failed",
+                completeExternalProtocolDecision(pending.args.Get(),
+                                                 pending.deferral.Get(), false));
+        }
+        for (PendingCertificate& pending : pendingCertificates_.takeAll()) {
+            logOperationFailure(
+                "certificate_shutdown_reject_failed",
+                completeCertificateDecision(
+                    pending.args.Get(), pending.deferral.Get(),
+                    gui::BrowserCertificateDecision::ReturnToSafety));
+        }
+        for (PendingDownload& pending : pendingDownloads_.takeAll()) {
+            logOperationFailure(
+                "download_shutdown_cancel_failed",
+                completeDownloadCancellation(pending.args.Get(),
+                                             pending.operation.Get(),
+                                             pending.deferral.Get()));
+        }
+        for (auto& [requestId, active] : activeDownloads_) {
+            static_cast<void>(requestId);
+            if (!active.isCancelRequested) {
+                active.isCancelRequested = true;
+                logOperationFailure("download_shutdown_cancel_failed",
+                                    active.operation->Cancel());
+            }
+        }
+        activeDownloads_.clear();
     }
 
     // 调用线程：WebView2 Environment 完成回调所在的 GUI STA，禁止操作 Qt 控件。
@@ -501,7 +995,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
-    // 调用线程：GUI STA；事件回调只拒绝权限，不直接操作 Qt 控件。
+    // 调用线程：GUI STA；回调持有 deferral，经监听器等待用户决定。
     HRESULT registerPermissionRequested() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -512,14 +1006,71 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2PermissionRequestedEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
+                        static_cast<void>(denyPermission(args));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status = denyPermission(args);
-                    logOperationFailure("permission_default_deny_failed", status);
+                    if (args == nullptr) {
+                        logOperationFailure("permission_args_missing", E_POINTER);
+                        return S_OK;
+                    }
+                    HRESULT status = args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                    COREWEBVIEW2_PERMISSION_KIND rawKind =
+                        COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                    LPWSTR rawUri = nullptr;
+                    if (SUCCEEDED(status)) {
+                        status = args->get_PermissionKind(&rawKind);
+                    }
+                    if (SUCCEEDED(status)) {
+                        status = args->get_Uri(&rawUri);
+                    }
+                    CoTaskMemString uri(rawUri);
+                    const std::optional<gui::BrowserPermissionKind> kind =
+                        supportedPermissionKind(rawKind);
+                    const QString origin = normalizedOriginFromUri(uri.get());
+                    if (FAILED(status) || !kind.has_value() || origin.isEmpty() ||
+                        listener_ == nullptr) {
+                        logOperationFailure("permission_request_rejected", status);
+                        return S_OK;
+                    }
+
+                    ComPtr<ICoreWebView2PermissionRequestedEventArgs> baseArgs(args);
+                    ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args3;
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    status = baseArgs.As(&args3);
+                    if (SUCCEEDED(status)) {
+                        status = args3->put_Handled(TRUE);
+                    }
+                    if (SUCCEEDED(status)) {
+                        status = args3->GetDeferral(&deferral);
+                    }
+                    if (FAILED(status) || deferral == nullptr) {
+                        logOperationFailure("permission_deferral_failed",
+                                            FAILED(status) ? status : E_POINTER);
+                        return S_OK;
+                    }
+
+                    const std::uint64_t requestId = nextSensitiveRequestId();
+                    PendingPermission pending{args3, deferral, origin, *kind,
+                                              lifecycleSerial, generation};
+                    if (!pendingPermissions_.insert(requestId, std::move(pending))) {
+                        logOperationFailure(
+                            "permission_store_failed",
+                            completePermissionDecision(
+                                args3.Get(), deferral.Get(),
+                                gui::BrowserPermissionDecision::Deny));
+                        return S_OK;
+                    }
+                    dispatchListener(
+                        generation,
+                        [requestId, origin,
+                         kind = *kind](gui::BrowserEventListener& listener) {
+                            listener.onPermissionRequested(requestId, origin, kind);
+                        });
+                    schedulePermissionTimeout(requestId, lifecycleSerial);
                     return S_OK;
                 })
                 .Get(),
@@ -533,7 +1084,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
-    // 调用线程：GUI STA；事件回调取消下载并禁止默认下载界面，不接触文件系统。
+    // 调用线程：GUI STA；回调先接管下载，再等待用户选择不覆盖的新路径。
     HRESULT registerDownloadStarting() {
         ComPtr<ICoreWebView2_4> webView4;
         HRESULT result = webView_.As(&webView4);
@@ -549,15 +1100,84 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2DownloadStartingEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
+                        static_cast<void>(
+                            ::mediahub::browser_webview2::cancelDownload(args));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status =
-                        ::mediahub::browser_webview2::cancelDownload(args);
-                    logOperationFailure("download_default_cancel_failed", status);
+                    if (args == nullptr) {
+                        logOperationFailure("download_args_missing", E_POINTER);
+                        return S_OK;
+                    }
+                    HRESULT status = args->put_Handled(TRUE);
+                    if (SUCCEEDED(status)) {
+                        status = args->put_Cancel(TRUE);
+                    }
+                    ComPtr<ICoreWebView2DownloadOperation> operation;
+                    if (SUCCEEDED(status)) {
+                        status = args->get_DownloadOperation(&operation);
+                    }
+                    LPWSTR rawSuggestedPath = nullptr;
+                    LPWSTR rawUri = nullptr;
+                    if (SUCCEEDED(status)) {
+                        status = args->get_ResultFilePath(&rawSuggestedPath);
+                    }
+                    if (SUCCEEDED(status)) {
+                        status = operation->get_Uri(&rawUri);
+                    }
+                    CoTaskMemString suggestedPath(rawSuggestedPath);
+                    CoTaskMemString uri(rawUri);
+                    const QString suggestedFileName =
+                        suggestedPath != nullptr
+                            ? QFileInfo(QString::fromWCharArray(suggestedPath.get()))
+                                  .fileName()
+                            : QString{};
+                    const QString origin = normalizedOriginFromUri(uri.get());
+                    INT64 rawTotalBytes = -1;
+                    if (SUCCEEDED(status) &&
+                        FAILED(operation->get_TotalBytesToReceive(&rawTotalBytes))) {
+                        rawTotalBytes = -1;
+                    }
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    if (SUCCEEDED(status)) {
+                        status = args->GetDeferral(&deferral);
+                    }
+                    if (FAILED(status) || operation == nullptr || deferral == nullptr ||
+                        suggestedFileName.isEmpty() || origin.isEmpty() ||
+                        listener_ == nullptr) {
+                        if (operation != nullptr && deferral != nullptr) {
+                            status = completeDownloadCancellation(
+                                args, operation.Get(), deferral.Get());
+                        }
+                        logOperationFailure("download_request_rejected",
+                                            FAILED(status) ? status : E_INVALIDARG);
+                        return S_OK;
+                    }
+
+                    const std::uint64_t requestId = nextSensitiveRequestId();
+                    PendingDownload pending{args, operation, deferral,
+                                            static_cast<std::int64_t>(rawTotalBytes),
+                                            lifecycleSerial, generation};
+                    if (!pendingDownloads_.insert(requestId, std::move(pending))) {
+                        logOperationFailure(
+                            "download_store_failed",
+                            completeDownloadCancellation(args, operation.Get(),
+                                                         deferral.Get()));
+                        return S_OK;
+                    }
+                    dispatchListener(
+                        generation,
+                        [requestId, origin, suggestedFileName,
+                         totalBytes = static_cast<std::int64_t>(rawTotalBytes)](
+                            gui::BrowserEventListener& listener) {
+                            listener.onDownloadRequested(requestId, origin,
+                                                         suggestedFileName,
+                                                         totalBytes);
+                        });
+                    scheduleDownloadTimeout(requestId, lifecycleSerial);
                     return S_OK;
                 })
                 .Get(),
@@ -570,7 +1190,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
-    // 调用线程：GUI STA；事件回调只取消证书错误导航，不读取证书或请求地址。
+    // 调用线程：GUI STA；回调默认取消，并只把规范化来源和稳定说明交给界面。
     HRESULT registerServerCertificateErrorDetected() {
         ComPtr<ICoreWebView2_14> webView14;
         HRESULT result = webView_.As(&webView14);
@@ -587,14 +1207,68 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2ServerCertificateErrorDetectedEventArgs* const args)
                     -> HRESULT {
                     if (weakLifetime.expired()) {
+                        static_cast<void>(cancelCertificateError(args));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status = cancelCertificateError(args);
-                    logOperationFailure("certificate_default_cancel_failed", status);
+                    if (args == nullptr) {
+                        logOperationFailure("certificate_args_missing", E_POINTER);
+                        return S_OK;
+                    }
+                    HRESULT status = args->put_Action(
+                        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);
+                    COREWEBVIEW2_WEB_ERROR_STATUS errorStatus =
+                        COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+                    LPWSTR rawRequestUri = nullptr;
+                    if (SUCCEEDED(status)) {
+                        status = args->get_ErrorStatus(&errorStatus);
+                    }
+                    if (SUCCEEDED(status)) {
+                        status = args->get_RequestUri(&rawRequestUri);
+                    }
+                    CoTaskMemString requestUri(rawRequestUri);
+                    const QString origin = normalizedOriginFromUri(requestUri.get());
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    if (SUCCEEDED(status)) {
+                        status = args->GetDeferral(&deferral);
+                    }
+                    if (FAILED(status) || deferral == nullptr || origin.isEmpty() ||
+                        listener_ == nullptr) {
+                        if (deferral != nullptr) {
+                            status = completeCertificateDecision(
+                                args, deferral.Get(),
+                                gui::BrowserCertificateDecision::ReturnToSafety);
+                        }
+                        logOperationFailure("certificate_request_rejected",
+                                            FAILED(status) ? status : E_INVALIDARG);
+                        return S_OK;
+                    }
+
+                    const std::uint64_t requestId = nextSensitiveRequestId();
+                    PendingCertificate pending{args, deferral, origin,
+                                               lifecycleSerial, generation};
+                    if (!pendingCertificates_.insert(requestId,
+                                                     std::move(pending))) {
+                        logOperationFailure(
+                            "certificate_store_failed",
+                            completeCertificateDecision(
+                                args, deferral.Get(),
+                                gui::BrowserCertificateDecision::ReturnToSafety));
+                        return S_OK;
+                    }
+                    const QString description =
+                        certificateErrorDescription(errorStatus);
+                    dispatchListener(
+                        generation,
+                        [requestId, origin,
+                         description](gui::BrowserEventListener& listener) {
+                            listener.onCertificateErrorRequested(
+                                requestId, origin, description);
+                        });
+                    scheduleCertificateTimeout(requestId, lifecycleSerial);
                     return S_OK;
                 })
                 .Get(),
@@ -608,7 +1282,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
-    // 调用线程：GUI STA；事件回调禁止启动外部应用，不读取或记录目标 URI。
+    // 调用线程：GUI STA；非用户触发或无效目标保持 Cancel，不启动宿主外部进程。
     HRESULT registerLaunchingExternalUriScheme() {
         ComPtr<ICoreWebView2_18> webView18;
         HRESULT result = webView_.As(&webView18);
@@ -625,14 +1299,69 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2LaunchingExternalUriSchemeEventArgs* const args)
                     -> HRESULT {
                     if (weakLifetime.expired()) {
+                        static_cast<void>(cancelExternalUri(args));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status = cancelExternalUri(args);
-                    logOperationFailure("external_uri_default_cancel_failed", status);
+                    if (args == nullptr) {
+                        logOperationFailure("external_uri_args_missing", E_POINTER);
+                        return S_OK;
+                    }
+                    HRESULT status = args->put_Cancel(TRUE);
+                    BOOL isUserInitiated = FALSE;
+                    LPWSTR rawUri = nullptr;
+                    LPWSTR rawInitiatingOrigin = nullptr;
+                    if (SUCCEEDED(status)) {
+                        status = args->get_IsUserInitiated(&isUserInitiated);
+                    }
+                    if (SUCCEEDED(status)) {
+                        status = args->get_Uri(&rawUri);
+                    }
+                    if (SUCCEEDED(status)) {
+                        status = args->get_InitiatingOrigin(&rawInitiatingOrigin);
+                    }
+                    CoTaskMemString uri(rawUri);
+                    CoTaskMemString initiatingOrigin(rawInitiatingOrigin);
+                    const QString target =
+                        uri != nullptr ? QString::fromWCharArray(uri.get()) : QString{};
+                    const QString origin =
+                        normalizedOriginFromUri(initiatingOrigin.get());
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    if (SUCCEEDED(status)) {
+                        status = args->GetDeferral(&deferral);
+                    }
+                    if (FAILED(status) || deferral == nullptr ||
+                        isUserInitiated == FALSE || !isValidExternalTarget(target) ||
+                        origin.isEmpty() || listener_ == nullptr) {
+                        if (deferral != nullptr) {
+                            status = completeExternalProtocolDecision(
+                                args, deferral.Get(), false);
+                        }
+                        logOperationFailure("external_uri_request_rejected",
+                                            FAILED(status) ? status : E_INVALIDARG);
+                        return S_OK;
+                    }
+
+                    const std::uint64_t requestId = nextSensitiveRequestId();
+                    PendingExternalProtocol pending{args, deferral, lifecycleSerial,
+                                                     generation};
+                    if (!pendingExternalProtocols_.insert(requestId,
+                                                          std::move(pending))) {
+                        logOperationFailure(
+                            "external_uri_store_failed",
+                            completeExternalProtocolDecision(args, deferral.Get(),
+                                                             false));
+                        return S_OK;
+                    }
+                    dispatchListener(
+                        generation,
+                        [requestId, target](gui::BrowserEventListener& listener) {
+                            listener.onExternalProtocolRequested(requestId, target);
+                        });
+                    scheduleExternalProtocolTimeout(requestId, lifecycleSerial);
                     return S_OK;
                 })
                 .Get(),
@@ -657,6 +1386,7 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2NewWindowRequestedEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
+                        static_cast<void>(rejectNewWindow(args));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
@@ -942,6 +1672,7 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：创建 COM 对象的 GUI STA；必须先撤销全部事件，再关闭 Controller。
     void releaseBrowserResources() noexcept {
+        cancelPendingSensitiveRequests();
         newWindowRequested_.reset();
         launchingExternalUriScheme_.reset();
         serverCertificateErrorDetected_.reset();
@@ -985,7 +1716,13 @@ class WebView2BrowserBackend::Impl final {
     EventRegistration serverCertificateErrorDetected_;
     EventRegistration launchingExternalUriScheme_;
     EventRegistration newWindowRequested_;
+    PendingRequestStore<PendingPermission> pendingPermissions_;
+    PendingRequestStore<PendingExternalProtocol> pendingExternalProtocols_;
+    PendingRequestStore<PendingCertificate> pendingCertificates_;
+    PendingRequestStore<PendingDownload> pendingDownloads_;
+    std::unordered_map<std::uint64_t, ActiveDownload> activeDownloads_;
     std::shared_ptr<int> lifetime_;
+    std::uint64_t nextSensitiveRequestId_{1};
     std::uint64_t lifecycleSerial_{0};
     std::uint64_t generation_{0};
     NavigationTracker navigation_;

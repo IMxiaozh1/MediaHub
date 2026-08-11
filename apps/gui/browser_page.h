@@ -3,6 +3,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <optional>
 
 #include "browser_event_listener.h"
 
@@ -18,6 +19,8 @@ class QToolButton;
 namespace mediahub::gui {
 
 class BrowserBackend;
+class BrowserDownloadWidget;
+class BrowserPermissionDialog;
 
 // 网页页面维护独立导航状态，并把所有浏览器命令路由到可注入后端。
 class BrowserPage final : public QWidget, public BrowserEventListener {
@@ -91,6 +94,16 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void confirmClearBrowsingData();
     void showHost();
     void showError(BrowserErrorKind kind);
+    // 调用线程：GUI 主线程。只完成仍存活且 requestId 匹配的权限请求。
+    void resolvePermission(std::uint64_t requestId,
+                           BrowserPermissionDecision decision);
+    // 调用线程：GUI 主线程。默认拒绝被关闭、超时或已被替换的外部协议请求。
+    void resolveExternalProtocol(std::uint64_t requestId, bool isAllowed);
+    // 调用线程：GUI 主线程。证书例外只完成当前来源对应的存活请求。
+    void resolveCertificateError(std::uint64_t requestId,
+                                 BrowserCertificateDecision decision);
+    // 调用线程：GUI 主线程。导航前拒绝仍在等待用户回答的旧页面请求。
+    void rejectUnansweredSensitiveRequests();
     void updateControls();
     void updateBackendBounds();
     [[nodiscard]] QString errorText(BrowserErrorKind kind) const;
@@ -115,6 +128,16 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QLabel* statusLabel_{nullptr};
     QLabel* errorLabel_{nullptr};
     QDialog* clearDataDialog_{nullptr};
+    BrowserPermissionDialog* permissionDialog_{nullptr};
+    std::optional<std::uint64_t> pendingPermissionId_;
+    BrowserPermissionKind pendingPermissionKind_{BrowserPermissionKind::Other};
+    QDialog* externalProtocolDialog_{nullptr};
+    QDialog* certificateDialog_{nullptr};
+    BrowserDownloadWidget* downloadWidget_{nullptr};
+    std::optional<std::uint64_t> pendingExternalProtocolId_;
+    std::optional<std::uint64_t> pendingCertificateId_;
+    std::optional<std::uint64_t> activeDownloadId_;
+    bool isDownloadCancellationSent_{false};
 };
 
 }  // namespace mediahub::gui

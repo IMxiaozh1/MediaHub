@@ -176,11 +176,15 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/app_state_store.cpp
         apps/gui/app_state_store.h
         apps/gui/browser_backend.h
+        apps/gui/browser_download_widget.cpp
+        apps/gui/browser_download_widget.h
         apps/gui/browser_event_listener.h
         apps/gui/browser_navigation_policy.cpp
         apps/gui/browser_navigation_policy.h
         apps/gui/browser_page.cpp
         apps/gui/browser_page.h
+        apps/gui/browser_permission_dialog.cpp
+        apps/gui/browser_permission_dialog.h
         apps/gui/browser_profile_directory.cpp
         apps/gui/browser_profile_directory.h
         apps/gui/browser_types.h
@@ -237,6 +241,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         src/browser_webview2/webview2_browser_backend.cpp
         src/browser_webview2/webview2_default_deny.h
         src/browser_webview2/webview2_handles.h
+        src/browser_webview2/webview2_pending_request.h
         src/browser_webview2/webview2_state.h
     )
     target_include_directories(mediahub_browser_webview2

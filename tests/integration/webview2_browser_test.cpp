@@ -20,6 +20,7 @@
 #include "browser_profile_directory.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
 #include "webview2_default_deny.h"
+#include "webview2_pending_request.h"
 #include "webview2_state.h"
 
 namespace mediahub::browser_webview2 {
@@ -101,6 +102,72 @@ class FakeHandledArgs final {
 
     int calls{0};
     BOOL handled{FALSE};
+    HRESULT result{S_OK};
+};
+
+class FakeDeferral final {
+ public:
+    HRESULT Complete() noexcept {
+        ++calls;
+        return result;
+    }
+
+    int calls{0};
+    HRESULT result{S_OK};
+};
+
+class FakePermissionDecisionArgs final {
+ public:
+    HRESULT put_SavesInProfile(const BOOL value) noexcept {
+        ++saveCalls;
+        savesInProfile = value;
+        return saveResult;
+    }
+
+    HRESULT put_State(const COREWEBVIEW2_PERMISSION_STATE value) noexcept {
+        ++stateCalls;
+        state = value;
+        return stateResult;
+    }
+
+    int saveCalls{0};
+    int stateCalls{0};
+    BOOL savesInProfile{FALSE};
+    COREWEBVIEW2_PERMISSION_STATE state{COREWEBVIEW2_PERMISSION_STATE_DEFAULT};
+    HRESULT saveResult{S_OK};
+    HRESULT stateResult{S_OK};
+};
+
+class FakeDownloadDecisionArgs final {
+ public:
+    HRESULT put_ResultFilePath(const wchar_t* const value) {
+        ++pathCalls;
+        path = value != nullptr ? QString::fromWCharArray(value) : QString{};
+        return pathResult;
+    }
+
+    HRESULT put_Cancel(const BOOL value) noexcept {
+        ++cancelCalls;
+        cancel = value;
+        return cancelResult;
+    }
+
+    int pathCalls{0};
+    int cancelCalls{0};
+    QString path;
+    BOOL cancel{TRUE};
+    HRESULT pathResult{S_OK};
+    HRESULT cancelResult{S_OK};
+};
+
+class FakeDownloadOperation final {
+ public:
+    HRESULT Cancel() noexcept {
+        ++cancelCalls;
+        return result;
+    }
+
+    int cancelCalls{0};
     HRESULT result{S_OK};
 };
 
@@ -248,9 +315,11 @@ class WebView2BrowserTest final : public QObject {
     void navigationStopsBeforeStartingAndIgnoresOldCompletion();
     void navigationUsesCurrentGenerationForHistory();
     void defaultDenyPoliciesApplyExactArguments();
+    void pendingSensitiveDecisionsCompleteExactlyOnce();
+    void downloadDecisionRejectsUnsafeDestination();
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
-    void requiresEveryDefaultDenyHandlerBeforeReady();
+    void requiresEverySensitiveHandlerBeforeReady();
     void reportsRuntimeStatusWithoutBlockingGuiThread();
 };
 
@@ -420,6 +489,94 @@ void WebView2BrowserTest::defaultDenyPoliciesApplyExactArguments() {
     QVERIFY(rejectNewWindow<FakeHandledArgs>(nullptr) == E_POINTER);
 }
 
+void WebView2BrowserTest::pendingSensitiveDecisionsCompleteExactlyOnce() {
+    PendingRequestStore<int> requests;
+    QVERIFY(requests.insert(7, 70));
+    QVERIFY(!requests.insert(7, 71));
+    const std::optional<int> request = requests.take(7);
+    QVERIFY(request.has_value());
+    QCOMPARE(*request, 70);
+    QVERIFY(!requests.take(7).has_value());
+
+    FakePermissionDecisionArgs permission;
+    FakeDeferral permissionDeferral;
+    QCOMPARE(completePermissionDecision(
+                 &permission, &permissionDeferral,
+                 gui::BrowserPermissionDecision::RememberForOrigin),
+             S_OK);
+    QCOMPARE(permission.saveCalls, 1);
+    QCOMPARE(permission.savesInProfile, TRUE);
+    QCOMPARE(permission.stateCalls, 1);
+    QCOMPARE(permission.state, COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+    QCOMPARE(permissionDeferral.calls, 1);
+
+    FakePermissionDecisionArgs allowOnce;
+    FakeDeferral allowOnceDeferral;
+    QCOMPARE(completePermissionDecision(
+                 &allowOnce, &allowOnceDeferral,
+                 gui::BrowserPermissionDecision::AllowOnce),
+             S_OK);
+    QCOMPARE(allowOnce.savesInProfile, FALSE);
+    QCOMPARE(allowOnce.state, COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+    QCOMPARE(allowOnceDeferral.calls, 1);
+
+    FakeCancelArgs external;
+    FakeDeferral externalDeferral;
+    QCOMPARE(completeExternalProtocolDecision(&external, &externalDeferral, true),
+             S_OK);
+    QCOMPARE(external.cancel, FALSE);
+    QCOMPARE(externalDeferral.calls, 1);
+
+    FakeCertificateArgs certificate;
+    FakeDeferral certificateDeferral;
+    QCOMPARE(completeCertificateDecision(
+                 &certificate, &certificateDeferral,
+                 gui::BrowserCertificateDecision::ContinueForSession),
+             S_OK);
+    QCOMPARE(certificate.action,
+             COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);
+    QCOMPARE(certificateDeferral.calls, 1);
+}
+
+void WebView2BrowserTest::downloadDecisionRejectsUnsafeDestination() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString existingPath = directory.filePath(QStringLiteral("existing.bin"));
+    QFile existing(existingPath);
+    QVERIFY(existing.open(QIODevice::WriteOnly));
+    existing.close();
+
+    QVERIFY(!isSafeDownloadDestination(QString{}));
+    QVERIFY(!isSafeDownloadDestination(QStringLiteral("relative.bin")));
+    QVERIFY(!isSafeDownloadDestination(directory.path()));
+    QVERIFY(!isSafeDownloadDestination(existingPath));
+    QVERIFY(!isSafeDownloadDestination(
+        directory.filePath(QStringLiteral("missing/file.bin"))));
+
+    const QString newPath = directory.filePath(QStringLiteral("new.bin"));
+    QVERIFY(isSafeDownloadDestination(newPath));
+    FakeDownloadDecisionArgs args;
+    FakeDeferral deferral;
+    QCOMPARE(completeDownloadPathDecision(&args, &deferral, newPath), S_OK);
+    QCOMPARE(args.pathCalls, 1);
+    QCOMPARE(QDir::fromNativeSeparators(args.path),
+             QDir::fromNativeSeparators(newPath));
+    QCOMPARE(args.cancelCalls, 1);
+    QCOMPARE(args.cancel, FALSE);
+    QCOMPARE(deferral.calls, 1);
+
+    FakeDownloadDecisionArgs cancelArgs;
+    FakeDownloadOperation operation;
+    FakeDeferral cancelDeferral;
+    QCOMPARE(completeDownloadCancellation(&cancelArgs, &operation,
+                                         &cancelDeferral),
+             S_OK);
+    QCOMPARE(cancelArgs.cancelCalls, 1);
+    QCOMPARE(cancelArgs.cancel, TRUE);
+    QCOMPARE(operation.cancelCalls, 1);
+    QCOMPARE(cancelDeferral.calls, 1);
+}
+
 void WebView2BrowserTest::rejectsEmptyAndRelativeProfilePaths() {
     const QStringList invalidProfiles{QString{}, QStringLiteral("relative-profile")};
     for (const QString& profile : invalidProfiles) {
@@ -447,7 +604,7 @@ void WebView2BrowserTest::profileDirectoryRequiresAbsoluteApplicationData() {
         QStringLiteral("/WebView2/Profile-v1")));
 }
 
-void WebView2BrowserTest::requiresEveryDefaultDenyHandlerBeforeReady() {
+void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     QFile sourceFile(QStringLiteral(
         MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
     QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
@@ -481,28 +638,42 @@ void WebView2BrowserTest::requiresEveryDefaultDenyHandlerBeforeReady() {
                    ? source.mid(startIndex, endIndex - startIndex)
                    : QString{};
     };
-    const QList<QPair<QString, QString>> handlerPolicies{
+    const QList<QPair<QString, QStringList>> handlerPolicies{
         {handlerSegment(QStringLiteral("HRESULT registerPermissionRequested()"),
                         QStringLiteral("HRESULT registerDownloadStarting()")),
-         QStringLiteral("denyPermission(args)")},
+         {QStringLiteral("GetDeferral"),
+          QStringLiteral("denyPermission(args)"),
+          QStringLiteral("pendingPermissions_.insert"),
+          QStringLiteral("onPermissionRequested")}},
         {handlerSegment(QStringLiteral("HRESULT registerDownloadStarting()"),
                         QStringLiteral(
                             "HRESULT registerServerCertificateErrorDetected()")),
-         QStringLiteral("cancelDownload(args)")},
+         {QStringLiteral("put_Handled(TRUE)"), QStringLiteral("GetDeferral"),
+          QStringLiteral("cancelDownload(args)"),
+          QStringLiteral("pendingDownloads_.insert"),
+          QStringLiteral("onDownloadRequested")}},
         {handlerSegment(
              QStringLiteral("HRESULT registerServerCertificateErrorDetected()"),
              QStringLiteral("HRESULT registerLaunchingExternalUriScheme()")),
-         QStringLiteral("cancelCertificateError(args)")},
+         {QStringLiteral("GetDeferral"),
+          QStringLiteral("cancelCertificateError(args)"),
+          QStringLiteral("pendingCertificates_.insert"),
+          QStringLiteral("onCertificateErrorRequested")}},
         {handlerSegment(QStringLiteral("HRESULT registerLaunchingExternalUriScheme()"),
                         QStringLiteral("HRESULT registerNewWindowRequested()")),
-         QStringLiteral("cancelExternalUri(args)")},
+         {QStringLiteral("get_IsUserInitiated"), QStringLiteral("GetDeferral"),
+          QStringLiteral("cancelExternalUri(args)"),
+          QStringLiteral("pendingExternalProtocols_.insert"),
+          QStringLiteral("onExternalProtocolRequested")}},
         {handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),
                         QStringLiteral("HRESULT registerNavigationStarting()")),
-         QStringLiteral("rejectNewWindow(args)")},
+         {QStringLiteral("rejectNewWindow(args)")}},
     };
-    for (const auto& [segment, policy] : handlerPolicies) {
-        QVERIFY2(!segment.isEmpty(), qPrintable(policy));
-        QVERIFY2(segment.contains(policy), qPrintable(policy));
+    for (const auto& [segment, policies] : handlerPolicies) {
+        QVERIFY(!segment.isEmpty());
+        for (const QString& policy : policies) {
+            QVERIFY2(segment.contains(policy), qPrintable(policy));
+        }
     }
     const QString newWindowHandler =
         handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),
@@ -543,6 +714,11 @@ void WebView2BrowserTest::requiresEveryDefaultDenyHandlerBeforeReady() {
     QVERIFY(releaseEnd > releaseStart);
     const QString releaseResources =
         source.mid(releaseStart, releaseEnd - releaseStart);
+    QVERIFY(releaseResources.contains(QStringLiteral("cancelPendingSensitiveRequests()")));
+    QVERIFY(!source.contains(QStringLiteral("ShellExecute")));
+    QVERIFY(source.contains(
+        QStringLiteral("COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_PROFILE")));
+    QVERIFY(source.contains(QStringLiteral("ClearServerCertificateErrorActions")));
     const QStringList requiredResetMarkers{
         QStringLiteral("permissionRequested_.reset"),
         QStringLiteral("downloadStarting_.reset"),

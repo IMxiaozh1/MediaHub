@@ -164,6 +164,47 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         }
     }
 
+    void emitPermissionRequested(std::uint64_t requestId, const QString& origin,
+                                 gui::BrowserPermissionKind kind) {
+        if (listener_ != nullptr) {
+            listener_->onPermissionRequested(requestId, origin, kind);
+        }
+    }
+
+    void emitExternalProtocolRequested(std::uint64_t requestId,
+                                       const QString& target) {
+        if (listener_ != nullptr) {
+            listener_->onExternalProtocolRequested(requestId, target);
+        }
+    }
+
+    void emitCertificateErrorRequested(std::uint64_t requestId,
+                                       const QString& origin,
+                                       const QString& errorDescription) {
+        if (listener_ != nullptr) {
+            listener_->onCertificateErrorRequested(requestId, origin,
+                                                   errorDescription);
+        }
+    }
+
+    void emitDownloadRequested(std::uint64_t requestId, const QString& origin,
+                               const QString& suggestedFileName,
+                               std::int64_t totalBytes) {
+        if (listener_ != nullptr) {
+            listener_->onDownloadRequested(requestId, origin, suggestedFileName,
+                                           totalBytes);
+        }
+    }
+
+    void emitDownloadUpdated(std::uint64_t requestId,
+                             gui::BrowserDownloadState state,
+                             std::int64_t receivedBytes,
+                             std::int64_t totalBytes) {
+        if (listener_ != nullptr) {
+            listener_->onDownloadUpdated(requestId, state, receivedBytes, totalBytes);
+        }
+    }
+
     [[nodiscard]] int count(FakeBrowserCommandKind kind) const {
         int result = 0;
         for (const FakeBrowserCommand& command : commands) {

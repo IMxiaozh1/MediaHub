@@ -1,6 +1,7 @@
 #include "browser_page.h"
 
 #include <QDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -11,13 +12,17 @@
 #include <QShowEvent>
 #include <QStackedLayout>
 #include <QToolButton>
+#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QtMath>
 
 #include <utility>
 
 #include "browser_backend.h"
+#include "browser_download_widget.h"
 #include "browser_navigation_policy.h"
+#include "browser_permission_dialog.h"
 
 namespace mediahub::gui {
 namespace {
@@ -31,6 +36,38 @@ QToolButton* createToolButton(const QString& objectName, const QString& text,
     button->setText(text);
     button->setAutoRaise(false);
     return button;
+}
+
+QString normalizedWebOrigin(const QString& origin) {
+    const QUrl parsed(origin, QUrl::StrictMode);
+    const QString scheme = parsed.scheme().toLower();
+    if (!parsed.isValid() || (scheme != QStringLiteral("https") &&
+                              scheme != QStringLiteral("http")) ||
+        parsed.host().isEmpty() || !parsed.userName().isEmpty() ||
+        !parsed.password().isEmpty() || !parsed.path().isEmpty() ||
+        parsed.hasQuery() || parsed.hasFragment()) {
+        return {};
+    }
+    QUrl normalized;
+    normalized.setScheme(scheme);
+    normalized.setHost(parsed.host().toLower());
+    normalized.setPort(parsed.port(-1));
+    return normalized.toString(QUrl::FullyEncoded | QUrl::RemovePath |
+                               QUrl::RemoveQuery | QUrl::RemoveFragment |
+                               QUrl::RemoveUserInfo);
+}
+
+bool isAcceptableExternalTarget(const QString& target) {
+    const QUrl parsed(target, QUrl::StrictMode);
+    const QString scheme = parsed.scheme().toLower();
+    if (!parsed.isValid() || scheme.isEmpty() || target.contains(QLatin1Char('\n')) ||
+        target.contains(QLatin1Char('\r'))) {
+        return false;
+    }
+    return scheme != QStringLiteral("http") && scheme != QStringLiteral("https") &&
+           scheme != QStringLiteral("file") && scheme != QStringLiteral("data") &&
+           scheme != QStringLiteral("javascript") && scheme != QStringLiteral("about") &&
+           scheme != QStringLiteral("blob");
 }
 
 }  // namespace
@@ -75,6 +112,21 @@ void BrowserPage::shutdown() noexcept {
     isShuttingDown_ = true;
     state_ = BrowserPageState::ShuttingDown;
     ++generation_;
+    if (pendingPermissionId_.has_value()) {
+        resolvePermission(*pendingPermissionId_, BrowserPermissionDecision::Deny);
+    }
+    if (pendingExternalProtocolId_.has_value()) {
+        resolveExternalProtocol(*pendingExternalProtocolId_, false);
+    }
+    if (pendingCertificateId_.has_value()) {
+        resolveCertificateError(*pendingCertificateId_,
+                                BrowserCertificateDecision::ReturnToSafety);
+    }
+    if (activeDownloadId_.has_value() && !downloadWidget_->isTerminal() &&
+        !isDownloadCancellationSent_) {
+        isDownloadCancellationSent_ = true;
+        backend_.cancelDownload(*activeDownloadId_);
+    }
     backend_.setEventListener(nullptr);
     backend_.shutdown();
     state_ = BrowserPageState::Unavailable;
@@ -119,6 +171,7 @@ void BrowserPage::onNavigationStarted(std::uint64_t generation) {
     if (generation != generation_ || isShuttingDown_) {
         return;
     }
+    rejectUnansweredSensitiveRequests();
     state_ = BrowserPageState::Navigating;
     statusLabel_->setText(QStringLiteral("正在载入..."));
     updateControls();
@@ -151,29 +204,197 @@ void BrowserPage::onFullScreenChanged(std::uint64_t generation,
     emit fullScreenChanged(isFullScreen);
 }
 
-void BrowserPage::onPermissionRequested(std::uint64_t requestId, const QString&,
-                                        BrowserPermissionKind) {
-    backend_.answerPermission(requestId, BrowserPermissionDecision::Deny);
+void BrowserPage::onPermissionRequested(const std::uint64_t requestId,
+                                        const QString& origin,
+                                        const BrowserPermissionKind kind) {
+    if (isShuttingDown_ || normalizedWebOrigin(origin) != origin) {
+        backend_.answerPermission(requestId, BrowserPermissionDecision::Deny);
+        return;
+    }
+    if (pendingPermissionId_.has_value()) {
+        resolvePermission(*pendingPermissionId_, BrowserPermissionDecision::Deny);
+    }
+
+    pendingPermissionId_ = requestId;
+    pendingPermissionKind_ = kind;
+    permissionDialog_ = new BrowserPermissionDialog(origin, kind, this);
+    connect(permissionDialog_, &BrowserPermissionDialog::decisionMade, this,
+            [this, requestId](const BrowserPermissionDecision decision) {
+                resolvePermission(requestId, decision);
+            });
+    auto* timeout = new QTimer(permissionDialog_);
+    timeout->setObjectName(QStringLiteral("browserPermissionTimeout"));
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, this, [this, requestId] {
+        resolvePermission(requestId, BrowserPermissionDecision::Deny);
+    });
+    timeout->start(30000);
+    permissionDialog_->show();
+    permissionDialog_->raise();
+    permissionDialog_->activateWindow();
 }
 
 void BrowserPage::onExternalProtocolRequested(std::uint64_t requestId,
-                                              const QString&) {
-    backend_.answerExternalProtocol(requestId, false);
+                                              const QString& target) {
+    if (isShuttingDown_ || !isAcceptableExternalTarget(target)) {
+        backend_.answerExternalProtocol(requestId, false);
+        return;
+    }
+    if (pendingExternalProtocolId_.has_value()) {
+        resolveExternalProtocol(*pendingExternalProtocolId_, false);
+    }
+
+    pendingExternalProtocolId_ = requestId;
+    externalProtocolDialog_ = new QDialog(this);
+    externalProtocolDialog_->setObjectName(
+        QStringLiteral("browserExternalProtocolDialog"));
+    externalProtocolDialog_->setWindowTitle(QStringLiteral("打开外部应用"));
+    externalProtocolDialog_->setModal(false);
+    auto* layout = new QVBoxLayout(externalProtocolDialog_);
+    auto* explanation = new QLabel(
+        QStringLiteral("网页请求把以下目标交给其他应用。只有确认后才会继续。"),
+        externalProtocolDialog_);
+    explanation->setWordWrap(true);
+    layout->addWidget(explanation);
+    auto* targetLabel = new QLabel(target, externalProtocolDialog_);
+    targetLabel->setObjectName(
+        QStringLiteral("browserExternalProtocolTargetLabel"));
+    targetLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    targetLabel->setWordWrap(true);
+    layout->addWidget(targetLabel);
+    auto* buttons = new QHBoxLayout();
+    auto* cancelButton = new QPushButton(QStringLiteral("取消"),
+                                         externalProtocolDialog_);
+    cancelButton->setObjectName(
+        QStringLiteral("browserExternalProtocolCancelButton"));
+    auto* confirmButton = new QPushButton(QStringLiteral("打开外部应用"),
+                                          externalProtocolDialog_);
+    confirmButton->setObjectName(
+        QStringLiteral("browserExternalProtocolConfirmButton"));
+    buttons->addStretch();
+    buttons->addWidget(cancelButton);
+    buttons->addWidget(confirmButton);
+    layout->addLayout(buttons);
+    connect(cancelButton, &QPushButton::clicked, this,
+            [this, requestId] { resolveExternalProtocol(requestId, false); });
+    connect(confirmButton, &QPushButton::clicked, this,
+            [this, requestId] { resolveExternalProtocol(requestId, true); });
+    connect(externalProtocolDialog_, &QDialog::rejected, this,
+            [this, requestId] { resolveExternalProtocol(requestId, false); });
+    auto* timeout = new QTimer(externalProtocolDialog_);
+    timeout->setSingleShot(true);
+    timeout->setObjectName(QStringLiteral("browserExternalProtocolTimeout"));
+    connect(timeout, &QTimer::timeout, this,
+            [this, requestId] { resolveExternalProtocol(requestId, false); });
+    timeout->start(30000);
+    externalProtocolDialog_->show();
+    externalProtocolDialog_->raise();
+    externalProtocolDialog_->activateWindow();
 }
 
 void BrowserPage::onCertificateErrorRequested(std::uint64_t requestId,
-                                              const QString&, const QString&) {
-    backend_.answerCertificateError(requestId,
-                                    BrowserCertificateDecision::ReturnToSafety);
+                                              const QString& origin,
+                                              const QString& errorDescription) {
+    if (isShuttingDown_ || normalizedWebOrigin(origin) != origin ||
+        errorDescription.trimmed().isEmpty()) {
+        backend_.answerCertificateError(
+            requestId, BrowserCertificateDecision::ReturnToSafety);
+        return;
+    }
+    if (pendingCertificateId_.has_value()) {
+        resolveCertificateError(*pendingCertificateId_,
+                                BrowserCertificateDecision::ReturnToSafety);
+    }
+
+    pendingCertificateId_ = requestId;
+    certificateDialog_ = new QDialog(this);
+    certificateDialog_->setObjectName(QStringLiteral("browserCertificateDialog"));
+    certificateDialog_->setWindowTitle(QStringLiteral("证书安全警告"));
+    certificateDialog_->setModal(false);
+    auto* layout = new QVBoxLayout(certificateDialog_);
+    auto* warning = new QLabel(
+        QStringLiteral("此网站的服务器证书存在问题。继续仅对当前网页会话生效。"),
+        certificateDialog_);
+    warning->setWordWrap(true);
+    layout->addWidget(warning);
+    auto* originLabel = new QLabel(origin, certificateDialog_);
+    originLabel->setObjectName(QStringLiteral("browserCertificateOriginLabel"));
+    originLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(originLabel);
+    auto* errorLabel = new QLabel(errorDescription, certificateDialog_);
+    errorLabel->setObjectName(QStringLiteral("browserCertificateErrorLabel"));
+    errorLabel->setWordWrap(true);
+    layout->addWidget(errorLabel);
+    auto* buttons = new QHBoxLayout();
+    auto* safetyButton = new QPushButton(QStringLiteral("返回安全页面"),
+                                         certificateDialog_);
+    safetyButton->setObjectName(QStringLiteral("browserCertificateSafetyButton"));
+    auto* continueButton = new QPushButton(QStringLiteral("仅本次会话继续"),
+                                           certificateDialog_);
+    continueButton->setObjectName(
+        QStringLiteral("browserCertificateContinueButton"));
+    buttons->addStretch();
+    buttons->addWidget(safetyButton);
+    buttons->addWidget(continueButton);
+    layout->addLayout(buttons);
+    connect(safetyButton, &QPushButton::clicked, this, [this, requestId] {
+        resolveCertificateError(requestId,
+                                BrowserCertificateDecision::ReturnToSafety);
+    });
+    connect(continueButton, &QPushButton::clicked, this, [this, requestId] {
+        resolveCertificateError(requestId,
+                                BrowserCertificateDecision::ContinueForSession);
+    });
+    connect(certificateDialog_, &QDialog::rejected, this, [this, requestId] {
+        resolveCertificateError(requestId,
+                                BrowserCertificateDecision::ReturnToSafety);
+    });
+    auto* timeout = new QTimer(certificateDialog_);
+    timeout->setSingleShot(true);
+    timeout->setObjectName(QStringLiteral("browserCertificateTimeout"));
+    connect(timeout, &QTimer::timeout, this, [this, requestId] {
+        resolveCertificateError(requestId,
+                                BrowserCertificateDecision::ReturnToSafety);
+    });
+    timeout->start(30000);
+    certificateDialog_->show();
+    certificateDialog_->raise();
+    certificateDialog_->activateWindow();
 }
 
-void BrowserPage::onDownloadRequested(std::uint64_t requestId, const QString&,
-                                      const QString&, std::int64_t) {
-    backend_.cancelDownload(requestId);
+void BrowserPage::onDownloadRequested(const std::uint64_t requestId,
+                                      const QString& origin,
+                                      const QString& suggestedFileName,
+                                      const std::int64_t totalBytes) {
+    const QFileInfo suggestedInfo(suggestedFileName);
+    const bool isSafeFileName = !suggestedFileName.trimmed().isEmpty() &&
+                                suggestedInfo.fileName() == suggestedFileName &&
+                                !suggestedFileName.contains(QLatin1Char('/')) &&
+                                !suggestedFileName.contains(QLatin1Char('\\'));
+    if (isShuttingDown_ || normalizedWebOrigin(origin) != origin ||
+        !isSafeFileName || totalBytes < -1) {
+        backend_.cancelDownload(requestId);
+        return;
+    }
+    if (activeDownloadId_.has_value() && !downloadWidget_->isTerminal()) {
+        backend_.cancelDownload(requestId);
+        return;
+    }
+    activeDownloadId_ = requestId;
+    isDownloadCancellationSent_ = false;
+    downloadWidget_->beginDownload(requestId, origin, suggestedFileName, totalBytes);
 }
 
-void BrowserPage::onDownloadUpdated(std::uint64_t, BrowserDownloadState,
-                                    std::int64_t, std::int64_t) {}
+void BrowserPage::onDownloadUpdated(const std::uint64_t requestId,
+                                    const BrowserDownloadState state,
+                                    const std::int64_t receivedBytes,
+                                    const std::int64_t totalBytes) {
+    if (isShuttingDown_ || !activeDownloadId_.has_value() ||
+        *activeDownloadId_ != requestId) {
+        return;
+    }
+    downloadWidget_->updateDownload(requestId, state, receivedBytes, totalBytes);
+}
 
 void BrowserPage::onBrowsingDataCleared(std::uint64_t generation) {
     if (generation != generation_ || isShuttingDown_) {
@@ -275,6 +496,8 @@ void BrowserPage::buildUi() {
 
     rootLayout->addWidget(toolbar);
     rootLayout->addWidget(informationRow);
+    downloadWidget_ = new BrowserDownloadWidget(this);
+    rootLayout->addWidget(downloadWidget_);
     rootLayout->addWidget(content, 1);
 
     connect(addressEdit_, &QLineEdit::returnPressed, this,
@@ -289,6 +512,22 @@ void BrowserPage::buildUi() {
             [this] { navigateTo(kBrowserHomeUrl); });
     connect(clearDataButton_, &QPushButton::clicked, this,
             &BrowserPage::showClearDataConfirmation);
+    connect(downloadWidget_, &BrowserDownloadWidget::destinationChosen, this,
+            [this](const std::uint64_t requestId, const QString& destination) {
+                if (!isShuttingDown_ && activeDownloadId_.has_value() &&
+                    *activeDownloadId_ == requestId) {
+                    backend_.chooseDownloadPath(requestId, destination);
+                }
+            });
+    connect(downloadWidget_, &BrowserDownloadWidget::cancelRequested, this,
+            [this](const std::uint64_t requestId) {
+                if (!isShuttingDown_ && activeDownloadId_.has_value() &&
+                    *activeDownloadId_ == requestId &&
+                    !isDownloadCancellationSent_) {
+                    isDownloadCancellationSent_ = true;
+                    backend_.cancelDownload(requestId);
+                }
+            });
 
     auto* focusAddress = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
     connect(focusAddress, &QShortcut::activated, this, [this] {
@@ -319,6 +558,7 @@ void BrowserPage::navigateTo(const QString& normalizedUrl) {
         state_ == BrowserPageState::ClearingData) {
         return;
     }
+    rejectUnansweredSensitiveRequests();
     ++generation_;
     state_ = BrowserPageState::Navigating;
     statusLabel_->setText(QStringLiteral("正在载入..."));
@@ -378,6 +618,78 @@ void BrowserPage::showError(BrowserErrorKind kind) {
     errorLabel_->setText(errorText(kind));
     contentStack_->setCurrentWidget(errorLabel_);
     statusLabel_->setText(QStringLiteral("网页功能需要处理"));
+}
+
+void BrowserPage::resolvePermission(
+    const std::uint64_t requestId, BrowserPermissionDecision decision) {
+    if (!pendingPermissionId_.has_value() || *pendingPermissionId_ != requestId) {
+        return;
+    }
+    if (pendingPermissionKind_ == BrowserPermissionKind::Other) {
+        decision = BrowserPermissionDecision::Deny;
+    }
+    pendingPermissionId_.reset();
+    pendingPermissionKind_ = BrowserPermissionKind::Other;
+    BrowserPermissionDialog* const dialog = permissionDialog_;
+    permissionDialog_ = nullptr;
+    if (dialog != nullptr) {
+        dialog->setObjectName(QStringLiteral("browserPermissionDialogFinished"));
+        dialog->hide();
+        dialog->deleteLater();
+    }
+    backend_.answerPermission(requestId, decision);
+}
+
+void BrowserPage::resolveExternalProtocol(const std::uint64_t requestId,
+                                          const bool isAllowed) {
+    if (!pendingExternalProtocolId_.has_value() ||
+        *pendingExternalProtocolId_ != requestId) {
+        return;
+    }
+    pendingExternalProtocolId_.reset();
+    QDialog* const dialog = externalProtocolDialog_;
+    externalProtocolDialog_ = nullptr;
+    if (dialog != nullptr) {
+        dialog->setObjectName(QStringLiteral("browserExternalProtocolDialogFinished"));
+        dialog->hide();
+        dialog->deleteLater();
+    }
+    backend_.answerExternalProtocol(requestId, isAllowed);
+}
+
+void BrowserPage::resolveCertificateError(
+    const std::uint64_t requestId,
+    const BrowserCertificateDecision decision) {
+    if (!pendingCertificateId_.has_value() ||
+        *pendingCertificateId_ != requestId) {
+        return;
+    }
+    pendingCertificateId_.reset();
+    QDialog* const dialog = certificateDialog_;
+    certificateDialog_ = nullptr;
+    if (dialog != nullptr) {
+        dialog->setObjectName(QStringLiteral("browserCertificateDialogFinished"));
+        dialog->hide();
+        dialog->deleteLater();
+    }
+    backend_.answerCertificateError(requestId, decision);
+}
+
+void BrowserPage::rejectUnansweredSensitiveRequests() {
+    if (pendingPermissionId_.has_value()) {
+        resolvePermission(*pendingPermissionId_, BrowserPermissionDecision::Deny);
+    }
+    if (pendingExternalProtocolId_.has_value()) {
+        resolveExternalProtocol(*pendingExternalProtocolId_, false);
+    }
+    if (pendingCertificateId_.has_value()) {
+        resolveCertificateError(*pendingCertificateId_,
+                                BrowserCertificateDecision::ReturnToSafety);
+    }
+    if (activeDownloadId_.has_value() && !downloadWidget_->isTerminal() &&
+        !downloadWidget_->hasSubmittedDestination()) {
+        downloadWidget_->completeDestinationSelection(QString{});
+    }
 }
 
 void BrowserPage::updateControls() {
