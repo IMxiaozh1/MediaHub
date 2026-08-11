@@ -122,6 +122,47 @@ class FakeDeferral final {
     std::vector<QString>* order{nullptr};
 };
 
+class FakePopupArgs final {
+ public:
+    HRESULT put_Handled(const BOOL value) noexcept {
+        if (order != nullptr) {
+            order->push_back(QStringLiteral("handled"));
+        }
+        ++handledCalls;
+        handled = value;
+        return handledResult;
+    }
+
+    HRESULT GetDeferral(FakeDeferral** const value) noexcept {
+        if (order != nullptr) {
+            order->push_back(QStringLiteral("get_deferral"));
+        }
+        ++deferralCalls;
+        *value = deferral;
+        return deferralResult;
+    }
+
+    HRESULT put_NewWindow(void* const value) noexcept {
+        if (order != nullptr) {
+            order->push_back(QStringLiteral("new_window"));
+        }
+        ++newWindowCalls;
+        newWindow = value;
+        return newWindowResult;
+    }
+
+    int handledCalls{0};
+    int deferralCalls{0};
+    int newWindowCalls{0};
+    BOOL handled{FALSE};
+    void* newWindow{nullptr};
+    HRESULT handledResult{S_OK};
+    HRESULT deferralResult{S_OK};
+    HRESULT newWindowResult{S_OK};
+    FakeDeferral* deferral{nullptr};
+    std::vector<QString>* order{nullptr};
+};
+
 class FakeCertificatePreparationArgs final {
  public:
     HRESULT put_Action(
@@ -468,6 +509,8 @@ class WebView2BrowserTest final : public QObject {
     void suspensionCoordinatesPendingResume();
     void suspensionHandlesFailureAndStaleCompletion();
     void suspensionIgnoresCompletionAfterInvalidation();
+    void popupCoordinatorLimitsThreeWindowsAndRejectsShutdown();
+    void popupRequestCompletesEverySafetyActionExactlyOnce();
     void navigationBindsExplicitGenerationsInOrder();
     void navigationStopsBeforeStartingAndIgnoresOldCompletion();
     void navigationUsesCurrentGenerationForHistory();
@@ -562,6 +605,54 @@ void WebView2BrowserTest::suspensionIgnoresCompletionAfterInvalidation() {
     QCOMPARE(coordinator.completeTrySuspend(suspend.requestSerial, true, true).action,
              SuspensionAction::None);
     QVERIFY(coordinator.mustMute());
+}
+
+void WebView2BrowserTest::popupCoordinatorLimitsThreeWindowsAndRejectsShutdown() {
+    PopupCoordinator coordinator;
+
+    QVERIFY(coordinator.tryReserve());
+    QVERIFY(coordinator.tryReserve());
+    QVERIFY(coordinator.tryReserve());
+    QVERIFY(!coordinator.tryReserve());
+    QCOMPARE(coordinator.activeCount(), std::size_t{3});
+
+    coordinator.release();
+    QVERIFY(coordinator.tryReserve());
+    coordinator.beginShutdown();
+    QVERIFY(!coordinator.tryReserve());
+    QCOMPARE(coordinator.activeCount(), std::size_t{0});
+
+    coordinator.reset();
+    QVERIFY(coordinator.tryReserve());
+}
+
+void WebView2BrowserTest::popupRequestCompletesEverySafetyActionExactlyOnce() {
+    std::vector<QString> order;
+    FakeDeferral deferral;
+    deferral.order = &order;
+    FakePopupArgs args;
+    args.order = &order;
+    args.deferral = &deferral;
+    args.handledResult = E_ACCESSDENIED;
+    FakeDeferral* preparedDeferral = nullptr;
+
+    QCOMPARE(preparePopupRequest(&args, &preparedDeferral), E_ACCESSDENIED);
+    QCOMPARE(preparedDeferral, &deferral);
+    QCOMPARE(args.handledCalls, 1);
+    QCOMPARE(args.deferralCalls, 1);
+
+    int popupWebView = 0;
+    QCOMPARE(completePopupRequest(&args, preparedDeferral, &popupWebView),
+             E_ACCESSDENIED);
+    QCOMPARE(args.newWindowCalls, 1);
+    QCOMPARE(args.handledCalls, 2);
+    QCOMPARE(deferral.calls, 1);
+    QCOMPARE(order,
+             std::vector<QString>({QStringLiteral("handled"),
+                                   QStringLiteral("get_deferral"),
+                                   QStringLiteral("new_window"),
+                                   QStringLiteral("handled"),
+                                   QStringLiteral("deferral")}));
 }
 
 void WebView2BrowserTest::navigationBindsExplicitGenerationsInOrder() {
@@ -1394,6 +1485,33 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
              qPrintable(sourceFile.errorString()));
     const QString source = QString::fromUtf8(sourceFile.readAll());
+    QFile popupSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
+    QVERIFY2(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(popupSourceFile.errorString()));
+    const QString popupSource = QString::fromUtf8(popupSourceFile.readAll());
+
+    const int popupCreateStart = popupSource.indexOf(
+        QStringLiteral("HRESULT WebView2PopupWindow::createFor("));
+    const int popupCreateEnd = popupSource.indexOf(
+        QStringLiteral("void WebView2PopupWindow::close()"));
+    QVERIFY(popupCreateStart >= 0);
+    QVERIFY(popupCreateEnd > popupCreateStart);
+    const QString popupCreate = popupSource.mid(
+        popupCreateStart, popupCreateEnd - popupCreateStart);
+    const int preparePopup =
+        popupCreate.indexOf(QStringLiteral("preparePopupRequest"));
+    const int storePopupDeferral =
+        popupCreate.indexOf(QStringLiteral("pendingDeferral_ = deferral"));
+    const int rejectFailedPreparation =
+        popupCreate.indexOf(QStringLiteral("if (FAILED(result)"));
+    QVERIFY(preparePopup >= 0);
+    QVERIFY(storePopupDeferral > preparePopup);
+    QVERIFY(rejectFailedPreparation > storePopupDeferral);
+    QVERIFY(popupCreate.contains(QStringLiteral("completePendingRequest(false)")));
+    QVERIFY(popupSource.contains(
+        QStringLiteral("CreateCoreWebView2ControllerWithOptions")));
+    QVERIFY(popupSource.contains(QStringLiteral("options->put_ProfileName")));
 
     const int registerEventsStart = source.indexOf(QStringLiteral("HRESULT registerEvents()"));
     const int registerEventsEnd =
@@ -1510,7 +1628,13 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     const QString newWindowHandler =
         handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),
                        QStringLiteral("HRESULT registerNavigationStarting()"));
-    QVERIFY(!newWindowHandler.contains(QStringLiteral("onPopupRejected")));
+    QVERIFY(newWindowHandler.contains(
+        QStringLiteral("handleNewWindowRequest(args)")));
+    QVERIFY(source.contains(QStringLiteral("popupCoordinator_.tryReserve()")));
+    QVERIFY(source.contains(QStringLiteral("std::make_unique<WebView2PopupWindow>")));
+    QVERIFY(source.contains(QStringLiteral("listener.onPopupRejected()")));
+    QVERIFY(source.contains(
+        QStringLiteral("return FAILED(result) ? result : S_OK;")));
 
     const QStringList requiredBindMarkers{
         QStringLiteral("permissionRequested_.bind"),
@@ -1563,6 +1687,12 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     const int controllerClose =
         releaseResources.indexOf(QStringLiteral("controller_->Close()"));
     QVERIFY(controllerClose >= 0);
+    const int popupClose =
+        releaseResources.indexOf(QStringLiteral("closePopups()"));
+    const int firstTokenReset = releaseResources.indexOf(
+        QStringLiteral("newWindowRequested_.reset"));
+    QVERIFY(popupClose >= 0);
+    QVERIFY(firstTokenReset > popupClose);
     for (const QString& marker : requiredResetMarkers) {
         const int reset = releaseResources.indexOf(marker);
         QVERIFY2(reset >= 0, qPrintable(marker));

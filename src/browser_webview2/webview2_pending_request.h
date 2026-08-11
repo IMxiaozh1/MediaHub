@@ -57,6 +57,33 @@ inline HRESULT firstFailure(const HRESULT current,
     return FAILED(current) ? current : candidate;
 }
 
+// NewWindowRequested 必须先阻止默认弹窗，并取得异步创建子控制器所需的 deferral。
+template <typename Args, typename Deferral>
+HRESULT preparePopupRequest(Args* const args, Deferral** const deferral) noexcept {
+    if (args == nullptr || deferral == nullptr) {
+        return E_POINTER;
+    }
+    const HRESULT handledResult = args->put_Handled(TRUE);
+    return firstFailure(handledResult, args->GetDeferral(deferral));
+}
+
+// 完成时即使前一步失败，也必须继续设置 Handled 并 exact-once Complete。
+template <typename Args, typename Deferral, typename WebView>
+HRESULT completePopupRequest(Args* const args, Deferral* const deferral,
+                             WebView* const webView) noexcept {
+    HRESULT result = args != nullptr ? S_OK : E_POINTER;
+    if (args != nullptr && webView != nullptr) {
+        result = args->put_NewWindow(webView);
+    }
+    if (args != nullptr) {
+        result = firstFailure(result, args->put_Handled(TRUE));
+    }
+    if (deferral == nullptr) {
+        return firstFailure(result, E_POINTER);
+    }
+    return firstFailure(result, deferral->Complete());
+}
+
 // 标准权限准备失败时不依赖 Args3，也必须拒绝并完成已取得的 deferral。
 template <typename BaseArgs, typename Args3, typename Deferral>
 HRESULT completePermissionRejection(BaseArgs* const baseArgs,

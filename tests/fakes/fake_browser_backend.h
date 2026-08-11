@@ -29,6 +29,7 @@ enum class FakeBrowserCommandKind {
     AnswerExternalProtocol,
     AnswerCertificateError,
     ExitFullScreen,
+    ClosePopups,
     Shutdown,
 };
 
@@ -136,6 +137,10 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
 
     void exitFullScreen() override {
         commands.push_back({FakeBrowserCommandKind::ExitFullScreen});
+    }
+
+    void closePopups() noexcept override {
+        commands.push_back({FakeBrowserCommandKind::ClosePopups});
     }
 
     void shutdown() noexcept override {

@@ -100,6 +100,7 @@ class UnavailableBrowserBackend final : public BrowserBackend {
   void answerCertificateError(std::uint64_t,
                               BrowserCertificateDecision) override {}
   void exitFullScreen() override {}
+  void closePopups() noexcept override {}
   void shutdown() noexcept override { listener_ = nullptr; }
 
  private:
@@ -1179,6 +1180,8 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   browserPage_ = new BrowserPage(*browserBackend_,
                                  std::move(browserProfileDirectory),
                                  displayModeContainer);
+  connect(browserPage_, &BrowserPage::fullScreenChanged, this,
+          &MainWindow::handleWebFullScreenChanged);
   displayModeStack_->addWidget(nativePlaybackPage_);
   displayModeStack_->addWidget(browserPage_);
   displayModeStack_->setCurrentWidget(nativePlaybackPage_);
@@ -2053,10 +2056,31 @@ void MainWindow::toggleFullScreen() {
 }
 
 void MainWindow::exitFullScreen() {
+  if (displayMode_ == DisplayMode::Web && browserPage_ != nullptr &&
+      browserPage_->isWebFullScreen()) {
+    browserPage_->exitWebFullScreen();
+    return;
+  }
   if (isFullScreen()) {
     showNormal();
     updateFullScreenText();
   }
+}
+
+void MainWindow::handleWebFullScreenChanged(const bool isFullScreen) {
+  if (isFullScreen) {
+    if (!webFullScreenPreviousWindowState_.has_value()) {
+      webFullScreenPreviousWindowState_ = windowState();
+    }
+    if (!this->isFullScreen()) {
+      showFullScreen();
+    }
+  } else if (webFullScreenPreviousWindowState_.has_value()) {
+    const Qt::WindowStates previousState = *webFullScreenPreviousWindowState_;
+    webFullScreenPreviousWindowState_.reset();
+    setWindowState(previousState);
+  }
+  updateFullScreenText();
 }
 
 void MainWindow::updateFullScreenText() {

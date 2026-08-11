@@ -159,6 +159,7 @@ class MainWindow final : public QMainWindow {
   void showShortcutHelp();
   void toggleFullScreen();
   void exitFullScreen();
+  void handleWebFullScreenChanged(bool isFullScreen);
   void updateFullScreenText();
   void togglePlaylistVisibility();
   void updatePlaylistToggleAppearance();
@@ -252,6 +253,7 @@ class MainWindow final : public QMainWindow {
   QAbstractItemModel* livePlaylistModel_{nullptr};
   int keyboardSeekStepSeconds_{5};
   std::optional<UiPresentationMode> presentationMode_;
+  std::optional<Qt::WindowStates> webFullScreenPreviousWindowState_;
   DisplayMode displayMode_{DisplayMode::Local};
   int currentPlaylistIndex_{-1};
   int currentLivePlaybackIndex_{-1};

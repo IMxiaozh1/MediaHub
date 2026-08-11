@@ -8,7 +8,9 @@
 #include "browser_event_listener.h"
 
 class QDialog;
+class QFrame;
 class QLabel;
+class QKeyEvent;
 class QLineEdit;
 class QPushButton;
 class QResizeEvent;
@@ -82,6 +84,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void fullScreenChanged(bool isFullScreen);
 
  protected:
+    // 调用线程：GUI 主线程。网页全屏时 Esc 只请求退出网页全屏。
+    void keyPressEvent(QKeyEvent* event) override;
     // 调用线程：GUI 主线程。首次显示并取得原生句柄后才异步初始化后端。
     void showEvent(QShowEvent* event) override;
     // 调用线程：GUI 主线程。只提交最新有效的物理像素客户区。
@@ -116,6 +120,11 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     bool isInitialized_{false};
     bool isShuttingDown_{false};
     bool isWebFullScreen_{false};
+    bool wasToolbarHidden_{false};
+    bool wasInformationRowHidden_{false};
+    bool wasDownloadWidgetHidden_{true};
+    QFrame* toolbar_{nullptr};
+    QWidget* informationRow_{nullptr};
     QWidget* browserHost_{nullptr};
     QStackedLayout* contentStack_{nullptr};
     QToolButton* backButton_{nullptr};

@@ -1,11 +1,52 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <optional>
 #include <unordered_map>
 
 namespace mediahub::browser_webview2 {
+
+// 统一限制主浏览器拥有的登录子窗口数量，并在关闭开始后拒绝新预约。
+class PopupCoordinator final {
+ public:
+    static constexpr std::size_t kMaximumPopups = 3;
+
+    // 调用线程：创建 Environment 的 GUI STA。
+    [[nodiscard]] bool tryReserve() noexcept {
+        if (isShuttingDown_ || activeCount_ >= kMaximumPopups) {
+            return false;
+        }
+        ++activeCount_;
+        return true;
+    }
+
+    // 调用线程：创建 Environment 的 GUI STA。
+    void release() noexcept {
+        if (activeCount_ > 0) {
+            --activeCount_;
+        }
+    }
+
+    // 调用线程：创建 Environment 的 GUI STA；调用方随后同步关闭全部子窗口。
+    void beginShutdown() noexcept {
+        isShuttingDown_ = true;
+        activeCount_ = 0;
+    }
+
+    // 调用线程：新生命周期开始时所在的 GUI STA。
+    void reset() noexcept {
+        activeCount_ = 0;
+        isShuttingDown_ = false;
+    }
+
+    [[nodiscard]] std::size_t activeCount() const noexcept { return activeCount_; }
+
+ private:
+    std::size_t activeCount_{0};
+    bool isShuttingDown_{false};
+};
 
 enum class SuspensionAction {
     None,

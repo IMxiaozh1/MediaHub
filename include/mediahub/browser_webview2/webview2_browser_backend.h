@@ -62,6 +62,8 @@ class WebView2BrowserBackend final : public gui::BrowserBackend {
         gui::BrowserCertificateDecision decision) override;
     // 调用线程：GUI 主线程。
     void exitFullScreen() override;
+    // 调用线程：GUI 主线程。不等待浏览器子进程。
+    void closePopups() noexcept override;
     // 调用线程：GUI 主线程。不等待内核线程或浏览器子进程。
     void shutdown() noexcept override;
 

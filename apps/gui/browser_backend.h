@@ -56,6 +56,8 @@ class BrowserBackend {
                                         BrowserCertificateDecision decision) = 0;
     // 调用线程：GUI 主线程。
     virtual void exitFullScreen() = 0;
+    // 调用线程：GUI 主线程。关闭全部受控登录子窗口，不等待浏览器子进程。
+    virtual void closePopups() noexcept = 0;
     // 调用线程：GUI 主线程。必须丢弃迟到回调并确定性释放所有控制器。
     virtual void shutdown() noexcept = 0;
 };

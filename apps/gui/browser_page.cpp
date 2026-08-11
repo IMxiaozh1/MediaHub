@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -128,6 +129,11 @@ void BrowserPage::shutdown() noexcept {
         backend_.cancelDownload(*activeDownloadId_);
     }
     backend_.setEventListener(nullptr);
+    if (isWebFullScreen_) {
+        isWebFullScreen_ = false;
+        backend_.exitFullScreen();
+    }
+    backend_.closePopups();
     backend_.shutdown();
     state_ = BrowserPageState::Unavailable;
 }
@@ -199,6 +205,21 @@ void BrowserPage::onFullScreenChanged(std::uint64_t generation,
                                       bool isFullScreen) {
     if (generation != generation_ || isShuttingDown_) {
         return;
+    }
+    if (isFullScreen == isWebFullScreen_) {
+        return;
+    }
+    if (isFullScreen) {
+        wasToolbarHidden_ = toolbar_->isHidden();
+        wasInformationRowHidden_ = informationRow_->isHidden();
+        wasDownloadWidgetHidden_ = downloadWidget_->isHidden();
+        toolbar_->hide();
+        informationRow_->hide();
+        downloadWidget_->hide();
+    } else {
+        toolbar_->setVisible(!wasToolbarHidden_);
+        informationRow_->setVisible(!wasInformationRowHidden_);
+        downloadWidget_->setVisible(!wasDownloadWidgetHidden_);
     }
     isWebFullScreen_ = isFullScreen;
     emit fullScreenChanged(isFullScreen);
@@ -395,6 +416,10 @@ void BrowserPage::onDownloadRequested(const std::uint64_t requestId,
     activeDownloadId_ = requestId;
     isDownloadCancellationSent_ = false;
     downloadWidget_->beginDownload(requestId, origin, suggestedFileName, totalBytes);
+    if (isWebFullScreen_) {
+        wasDownloadWidgetHidden_ = false;
+        downloadWidget_->hide();
+    }
 }
 
 void BrowserPage::onDownloadUpdated(const std::uint64_t requestId,
@@ -429,6 +454,15 @@ void BrowserPage::onPopupRejected() {
     }
 }
 
+void BrowserPage::keyPressEvent(QKeyEvent* const event) {
+    if (event->key() == Qt::Key_Escape && isWebFullScreen_ && !isShuttingDown_) {
+        backend_.exitFullScreen();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
 void BrowserPage::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     if (isInitialized_ || isShuttingDown_) {
@@ -453,27 +487,27 @@ void BrowserPage::buildUi() {
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(8);
 
-    auto* toolbar = new QFrame(this);
-    toolbar->setObjectName(QStringLiteral("browserToolbar"));
-    auto* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbar_ = new QFrame(this);
+    toolbar_->setObjectName(QStringLiteral("browserToolbar"));
+    auto* toolbarLayout = new QHBoxLayout(toolbar_);
     toolbarLayout->setContentsMargins(10, 8, 10, 8);
     toolbarLayout->setSpacing(6);
 
     backButton_ = createToolButton(QStringLiteral("browserBackButton"),
-                                   QStringLiteral("后退"), toolbar);
+                                   QStringLiteral("后退"), toolbar_);
     forwardButton_ = createToolButton(QStringLiteral("browserForwardButton"),
-                                      QStringLiteral("前进"), toolbar);
+                                      QStringLiteral("前进"), toolbar_);
     reloadButton_ = createToolButton(QStringLiteral("browserReloadButton"),
-                                     QStringLiteral("刷新"), toolbar);
+                                     QStringLiteral("刷新"), toolbar_);
     homeButton_ = createToolButton(QStringLiteral("browserHomeButton"),
-                                   QStringLiteral("主页"), toolbar);
-    addressEdit_ = new QLineEdit(toolbar);
+                                   QStringLiteral("主页"), toolbar_);
+    addressEdit_ = new QLineEdit(toolbar_);
     addressEdit_->setObjectName(QStringLiteral("browserAddressEdit"));
     addressEdit_->setPlaceholderText(QStringLiteral("输入网站地址"));
     addressEdit_->setMinimumWidth(180);
-    goButton_ = new QPushButton(QStringLiteral("访问"), toolbar);
+    goButton_ = new QPushButton(QStringLiteral("访问"), toolbar_);
     goButton_->setObjectName(QStringLiteral("browserGoButton"));
-    clearDataButton_ = new QPushButton(QStringLiteral("清除网页数据"), toolbar);
+    clearDataButton_ = new QPushButton(QStringLiteral("清除网页数据"), toolbar_);
     clearDataButton_->setObjectName(QStringLiteral("browserClearDataButton"));
 
     toolbarLayout->addWidget(backButton_);
@@ -484,12 +518,13 @@ void BrowserPage::buildUi() {
     toolbarLayout->addWidget(goButton_);
     toolbarLayout->addWidget(clearDataButton_);
 
-    auto* informationRow = new QWidget(this);
-    auto* informationLayout = new QHBoxLayout(informationRow);
+    informationRow_ = new QWidget(this);
+    informationRow_->setObjectName(QStringLiteral("browserInformationRow"));
+    auto* informationLayout = new QHBoxLayout(informationRow_);
     informationLayout->setContentsMargins(10, 0, 10, 0);
-    titleLabel_ = new QLabel(QStringLiteral("网页"), informationRow);
+    titleLabel_ = new QLabel(QStringLiteral("网页"), informationRow_);
     titleLabel_->setObjectName(QStringLiteral("browserTitleLabel"));
-    statusLabel_ = new QLabel(QStringLiteral("网页组件尚未初始化"), informationRow);
+    statusLabel_ = new QLabel(QStringLiteral("网页组件尚未初始化"), informationRow_);
     statusLabel_->setObjectName(QStringLiteral("browserStatusLabel"));
     informationLayout->addWidget(titleLabel_, 1);
     informationLayout->addWidget(statusLabel_);
@@ -509,8 +544,8 @@ void BrowserPage::buildUi() {
     contentStack_->addWidget(errorLabel_);
     contentStack_->setCurrentWidget(errorLabel_);
 
-    rootLayout->addWidget(toolbar);
-    rootLayout->addWidget(informationRow);
+    rootLayout->addWidget(toolbar_);
+    rootLayout->addWidget(informationRow_);
     downloadWidget_ = new BrowserDownloadWidget(this);
     rootLayout->addWidget(downloadWidget_);
     rootLayout->addWidget(content, 1);

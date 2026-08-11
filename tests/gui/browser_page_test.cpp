@@ -12,6 +12,7 @@
 #include <limits>
 
 #include "browser_download_widget.h"
+#include "main_window.h"
 #include "browser_page.h"
 #include "browser_permission_dialog.h"
 #include "browser_navigation_policy.h"
@@ -39,6 +40,10 @@ class BrowserPageTest final : public QObject {
     void cancelFailureAllowsRetryWithoutEndingDownload();
     void navigationRejectsUnansweredSensitiveRequests();
     void navigationKeepsStartedDownload();
+    void deactivatesAndActivatesBrowserInSafeOrder();
+    void escapeExitsWebFullScreenFirst();
+    void mainWindowPrioritizesWebFullScreenAndRestoresChrome();
+    void shutdownDetachesThenClosesPopupsBeforeBackend();
     void detachesListenerAndShutsDownOnDestruction();
 };
 
@@ -631,6 +636,108 @@ void BrowserPageTest::navigationKeepsStartedDownload() {
     QTest::keyClick(addressEdit, Qt::Key_Return);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 0);
     QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
+}
+
+void BrowserPageTest::deactivatesAndActivatesBrowserInSafeOrder() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    backend.commands.clear();
+
+    page.deactivate();
+    page.activate();
+
+    const std::vector<test::FakeBrowserCommandKind> expected{
+        test::FakeBrowserCommandKind::SetAudioMuted,
+        test::FakeBrowserCommandKind::SetSuspended,
+        test::FakeBrowserCommandKind::SetVisible,
+        test::FakeBrowserCommandKind::SetVisible,
+        test::FakeBrowserCommandKind::SetSuspended,
+        test::FakeBrowserCommandKind::SetAudioMuted,
+    };
+    QCOMPARE(backend.commands.size(), expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        QCOMPARE(backend.commands[index].kind, expected[index]);
+    }
+    QVERIFY(backend.commands[0].flag);
+    QVERIFY(backend.commands[1].flag);
+    QVERIFY(!backend.commands[2].flag);
+    QVERIFY(backend.commands[3].flag);
+    QVERIFY(!backend.commands[4].flag);
+    QVERIFY(!backend.commands[5].flag);
+}
+
+void BrowserPageTest::escapeExitsWebFullScreenFirst() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    auto* toolbar = page.findChild<QWidget*>(QStringLiteral("browserToolbar"));
+    QVERIFY(toolbar != nullptr);
+    page.onFullScreenChanged(1, true);
+
+    QVERIFY(page.isWebFullScreen());
+    QVERIFY(toolbar->isHidden());
+    auto* download = page.findChild<BrowserDownloadWidget*>(
+        QStringLiteral("browserDownloadWidget"));
+    QVERIFY(download != nullptr);
+    page.onDownloadRequested(90, QStringLiteral("https://login.example"),
+                             QStringLiteral("result.bin"), -1);
+    QVERIFY(download->isHidden());
+    QTest::keyClick(&page, Qt::Key_Escape);
+
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ExitFullScreen), 1);
+
+    page.onFullScreenChanged(1, false);
+    QVERIFY(!toolbar->isHidden());
+    QVERIFY(!download->isHidden());
+}
+
+void BrowserPageTest::mainWindowPrioritizesWebFullScreenAndRestoresChrome() {
+    test::FakeBrowserBackend backend;
+    MainWindow window(&backend, QStringLiteral("C:/temporary-profile"));
+    window.show();
+    QCoreApplication::processEvents();
+    window.showDisplayMode(DisplayMode::Web);
+
+    auto* page = window.findChild<BrowserPage*>(QStringLiteral("browserPage"));
+    auto* modePanel =
+        window.findChild<QWidget*>(QStringLiteral("displayModePanel"));
+    auto* headerPanel = window.findChild<QWidget*>(QStringLiteral("headerPanel"));
+    auto* playlistPanel =
+        window.findChild<QWidget*>(QStringLiteral("playlistPanel"));
+    QVERIFY(page != nullptr);
+    QVERIFY(modePanel != nullptr);
+    QVERIFY(headerPanel != nullptr);
+    QVERIFY(playlistPanel != nullptr);
+
+    page->onFullScreenChanged(1, true);
+
+    QVERIFY(window.isFullScreen());
+    QVERIFY(modePanel->isHidden());
+    QVERIFY(headerPanel->isHidden());
+    QVERIFY(playlistPanel->isHidden());
+    QTest::keyClick(&window, Qt::Key_Escape);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ExitFullScreen), 1);
+
+    page->onFullScreenChanged(1, false);
+    QVERIFY(!window.isFullScreen());
+    QVERIFY(!modePanel->isHidden());
+    QVERIFY(!headerPanel->isHidden());
+    QVERIFY(!playlistPanel->isHidden());
+}
+
+void BrowserPageTest::shutdownDetachesThenClosesPopupsBeforeBackend() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+
+    page.shutdown();
+
+    QVERIFY(backend.commands.size() >= 4);
+    const auto commandCount = backend.commands.size();
+    QCOMPARE(backend.commands[commandCount - 3].kind,
+             test::FakeBrowserCommandKind::SetEventListener);
+    QCOMPARE(backend.commands[commandCount - 2].kind,
+             test::FakeBrowserCommandKind::ClosePopups);
+    QCOMPARE(backend.commands[commandCount - 1].kind,
+             test::FakeBrowserCommandKind::Shutdown);
 }
 
 void BrowserPageTest::detachesListenerAndShutsDownOnDestruction() {

@@ -15,18 +15,21 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "browser_event_listener.h"
 #include "mediahub/logging/logger.h"
 #include "webview2_default_deny.h"
 #include "webview2_handles.h"
 #include "webview2_pending_request.h"
+#include "webview2_popup_window.h"
 #include "webview2_state.h"
 
 namespace mediahub::browser_webview2 {
@@ -250,6 +253,7 @@ class WebView2BrowserBackend::Impl final {
 
         isShuttingDown_ = false;
         isReady_ = false;
+        popupCoordinator_.reset();
         generation_ = generation;
         navigation_.reset(generation);
         lifetime_ = std::make_shared<int>(0);
@@ -789,8 +793,36 @@ class WebView2BrowserBackend::Impl final {
                                         decision));
     }
 
-    // 调用线程：GUI 主线程。不执行脚本注入；退出语义由后续全屏阶段接入。
-    void exitFullScreen() noexcept {}
+    // 调用线程：GUI 主线程。只请求当前文档退出标准 Fullscreen API。
+    void exitFullScreen() noexcept {
+        if (isShuttingDown_ || !isReady_ || webView_ == nullptr) {
+            return;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        const HRESULT result = webView_->ExecuteScript(
+            L"document.fullscreenElement && document.exitFullscreen();",
+            Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+                [this, weakLifetime, lifecycleSerial](const HRESULT status,
+                                                      LPCWSTR) -> HRESULT {
+                    if (!weakLifetime.expired() && !isShuttingDown_ &&
+                        lifecycleSerial == lifecycleSerial_) {
+                        logOperationFailure("fullscreen_exit_failed", status);
+                    }
+                    return S_OK;
+                })
+                .Get());
+        logOperationFailure("fullscreen_exit_request_failed", result);
+    }
+
+    // 调用线程：GUI 主线程。不等待浏览器子进程。
+    void closePopups() noexcept {
+        popupCoordinator_.beginShutdown();
+        for (const auto& popup : popupWindows_) {
+            popup->close();
+        }
+        popupWindows_.clear();
+    }
 
     // 调用线程：GUI 主线程。只释放本适配器持有的 COM 对象，不等待子进程。
     void shutdown() noexcept {
@@ -801,8 +833,8 @@ class WebView2BrowserBackend::Impl final {
         }
         isShuttingDown_ = true;
         isReady_ = false;
-        listener_ = nullptr;
         ++lifecycleSerial_;
+        listener_ = nullptr;
         lifetime_.reset();
         releaseBrowserResources();
         releaseComApartment();
@@ -1077,6 +1109,13 @@ class WebView2BrowserBackend::Impl final {
                           const std::uint64_t generation) {
         controller_ = controller;
         HRESULT result = controller_->get_CoreWebView2(&webView_);
+        ComPtr<ICoreWebView2_13> webView13;
+        if (SUCCEEDED(result)) {
+            result = webView_.As(&webView13);
+        }
+        if (SUCCEEDED(result)) {
+            result = webView13->get_Profile(&profile_);
+        }
         if (SUCCEEDED(result)) {
             result = configureSettings();
         }
@@ -1689,7 +1728,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
-    // 调用线程：GUI STA；事件回调静默拒绝弹窗，不复用后续阶段的容量错误提示。
+    // 调用线程：GUI STA；事件回调创建共享 Profile 的受控登录子窗口。
     HRESULT registerNewWindowRequested() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -1700,16 +1739,13 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2NewWindowRequestedEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
-                        static_cast<void>(rejectNewWindow(args));
-                        return S_OK;
+                        return rejectNewWindow(args);
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
-                        return S_OK;
+                        return rejectNewWindow(args);
                     }
-                    const HRESULT status = rejectNewWindow(args);
-                    logOperationFailure("popup_default_reject_failed", status);
-                    return S_OK;
+                    return handleNewWindowRequest(args);
                 })
                 .Get(),
             &token);
@@ -1720,6 +1756,74 @@ class WebView2BrowserBackend::Impl final {
             });
         }
         return result;
+    }
+
+    // 调用线程：主页面或登录子窗口 NewWindowRequested 所在的 GUI STA。
+    HRESULT handleNewWindowRequest(
+        ICoreWebView2NewWindowRequestedEventArgs* const args) {
+        if (args == nullptr || isShuttingDown_ || !isReady_ ||
+            environment_ == nullptr || profile_ == nullptr) {
+            return rejectNewWindow(args);
+        }
+        if (!popupCoordinator_.tryReserve()) {
+            const HRESULT result = rejectNewWindow(args);
+            const std::uint64_t generation = generation_;
+            dispatchListener(generation, [](gui::BrowserEventListener& listener) {
+                listener.onPopupRejected();
+            });
+            return result;
+        }
+
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        auto popup = std::make_unique<WebView2PopupWindow>(
+            environment_, profile_, parentWindow_,
+            [this, weakLifetime, lifecycleSerial](WebView2PopupWindow* closedPopup) {
+                if (weakLifetime.expired()) {
+                    return;
+                }
+                QTimer::singleShot(
+                    0, QApplication::instance(),
+                    [this, weakLifetime, lifecycleSerial, closedPopup] {
+                        if (weakLifetime.expired() || isShuttingDown_ ||
+                            lifecycleSerial != lifecycleSerial_) {
+                            return;
+                        }
+                        const auto found = std::find_if(
+                            popupWindows_.begin(), popupWindows_.end(),
+                            [closedPopup](const auto& candidate) {
+                                return candidate.get() == closedPopup;
+                            });
+                        if (found != popupWindows_.end()) {
+                            popupWindows_.erase(found);
+                            popupCoordinator_.release();
+                        }
+                    });
+            },
+            [this, weakLifetime, lifecycleSerial](
+                ICoreWebView2NewWindowRequestedEventArgs* nestedArgs) {
+                if (weakLifetime.expired() || isShuttingDown_ ||
+                    lifecycleSerial != lifecycleSerial_) {
+                    return rejectNewWindow(nestedArgs);
+                }
+                return handleNewWindowRequest(nestedArgs);
+            });
+        WebView2PopupWindow* const popupPointer = popup.get();
+        popupWindows_.push_back(std::move(popup));
+        const HRESULT result = popupPointer->createFor(args);
+        if (FAILED(result)) {
+            const auto found = std::find_if(
+                popupWindows_.begin(), popupWindows_.end(),
+                [popupPointer](const auto& candidate) {
+                    return candidate.get() == popupPointer;
+                });
+            if (found != popupWindows_.end()) {
+                popupWindows_.erase(found);
+                popupCoordinator_.release();
+            }
+            logOperationFailure("popup_creation_failed", result);
+        }
+        return FAILED(result) ? result : S_OK;
     }
 
     // 调用线程：GUI STA；事件回调只更新稳定导航状态，禁止操作 Qt 控件。
@@ -2051,6 +2155,8 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：创建 COM 对象的 GUI STA；必须先撤销全部事件，再关闭 Controller。
     void releaseBrowserResources() noexcept {
+        exitFullScreen();
+        closePopups();
         cancelPendingSensitiveRequests();
         newWindowRequested_.reset();
         launchingExternalUriScheme_.reset();
@@ -2067,6 +2173,7 @@ class WebView2BrowserBackend::Impl final {
         }
         webView_.Reset();
         controller_.Reset();
+        profile_.Reset();
         environment_.Reset();
         suspension_.invalidate();
         navigation_.reset(generation_);
@@ -2086,6 +2193,7 @@ class WebView2BrowserBackend::Impl final {
     gui::BrowserEventListener* listener_{nullptr};
     HWND parentWindow_{nullptr};
     ComPtr<ICoreWebView2Environment> environment_;
+    ComPtr<ICoreWebView2Profile> profile_;
     ComPtr<ICoreWebView2Controller> controller_;
     ComPtr<ICoreWebView2> webView_;
     EventRegistration navigationStarting_;
@@ -2105,6 +2213,8 @@ class WebView2BrowserBackend::Impl final {
     PendingRequestStore<PendingDownload> pendingDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> activeDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> retryDownloads_;
+    std::vector<std::unique_ptr<WebView2PopupWindow>> popupWindows_;
+    PopupCoordinator popupCoordinator_;
     std::shared_ptr<int> lifetime_;
     std::uint64_t nextSensitiveRequestId_{1};
     std::uint64_t lifecycleSerial_{0};
@@ -2194,6 +2304,8 @@ void WebView2BrowserBackend::answerCertificateError(
 }
 
 void WebView2BrowserBackend::exitFullScreen() { impl_->exitFullScreen(); }
+
+void WebView2BrowserBackend::closePopups() noexcept { impl_->closePopups(); }
 
 void WebView2BrowserBackend::shutdown() noexcept { impl_->shutdown(); }
 
