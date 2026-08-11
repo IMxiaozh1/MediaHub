@@ -84,6 +84,20 @@ if(NOT MEDIAHUB_CORE_ONLY)
         endforeach()
     endif()
 
+    add_executable(mediahub_browser_gui_tests
+        gui/browser_page_test.cpp
+    )
+    set_target_properties(mediahub_browser_gui_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_browser_gui_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_gui_tests)
+    mediahub_deploy_qt(mediahub_browser_gui_tests)
+    add_test(NAME gui.browser_page
+        COMMAND mediahub_browser_gui_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_page PROPERTIES TIMEOUT 30)
+
     add_executable(mediahub_live_playlist_tests
         gui/live_playlist_service_test.cpp
     )

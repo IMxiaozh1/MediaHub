@@ -175,6 +175,11 @@ if(NOT MEDIAHUB_CORE_ONLY)
     add_library(mediahub_gui_support STATIC
         apps/gui/app_state_store.cpp
         apps/gui/app_state_store.h
+        apps/gui/browser_backend.h
+        apps/gui/browser_event_listener.h
+        apps/gui/browser_navigation_policy.cpp
+        apps/gui/browser_navigation_policy.h
+        apps/gui/browser_types.h
         apps/gui/engine_event_bridge.cpp
         apps/gui/engine_event_bridge.h
         apps/gui/lyrics_service.cpp
