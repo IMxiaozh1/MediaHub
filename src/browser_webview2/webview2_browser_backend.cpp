@@ -9,18 +9,20 @@
 #include <wrl.h>
 
 #include <QApplication>
+#include <QFileInfo>
 #include <QMetaObject>
 #include <QThread>
 
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
 #include "browser_event_listener.h"
 #include "mediahub/logging/logger.h"
+#include "webview2_default_deny.h"
 #include "webview2_handles.h"
+#include "webview2_state.h"
 
 namespace mediahub::browser_webview2 {
 namespace {
@@ -78,13 +80,18 @@ class WebView2BrowserBackend::Impl final {
 
         isShuttingDown_ = false;
         isReady_ = false;
-        isNavigating_ = false;
         generation_ = generation;
+        navigation_.reset(generation);
         lifetime_ = std::make_shared<int>(0);
         parentWindow_ = reinterpret_cast<HWND>(parentWindowHandle);
 
-        if (parentWindow_ == nullptr || !IsWindow(parentWindow_) ||
-            userDataDirectory.isEmpty()) {
+        if (userDataDirectory.isEmpty() ||
+            !QFileInfo(userDataDirectory).isAbsolute()) {
+            reportError(generation, gui::BrowserErrorKind::ProfileUnavailable,
+                        E_INVALIDARG, "invalid_profile_input");
+            return;
+        }
+        if (parentWindow_ == nullptr || !IsWindow(parentWindow_)) {
             reportError(generation, gui::BrowserErrorKind::InitializationFailed,
                         E_INVALIDARG, "invalid_initialization_input");
             return;
@@ -132,6 +139,7 @@ class WebView2BrowserBackend::Impl final {
     // 调用线程：GUI 主线程。
     void navigate(const QString& normalizedUrl, const std::uint64_t generation) {
         generation_ = generation;
+        navigation_.setCurrentGeneration(generation);
         if (!isReady_ || webView_ == nullptr) {
             reportError(generation, gui::BrowserErrorKind::InitializationFailed,
                         E_UNEXPECTED, "navigate_before_ready");
@@ -142,6 +150,8 @@ class WebView2BrowserBackend::Impl final {
         if (FAILED(result)) {
             reportError(generation, gui::BrowserErrorKind::NavigationFailed, result,
                         "navigation_request_failed");
+        } else {
+            navigation_.acceptNavigate(generation);
         }
     }
 
@@ -164,8 +174,9 @@ class WebView2BrowserBackend::Impl final {
         if (webView_ == nullptr) {
             return;
         }
-        const HRESULT result = isNavigating_ ? webView_->Stop() : webView_->Reload();
-        logOperationFailure(isNavigating_ ? "stop_failed" : "reload_failed", result);
+        const bool isNavigating = navigation_.isNavigating();
+        const HRESULT result = isNavigating ? webView_->Stop() : webView_->Reload();
+        logOperationFailure(isNavigating ? "stop_failed" : "reload_failed", result);
     }
 
     // 调用线程：GUI 主线程。
@@ -192,13 +203,19 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。
     void setAudioMuted(const bool isMuted) noexcept {
-        isMuted_ = isMuted;
+        isAudioMutedDesired_ = isMuted;
+        applyEffectiveAudioMute();
+    }
+
+    // 调用线程：GUI 主线程；挂起期间强制静音，只有确认恢复成功后才解除。
+    void applyEffectiveAudioMute() noexcept {
         if (webView_ == nullptr) {
             return;
         }
         ComPtr<ICoreWebView2_8> webView8;
         HRESULT result = webView_.As(&webView8);
         if (SUCCEEDED(result)) {
+            const bool isMuted = isAudioMutedDesired_ || suspension_.mustMute();
             result = webView8->put_IsMuted(isMuted ? TRUE : FALSE);
         }
         logOperationFailure("set_audio_muted_failed", result);
@@ -206,48 +223,69 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。异步完成处理器不得触碰界面对象。
     void setSuspended(const bool isSuspended) noexcept {
-        isSuspended_ = isSuspended;
         if (webView_ == nullptr) {
+            suspension_.setDesired(isSuspended);
             return;
         }
+        executeSuspensionStep(suspension_.request(isSuspended));
+    }
 
+    // 调用线程：GUI STA；TrySuspend 回调先验证生命周期，再推进纯状态协调器。
+    void executeSuspensionStep(const SuspensionStep step) noexcept {
+        applyEffectiveAudioMute();
+        if (step.action == SuspensionAction::None || webView_ == nullptr) {
+            return;
+        }
         ComPtr<ICoreWebView2_3> webView3;
         HRESULT result = webView_.As(&webView3);
         if (FAILED(result)) {
-            if (isSuspended) {
-                setAudioMuted(true);
-            }
             logOperationFailure("suspension_interface_unavailable", result);
-            return;
-        }
-        if (!isSuspended) {
-            logOperationFailure("resume_failed", webView3->Resume());
+            const SuspensionStep next =
+                step.action == SuspensionAction::TrySuspend
+                    ? suspension_.completeTrySuspend(step.requestSerial, false, false)
+                    : suspension_.completeResume(step.requestSerial, false);
+            executeSuspensionStep(next);
             return;
         }
 
-        setAudioMuted(true);
+        if (step.action == SuspensionAction::Resume) {
+            result = webView3->Resume();
+            logOperationFailure("resume_failed", result);
+            executeSuspensionStep(
+                suspension_.completeResume(step.requestSerial, SUCCEEDED(result)));
+            return;
+        }
+
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
-        const std::uint64_t generation = generation_;
         result = webView3->TrySuspend(
             Callback<ICoreWebView2TrySuspendCompletedHandler>(
                 [this, weakLifetime, lifecycleSerial,
-                 generation](const HRESULT status, BOOL) -> HRESULT {
-                    if (weakLifetime.expired() ||
-                        lifecycleSerial != lifecycleSerial_ ||
-                        generation != generation_) {
+                 requestSerial = step.requestSerial](const HRESULT status,
+                                                     const BOOL didSuspend) -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_) {
                         return S_OK;
                     }
-                    logOperationFailure("suspend_failed", status);
+                    const HRESULT completionResult =
+                        FAILED(status) || didSuspend != FALSE ? status : E_FAIL;
+                    logOperationFailure("suspend_failed", completionResult);
+                    executeSuspensionStep(suspension_.completeTrySuspend(
+                        requestSerial, SUCCEEDED(status), didSuspend != FALSE));
                     return S_OK;
                 })
                 .Get());
         logOperationFailure("suspend_request_failed", result);
+        if (FAILED(result)) {
+            executeSuspensionStep(
+                suspension_.completeTrySuspend(step.requestSerial, false, false));
+        }
     }
 
     // 调用线程：GUI 主线程。清除回调只投递稳定成功或错误事件。
     void clearBrowsingData(const std::uint64_t generation) {
         generation_ = generation;
+        navigation_.setCurrentGeneration(generation);
         if (webView_ == nullptr) {
             reportError(generation, gui::BrowserErrorKind::ClearDataFailed,
                         E_UNEXPECTED, "clear_data_before_ready");
@@ -328,7 +366,6 @@ class WebView2BrowserBackend::Impl final {
         }
         isShuttingDown_ = true;
         isReady_ = false;
-        isNavigating_ = false;
         listener_ = nullptr;
         ++lifecycleSerial_;
         lifetime_.reset();
@@ -399,12 +436,8 @@ class WebView2BrowserBackend::Impl final {
         }
         logOperationFailure("initial_visibility_failed",
                             controller_->put_IsVisible(isVisible_ ? TRUE : FALSE));
-        setAudioMuted(isMuted_);
-
         isReady_ = true;
-        if (isSuspended_) {
-            setSuspended(true);
-        }
+        executeSuspensionStep(suspension_.controllerReady());
         dispatchListener(generation, [generation](gui::BrowserEventListener& listener) {
             listener.onBrowserReady(generation);
         });
@@ -485,10 +518,7 @@ class WebView2BrowserBackend::Impl final {
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status =
-                        args != nullptr
-                            ? args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY)
-                            : E_POINTER;
+                    const HRESULT status = denyPermission(args);
                     logOperationFailure("permission_default_deny_failed", status);
                     return S_OK;
                 })
@@ -525,13 +555,8 @@ class WebView2BrowserBackend::Impl final {
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    HRESULT status = args != nullptr ? args->put_Cancel(TRUE) : E_POINTER;
-                    if (args != nullptr) {
-                        const HRESULT handledStatus = args->put_Handled(TRUE);
-                        if (SUCCEEDED(status)) {
-                            status = handledStatus;
-                        }
-                    }
+                    const HRESULT status =
+                        ::mediahub::browser_webview2::cancelDownload(args);
                     logOperationFailure("download_default_cancel_failed", status);
                     return S_OK;
                 })
@@ -568,11 +593,7 @@ class WebView2BrowserBackend::Impl final {
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status =
-                        args != nullptr
-                            ? args->put_Action(
-                                  COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL)
-                            : E_POINTER;
+                    const HRESULT status = cancelCertificateError(args);
                     logOperationFailure("certificate_default_cancel_failed", status);
                     return S_OK;
                 })
@@ -610,8 +631,7 @@ class WebView2BrowserBackend::Impl final {
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status =
-                        args != nullptr ? args->put_Cancel(TRUE) : E_POINTER;
+                    const HRESULT status = cancelExternalUri(args);
                     logOperationFailure("external_uri_default_cancel_failed", status);
                     return S_OK;
                 })
@@ -626,7 +646,7 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
-    // 调用线程：GUI STA；事件回调拒绝弹窗，通知最终只在 GUI 主线程执行。
+    // 调用线程：GUI STA；事件回调静默拒绝弹窗，不复用后续阶段的容量错误提示。
     HRESULT registerNewWindowRequested() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
@@ -643,15 +663,8 @@ class WebView2BrowserBackend::Impl final {
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         return S_OK;
                     }
-                    const HRESULT status =
-                        args != nullptr ? args->put_Handled(TRUE) : E_POINTER;
+                    const HRESULT status = rejectNewWindow(args);
                     logOperationFailure("popup_default_reject_failed", status);
-                    if (SUCCEEDED(status)) {
-                        dispatchListener(generation,
-                                         [](gui::BrowserEventListener& listener) {
-                                             listener.onPopupRejected();
-                                         });
-                    }
                     return S_OK;
                 })
                 .Get(),
@@ -683,17 +696,18 @@ class WebView2BrowserBackend::Impl final {
                     const HRESULT status =
                         args != nullptr ? args->get_NavigationId(&navigationId) : E_POINTER;
                     if (SUCCEEDED(status)) {
-                        navigationGenerations_[navigationId] = generation_;
-                        activeNavigationId_ = navigationId;
+                        const NavigationStart start = navigation_.start(navigationId);
+                        if (start.shouldReport) {
+                            dispatchListener(
+                                start.generation,
+                                [generation = start.generation](
+                                    gui::BrowserEventListener& listener) {
+                                    listener.onNavigationStarted(generation);
+                                });
+                        }
                     } else {
                         logOperationFailure("navigation_id_failed", status);
                     }
-                    isNavigating_ = true;
-                    const std::uint64_t generation = generation_;
-                    dispatchListener(
-                        generation, [generation](gui::BrowserEventListener& listener) {
-                            listener.onNavigationStarted(generation);
-                        });
                     return S_OK;
                 })
                 .Get(),
@@ -729,19 +743,12 @@ class WebView2BrowserBackend::Impl final {
                                     result, "navigation_id_failed");
                         return S_OK;
                     }
-                    const auto generationIterator =
-                        navigationGenerations_.find(navigationId);
-                    const std::uint64_t eventGeneration =
-                        generationIterator != navigationGenerations_.end()
-                            ? generationIterator->second
-                            : generation_;
-                    if (generationIterator != navigationGenerations_.end()) {
-                        navigationGenerations_.erase(generationIterator);
+                    const NavigationCompletion completion =
+                        navigation_.complete(navigationId);
+                    if (!completion.shouldReport) {
+                        return S_OK;
                     }
-                    if (activeNavigationId_ == navigationId) {
-                        activeNavigationId_ = 0;
-                        isNavigating_ = false;
-                    }
+                    const std::uint64_t eventGeneration = completion.generation;
                     BOOL isSuccess = FALSE;
                     result = args->get_IsSuccess(&isSuccess);
                     if (FAILED(result)) {
@@ -783,7 +790,8 @@ class WebView2BrowserBackend::Impl final {
         const HRESULT result = webView_->add_DocumentTitleChanged(
             Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
                 [this, weakLifetime, lifecycleSerial](ICoreWebView2*, IUnknown*) -> HRESULT {
-                    if (weakLifetime.expired() || isShuttingDown_ || isNavigating_ ||
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        navigation_.isNavigating() ||
                         lifecycleSerial != lifecycleSerial_) {
                         return S_OK;
                     }
@@ -949,8 +957,8 @@ class WebView2BrowserBackend::Impl final {
         webView_.Reset();
         controller_.Reset();
         environment_.Reset();
-        navigationGenerations_.clear();
-        activeNavigationId_ = 0;
+        suspension_.invalidate();
+        navigation_.reset(generation_);
         parentWindow_ = nullptr;
     }
 
@@ -980,15 +988,13 @@ class WebView2BrowserBackend::Impl final {
     std::shared_ptr<int> lifetime_;
     std::uint64_t lifecycleSerial_{0};
     std::uint64_t generation_{0};
-    std::unordered_map<std::uint64_t, std::uint64_t> navigationGenerations_;
-    std::uint64_t activeNavigationId_{0};
+    NavigationTracker navigation_;
     QRect bounds_;
     bool ownsComApartmentReference_{false};
     bool isReady_{false};
-    bool isNavigating_{false};
     bool isVisible_{false};
-    bool isMuted_{true};
-    bool isSuspended_{true};
+    bool isAudioMutedDesired_{true};
+    SuspensionCoordinator suspension_;
     bool isShuttingDown_{true};
 };
 

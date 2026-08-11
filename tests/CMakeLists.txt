@@ -117,8 +117,14 @@ if(NOT MEDIAHUB_CORE_ONLY)
         integration/webview2_browser_test.cpp
     )
     set_target_properties(mediahub_webview2_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(mediahub_webview2_tests PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/browser_webview2"
+    )
     target_link_libraries(mediahub_webview2_tests
-        PRIVATE mediahub_browser_webview2 mediahub_gui_support Qt5::Test
+        PRIVATE
+            mediahub_browser_webview2
+            MediaHub::WebView2
+            Qt5::Test
     )
     target_compile_definitions(mediahub_webview2_tests PRIVATE
         "MEDIAHUB_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""

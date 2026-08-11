@@ -1,5 +1,4 @@
 #include <QApplication>
-#include <QDir>
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QTimer>
@@ -8,6 +7,7 @@
 #include <iostream>
 
 #include "app_state_store.h"
+#include "browser_profile_directory.h"
 #include "engine_event_bridge.h"
 #include "main_window.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
@@ -30,9 +30,9 @@ int main(int argc, char* argv[]) {
       logger.log(mediahub::logging::LogLevel::Info, "engine", "initialized");
       mediahub::browser_webview2::WebView2BrowserBackend browserBackend(&logger);
       const QString browserProfileDirectory =
-          QDir(QStandardPaths::writableLocation(
-                   QStandardPaths::AppLocalDataLocation))
-              .filePath(QStringLiteral("WebView2/Profile-v1"));
+          mediahub::gui::makeBrowserProfileDirectory(
+              QStandardPaths::writableLocation(
+                  QStandardPaths::AppLocalDataLocation));
       mediahub::gui::EngineEventBridge eventBridge;
       mediahub::gui::MainWindow mainWindow(&browserBackend,
                                            browserProfileDirectory);

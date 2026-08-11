@@ -181,6 +181,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/browser_navigation_policy.h
         apps/gui/browser_page.cpp
         apps/gui/browser_page.h
+        apps/gui/browser_profile_directory.cpp
+        apps/gui/browser_profile_directory.h
         apps/gui/browser_types.h
         apps/gui/engine_event_bridge.cpp
         apps/gui/engine_event_bridge.h
@@ -233,14 +235,17 @@ if(NOT MEDIAHUB_CORE_ONLY)
     add_library(mediahub_browser_webview2 STATIC
         include/mediahub/browser_webview2/webview2_browser_backend.h
         src/browser_webview2/webview2_browser_backend.cpp
+        src/browser_webview2/webview2_default_deny.h
         src/browser_webview2/webview2_handles.h
+        src/browser_webview2/webview2_state.h
     )
     target_include_directories(mediahub_browser_webview2
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
     )
     target_link_libraries(mediahub_browser_webview2
-        PRIVATE
+        PUBLIC
             mediahub_gui_support
+        PRIVATE
             mediahub_logging
             MediaHub::WebView2
             ole32

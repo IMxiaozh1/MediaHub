@@ -1,3 +1,5 @@
+#include <WebView2.h>
+
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
@@ -15,13 +17,92 @@
 #include <functional>
 
 #include "browser_event_listener.h"
+#include "browser_profile_directory.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
+#include "webview2_default_deny.h"
+#include "webview2_state.h"
 
 namespace mediahub::browser_webview2 {
 namespace {
 
 constexpr std::uint64_t kGeneration = 7;
 constexpr qint64 kInitializationTimeoutMilliseconds = 10000;
+
+class FakePermissionArgs final {
+ public:
+    HRESULT put_State(const COREWEBVIEW2_PERMISSION_STATE value) noexcept {
+        ++calls;
+        state = value;
+        return result;
+    }
+
+    int calls{0};
+    COREWEBVIEW2_PERMISSION_STATE state{COREWEBVIEW2_PERMISSION_STATE_DEFAULT};
+    HRESULT result{S_OK};
+};
+
+class FakeDownloadArgs final {
+ public:
+    HRESULT put_Cancel(const BOOL value) noexcept {
+        ++cancelCalls;
+        cancel = value;
+        return cancelResult;
+    }
+
+    HRESULT put_Handled(const BOOL value) noexcept {
+        ++handledCalls;
+        handled = value;
+        return handledResult;
+    }
+
+    int cancelCalls{0};
+    int handledCalls{0};
+    BOOL cancel{FALSE};
+    BOOL handled{FALSE};
+    HRESULT cancelResult{S_OK};
+    HRESULT handledResult{S_OK};
+};
+
+class FakeCertificateArgs final {
+ public:
+    HRESULT put_Action(
+        const COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION value) noexcept {
+        ++calls;
+        action = value;
+        return result;
+    }
+
+    int calls{0};
+    COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION action{
+        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_DEFAULT};
+    HRESULT result{S_OK};
+};
+
+class FakeCancelArgs final {
+ public:
+    HRESULT put_Cancel(const BOOL value) noexcept {
+        ++calls;
+        cancel = value;
+        return result;
+    }
+
+    int calls{0};
+    BOOL cancel{FALSE};
+    HRESULT result{S_OK};
+};
+
+class FakeHandledArgs final {
+ public:
+    HRESULT put_Handled(const BOOL value) noexcept {
+        ++calls;
+        handled = value;
+        return result;
+    }
+
+    int calls{0};
+    BOOL handled{FALSE};
+    HRESULT result{S_OK};
+};
 
 // 调用线程：GUI 主线程，在有界事件循环中等待明确谓词。
 bool waitUntil(const std::function<bool()>& predicate, const qint64 timeoutMilliseconds) {
@@ -131,6 +212,7 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
         return isReady_ || hasError_;
     }
 
+    [[nodiscard]] bool isReady() const noexcept { return isReady_; }
     [[nodiscard]] bool wasCalledFromWrongThread() const noexcept {
         return wasCalledFromWrongThread_;
     }
@@ -159,9 +241,211 @@ class WebView2BrowserTest final : public QObject {
     Q_OBJECT
 
  private slots:
+    void suspensionCoordinatesPendingResume();
+    void suspensionHandlesFailureAndStaleCompletion();
+    void suspensionIgnoresCompletionAfterInvalidation();
+    void navigationBindsExplicitGenerationsInOrder();
+    void navigationStopsBeforeStartingAndIgnoresOldCompletion();
+    void navigationUsesCurrentGenerationForHistory();
+    void defaultDenyPoliciesApplyExactArguments();
+    void rejectsEmptyAndRelativeProfilePaths();
+    void profileDirectoryRequiresAbsoluteApplicationData();
     void requiresEveryDefaultDenyHandlerBeforeReady();
     void reportsRuntimeStatusWithoutBlockingGuiThread();
 };
+
+void WebView2BrowserTest::suspensionCoordinatesPendingResume() {
+    SuspensionCoordinator coordinator(false);
+    QCOMPARE(coordinator.controllerReady().action, SuspensionAction::None);
+
+    const SuspensionStep suspend = coordinator.request(true);
+    QCOMPARE(suspend.action, SuspensionAction::TrySuspend);
+    QVERIFY(coordinator.mustMute());
+
+    QCOMPARE(coordinator.request(false).action, SuspensionAction::None);
+    QVERIFY(coordinator.mustMute());
+
+    const SuspensionStep resume =
+        coordinator.completeTrySuspend(suspend.requestSerial, true, true);
+    QCOMPARE(resume.action, SuspensionAction::Resume);
+    QVERIFY(coordinator.mustMute());
+    QCOMPARE(coordinator.completeTrySuspend(suspend.requestSerial, true, true).action,
+             SuspensionAction::None);
+
+    QCOMPARE(coordinator.completeResume(resume.requestSerial, true).action,
+             SuspensionAction::None);
+    QVERIFY(!coordinator.mustMute());
+}
+
+void WebView2BrowserTest::suspensionHandlesFailureAndStaleCompletion() {
+    SuspensionCoordinator coordinator(false);
+    static_cast<void>(coordinator.controllerReady());
+
+    const SuspensionStep suspend = coordinator.request(true);
+    QCOMPARE(suspend.action, SuspensionAction::TrySuspend);
+    QCOMPARE(coordinator.request(false).action, SuspensionAction::None);
+
+    QCOMPARE(coordinator.completeTrySuspend(suspend.requestSerial + 1, true, true).action,
+             SuspensionAction::None);
+    QVERIFY(coordinator.mustMute());
+
+    QCOMPARE(coordinator.completeTrySuspend(suspend.requestSerial, true, false).action,
+             SuspensionAction::None);
+    QVERIFY(!coordinator.mustMute());
+
+    const SuspensionStep failedSuspend = coordinator.request(true);
+    QCOMPARE(failedSuspend.action, SuspensionAction::TrySuspend);
+    QCOMPARE(coordinator.completeTrySuspend(failedSuspend.requestSerial, false, false)
+                 .action,
+             SuspensionAction::None);
+    QVERIFY(coordinator.mustMute());
+
+    SuspensionCoordinator resumeFailure(false);
+    static_cast<void>(resumeFailure.controllerReady());
+    const SuspensionStep suspendBeforeResumeFailure = resumeFailure.request(true);
+    QCOMPARE(resumeFailure
+                 .completeTrySuspend(suspendBeforeResumeFailure.requestSerial, true, true)
+                 .action,
+             SuspensionAction::None);
+    const SuspensionStep failedResume = resumeFailure.request(false);
+    QCOMPARE(failedResume.action, SuspensionAction::Resume);
+    QCOMPARE(resumeFailure.completeResume(failedResume.requestSerial, false).action,
+             SuspensionAction::None);
+    QVERIFY(resumeFailure.mustMute());
+    QCOMPARE(resumeFailure.request(false).action, SuspensionAction::None);
+}
+
+void WebView2BrowserTest::suspensionIgnoresCompletionAfterInvalidation() {
+    SuspensionCoordinator coordinator(false);
+    static_cast<void>(coordinator.controllerReady());
+    const SuspensionStep suspend = coordinator.request(true);
+    QCOMPARE(suspend.action, SuspensionAction::TrySuspend);
+
+    coordinator.invalidate();
+    QCOMPARE(coordinator.completeTrySuspend(suspend.requestSerial, true, true).action,
+             SuspensionAction::None);
+    QVERIFY(coordinator.mustMute());
+}
+
+void WebView2BrowserTest::navigationBindsExplicitGenerationsInOrder() {
+    NavigationTracker tracker(1);
+    tracker.acceptNavigate(11);
+    tracker.acceptNavigate(12);
+
+    const NavigationStart first = tracker.start(101);
+    QCOMPARE(first.generation, std::uint64_t{11});
+    QVERIFY(first.shouldReport);
+
+    const NavigationStart redirect = tracker.start(101);
+    QCOMPARE(redirect.generation, std::uint64_t{11});
+    QVERIFY(!redirect.shouldReport);
+
+    const NavigationStart second = tracker.start(202);
+    QCOMPARE(second.generation, std::uint64_t{12});
+    QVERIFY(second.shouldReport);
+
+    const NavigationCompletion oldCompletion = tracker.complete(101);
+    QVERIFY(!oldCompletion.shouldReport);
+    QVERIFY(tracker.isNavigating());
+
+    const NavigationCompletion activeCompletion = tracker.complete(202);
+    QVERIFY(activeCompletion.shouldReport);
+    QCOMPARE(activeCompletion.generation, std::uint64_t{12});
+    QVERIFY(!tracker.isNavigating());
+}
+
+void WebView2BrowserTest::navigationStopsBeforeStartingAndIgnoresOldCompletion() {
+    NavigationTracker tracker(3);
+    tracker.acceptNavigate(21);
+    QVERIFY(tracker.isNavigating());
+
+    QCOMPARE(tracker.start(301).generation, std::uint64_t{21});
+    tracker.acceptNavigate(22);
+    QCOMPARE(tracker.start(302).generation, std::uint64_t{22});
+
+    const NavigationCompletion oldFailure = tracker.complete(301);
+    QVERIFY(!oldFailure.shouldReport);
+    QVERIFY(tracker.isNavigating());
+    QCOMPARE(tracker.complete(302).generation, std::uint64_t{22});
+}
+
+void WebView2BrowserTest::navigationUsesCurrentGenerationForHistory() {
+    NavigationTracker tracker(5);
+    tracker.acceptNavigate(31);
+    QCOMPARE(tracker.start(401).generation, std::uint64_t{31});
+    QVERIFY(tracker.complete(401).shouldReport);
+
+    tracker.setCurrentGeneration(32);
+    const NavigationStart history = tracker.start(402);
+    QVERIFY(history.shouldReport);
+    QCOMPARE(history.generation, std::uint64_t{32});
+    QVERIFY(tracker.complete(402).shouldReport);
+
+    QVERIFY(!tracker.complete(401).shouldReport);
+}
+
+void WebView2BrowserTest::defaultDenyPoliciesApplyExactArguments() {
+    FakePermissionArgs permission;
+    QCOMPARE(denyPermission(&permission), S_OK);
+    QCOMPARE(permission.calls, 1);
+    QCOMPARE(permission.state, COREWEBVIEW2_PERMISSION_STATE_DENY);
+
+    FakeDownloadArgs download;
+    QCOMPARE(cancelDownload(&download), S_OK);
+    QCOMPARE(download.cancelCalls, 1);
+    QCOMPARE(download.handledCalls, 1);
+    QCOMPARE(download.cancel, TRUE);
+    QCOMPARE(download.handled, TRUE);
+
+    FakeCertificateArgs certificate;
+    QCOMPARE(cancelCertificateError(&certificate), S_OK);
+    QCOMPARE(certificate.calls, 1);
+    QCOMPARE(certificate.action,
+             COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);
+
+    FakeCancelArgs externalUri;
+    QCOMPARE(cancelExternalUri(&externalUri), S_OK);
+    QCOMPARE(externalUri.calls, 1);
+    QCOMPARE(externalUri.cancel, TRUE);
+
+    FakeHandledArgs newWindow;
+    QCOMPARE(rejectNewWindow(&newWindow), S_OK);
+    QCOMPARE(newWindow.calls, 1);
+    QCOMPARE(newWindow.handled, TRUE);
+
+    QVERIFY(denyPermission<FakePermissionArgs>(nullptr) == E_POINTER);
+    QVERIFY(cancelDownload<FakeDownloadArgs>(nullptr) == E_POINTER);
+    QVERIFY(cancelCertificateError<FakeCertificateArgs>(nullptr) == E_POINTER);
+    QVERIFY(cancelExternalUri<FakeCancelArgs>(nullptr) == E_POINTER);
+    QVERIFY(rejectNewWindow<FakeHandledArgs>(nullptr) == E_POINTER);
+}
+
+void WebView2BrowserTest::rejectsEmptyAndRelativeProfilePaths() {
+    const QStringList invalidProfiles{QString{}, QStringLiteral("relative-profile")};
+    for (const QString& profile : invalidProfiles) {
+        WebView2BrowserBackend backend;
+        RecordingBrowserListener listener;
+        backend.setEventListener(&listener);
+        backend.initialize(nullptr, profile, kGeneration);
+
+        QVERIFY(listener.hasError());
+        QCOMPARE(listener.generation(), kGeneration);
+        QCOMPARE(listener.errorKind(), gui::BrowserErrorKind::ProfileUnavailable);
+        QCOMPARE(listener.errorCode(), static_cast<long>(E_INVALIDARG));
+        backend.shutdown();
+    }
+}
+
+void WebView2BrowserTest::profileDirectoryRequiresAbsoluteApplicationData() {
+    QCOMPARE(gui::makeBrowserProfileDirectory(QString{}), QString{});
+    QCOMPARE(gui::makeBrowserProfileDirectory(QStringLiteral("relative-app-data")),
+             QString{});
+
+    const QString profile = gui::makeBrowserProfileDirectory(QDir::tempPath());
+    QVERIFY(QFileInfo(profile).isAbsolute());
+    QVERIFY(QDir::fromNativeSeparators(profile).endsWith(
+        QStringLiteral("/WebView2/Profile-v1")));
+}
 
 void WebView2BrowserTest::requiresEveryDefaultDenyHandlerBeforeReady() {
     QFile sourceFile(QStringLiteral(
@@ -189,48 +473,101 @@ void WebView2BrowserTest::requiresEveryDefaultDenyHandlerBeforeReady() {
         QVERIFY2(registerEvents.contains(registration), qPrintable(registration));
     }
 
-    const QStringList requiredSafetyMarkers{
-        QStringLiteral("ICoreWebView2_4"),
-        QStringLiteral("ICoreWebView2_14"),
-        QStringLiteral("ICoreWebView2_18"),
-        QStringLiteral("COREWEBVIEW2_PERMISSION_STATE_DENY"),
-        QStringLiteral("COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL"),
-        QStringLiteral("put_Cancel(TRUE)"),
-        QStringLiteral("put_Handled(TRUE)"),
+    const auto handlerSegment = [&source](const QString& start,
+                                          const QString& end) {
+        const int startIndex = source.indexOf(start);
+        const int endIndex = source.indexOf(end, startIndex + start.size());
+        return startIndex >= 0 && endIndex > startIndex
+                   ? source.mid(startIndex, endIndex - startIndex)
+                   : QString{};
     };
-    for (const QString& marker : requiredSafetyMarkers) {
-        QVERIFY2(source.contains(marker), qPrintable(marker));
+    const QList<QPair<QString, QString>> handlerPolicies{
+        {handlerSegment(QStringLiteral("HRESULT registerPermissionRequested()"),
+                        QStringLiteral("HRESULT registerDownloadStarting()")),
+         QStringLiteral("denyPermission(args)")},
+        {handlerSegment(QStringLiteral("HRESULT registerDownloadStarting()"),
+                        QStringLiteral(
+                            "HRESULT registerServerCertificateErrorDetected()")),
+         QStringLiteral("cancelDownload(args)")},
+        {handlerSegment(
+             QStringLiteral("HRESULT registerServerCertificateErrorDetected()"),
+             QStringLiteral("HRESULT registerLaunchingExternalUriScheme()")),
+         QStringLiteral("cancelCertificateError(args)")},
+        {handlerSegment(QStringLiteral("HRESULT registerLaunchingExternalUriScheme()"),
+                        QStringLiteral("HRESULT registerNewWindowRequested()")),
+         QStringLiteral("cancelExternalUri(args)")},
+        {handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),
+                        QStringLiteral("HRESULT registerNavigationStarting()")),
+         QStringLiteral("rejectNewWindow(args)")},
+    };
+    for (const auto& [segment, policy] : handlerPolicies) {
+        QVERIFY2(!segment.isEmpty(), qPrintable(policy));
+        QVERIFY2(segment.contains(policy), qPrintable(policy));
     }
+    const QString newWindowHandler =
+        handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),
+                       QStringLiteral("HRESULT registerNavigationStarting()"));
+    QVERIFY(!newWindowHandler.contains(QStringLiteral("onPopupRejected")));
 
-    const QStringList requiredRaiiMarkers{
+    const QStringList requiredBindMarkers{
         QStringLiteral("permissionRequested_.bind"),
         QStringLiteral("downloadStarting_.bind"),
         QStringLiteral("serverCertificateErrorDetected_.bind"),
         QStringLiteral("launchingExternalUriScheme_.bind"),
         QStringLiteral("newWindowRequested_.bind"),
+    };
+    for (const QString& marker : requiredBindMarkers) {
+        QVERIFY2(source.contains(marker), qPrintable(marker));
+    }
+
+    const int finishControllerStart =
+        source.indexOf(QStringLiteral("void finishController("));
+    const int finishControllerEnd =
+        source.indexOf(QStringLiteral("HRESULT configureSettings()"));
+    QVERIFY(finishControllerStart >= 0);
+    QVERIFY(finishControllerEnd > finishControllerStart);
+    const QString finishController = source.mid(
+        finishControllerStart, finishControllerEnd - finishControllerStart);
+    const int registerGate =
+        finishController.indexOf(QStringLiteral("result = registerEvents();"));
+    const int readyAssignment =
+        finishController.indexOf(QStringLiteral("isReady_ = true;"));
+    QVERIFY(registerGate >= 0);
+    QVERIFY(readyAssignment > registerGate);
+
+    const int releaseStart =
+        source.indexOf(QStringLiteral("void releaseBrowserResources()"));
+    const int releaseEnd =
+        source.indexOf(QStringLiteral("void releaseComApartment()"));
+    QVERIFY(releaseStart >= 0);
+    QVERIFY(releaseEnd > releaseStart);
+    const QString releaseResources =
+        source.mid(releaseStart, releaseEnd - releaseStart);
+    const QStringList requiredResetMarkers{
         QStringLiteral("permissionRequested_.reset"),
         QStringLiteral("downloadStarting_.reset"),
         QStringLiteral("serverCertificateErrorDetected_.reset"),
         QStringLiteral("launchingExternalUriScheme_.reset"),
         QStringLiteral("newWindowRequested_.reset"),
     };
-    for (const QString& marker : requiredRaiiMarkers) {
-        QVERIFY2(source.contains(marker), qPrintable(marker));
-    }
-
-    const int registerGate = source.indexOf(QStringLiteral("result = registerEvents();"));
-    const int readyAssignment = source.indexOf(QStringLiteral("isReady_ = true;"));
-    const int firstSafetyReset =
-        source.indexOf(QStringLiteral("newWindowRequested_.reset();"));
     const int controllerClose =
-        source.indexOf(QStringLiteral("controller_->Close()"), firstSafetyReset);
-    QVERIFY(registerGate >= 0);
-    QVERIFY(readyAssignment > registerGate);
-    QVERIFY(firstSafetyReset >= 0);
-    QVERIFY(controllerClose > firstSafetyReset);
+        releaseResources.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(controllerClose >= 0);
+    for (const QString& marker : requiredResetMarkers) {
+        const int reset = releaseResources.indexOf(marker);
+        QVERIFY2(reset >= 0, qPrintable(marker));
+        QVERIFY2(reset < controllerClose, qPrintable(marker));
+    }
 }
 
 void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {
+    LPWSTR runtimeVersion = nullptr;
+    const HRESULT runtimeStatus =
+        GetAvailableCoreWebView2BrowserVersionString(nullptr, &runtimeVersion);
+    const bool isRuntimeAvailable =
+        SUCCEEDED(runtimeStatus) && runtimeVersion != nullptr;
+    CoTaskMemFree(runtimeVersion);
+
     QWidget testWindow;
     testWindow.resize(640, 360);
     testWindow.show();
@@ -249,10 +586,12 @@ void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {
                       kInitializationTimeoutMilliseconds));
     QCOMPARE(listener.generation(), kGeneration);
     QVERIFY(!listener.wasCalledFromWrongThread());
-    if (listener.hasError()) {
-        QVERIFY(listener.errorKind() == gui::BrowserErrorKind::RuntimeUnavailable ||
-                listener.errorKind() == gui::BrowserErrorKind::InitializationFailed ||
-                listener.errorKind() == gui::BrowserErrorKind::ProfileUnavailable);
+    if (isRuntimeAvailable) {
+        QVERIFY(listener.isReady());
+        QVERIFY(!listener.hasError());
+    } else {
+        QVERIFY(listener.hasError());
+        QCOMPARE(listener.errorKind(), gui::BrowserErrorKind::RuntimeUnavailable);
         QVERIFY(listener.errorCode() < 0);
     }
 
