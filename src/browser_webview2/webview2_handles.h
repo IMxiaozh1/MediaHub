@@ -7,6 +7,37 @@
 
 namespace mediahub::browser_webview2 {
 
+// Controller 完成回调中的原始指针在正式接管前由事务守卫负责关闭。
+template <typename Controller>
+class ControllerAdoptionTransaction final {
+ public:
+    // 调用线程：Controller 完成回调所在的 GUI STA。
+    explicit ControllerAdoptionTransaction(Controller* const controller) noexcept
+        : controller_(controller) {}
+
+    ~ControllerAdoptionTransaction() {
+        if (controller_ != nullptr) {
+            static_cast<void>(controller_->Close());
+        }
+    }
+
+    ControllerAdoptionTransaction(const ControllerAdoptionTransaction&) = delete;
+    ControllerAdoptionTransaction& operator=(
+        const ControllerAdoptionTransaction&) = delete;
+
+    [[nodiscard]] bool canAdopt(const bool isCurrentLifecycle,
+                                const HRESULT status) const noexcept {
+        return isCurrentLifecycle && SUCCEEDED(status) && controller_ != nullptr;
+    }
+
+    [[nodiscard]] Controller* adopt() noexcept {
+        return std::exchange(controller_, nullptr);
+    }
+
+ private:
+    Controller* controller_{nullptr};
+};
+
 // 持有事件撤销动作，确保控制器关闭前不会遗留 WebView2 事件订阅。
 class EventRegistration final {
  public:

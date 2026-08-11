@@ -11,6 +11,17 @@ HRESULT denyPermission(Args* const args) noexcept {
                            : E_POINTER;
 }
 
+// 屏幕捕获拒绝的两个 setter 彼此独立，保留首个失败结果。
+template <typename Args>
+HRESULT cancelScreenCapture(Args* const args) noexcept {
+    if (args == nullptr) {
+        return E_POINTER;
+    }
+    const HRESULT cancelResult = args->put_Cancel(TRUE);
+    const HRESULT handledResult = args->put_Handled(TRUE);
+    return FAILED(cancelResult) ? cancelResult : handledResult;
+}
+
 // 调用线程：WebView2 事件所在的 GUI STA；即使取消写入失败也尝试关闭默认下载界面。
 template <typename Args>
 HRESULT cancelDownload(Args* const args) noexcept {
@@ -41,6 +52,16 @@ HRESULT cancelExternalUri(Args* const args) noexcept {
 template <typename Args>
 HRESULT rejectNewWindow(Args* const args) noexcept {
     return args != nullptr ? args->put_Handled(TRUE) : E_POINTER;
+}
+
+// popup 事件回调始终按 COM 合约返回 S_OK；拒绝写入失败时必须在返回前关闭 Controller。
+template <typename CloseNow>
+HRESULT completePopupSafetyDecision(const HRESULT safetyResult,
+                                    CloseNow&& closeNow) noexcept {
+    if (FAILED(safetyResult)) {
+        closeNow();
+    }
+    return S_OK;
 }
 
 }  // namespace mediahub::browser_webview2

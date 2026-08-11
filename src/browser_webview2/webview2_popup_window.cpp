@@ -4,6 +4,7 @@
 
 #include "webview2_default_deny.h"
 #include "webview2_pending_request.h"
+#include "webview2_state.h"
 
 namespace mediahub::browser_webview2 {
 namespace {
@@ -12,15 +13,6 @@ using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
 constexpr wchar_t kPopupWindowClass[] = L"MediaHubWebView2PopupWindow";
-
-HRESULT screenCaptureDefaultDeny(
-    ICoreWebView2ScreenCaptureStartingEventArgs* const args) noexcept {
-    if (args == nullptr) {
-        return E_POINTER;
-    }
-    HRESULT result = args->put_Cancel(TRUE);
-    return firstFailure(result, args->put_Handled(TRUE));
-}
 
 }  // namespace
 
@@ -64,7 +56,10 @@ HRESULT WebView2PopupWindow::createFor(
     }
     if (FAILED(result)) {
         static_cast<void>(completePendingRequest(false));
-        closeInternal(true);
+        closeAfterPopupFailure(PopupFailureTiming::SynchronousCreate,
+                               [this](const bool notifyOwner) {
+                                   closeInternal(notifyOwner);
+                               });
     }
     return result;
 }
@@ -157,9 +152,8 @@ HRESULT WebView2PopupWindow::createController() {
             [this, weakLifetime](const HRESULT status,
                                  ICoreWebView2Controller* const controller) -> HRESULT {
                 if (weakLifetime.expired()) {
-                    if (controller != nullptr) {
-                        static_cast<void>(controller->Close());
-                    }
+                    ControllerAdoptionTransaction<ICoreWebView2Controller>
+                        controllerTransaction(controller);
                     return S_OK;
                 }
                 finishController(status, controller);
@@ -171,12 +165,15 @@ HRESULT WebView2PopupWindow::createController() {
 void WebView2PopupWindow::finishController(
     const HRESULT status, ICoreWebView2Controller* const controller) {
     HRESULT result = status;
-    if (SUCCEEDED(result) && controller == nullptr) {
-        result = E_POINTER;
-    }
-    if (SUCCEEDED(result)) {
-        controller_ = controller;
-        result = controller_->get_CoreWebView2(&webView_);
+    {
+        ControllerAdoptionTransaction<ICoreWebView2Controller>
+            controllerTransaction(controller);
+        if (controllerTransaction.canAdopt(true, status)) {
+            controller_ = controllerTransaction.adopt();
+            result = controller_->get_CoreWebView2(&webView_);
+        } else if (SUCCEEDED(result)) {
+            result = E_POINTER;
+        }
     }
     if (SUCCEEDED(result)) {
         result = configureSettings();
@@ -194,7 +191,10 @@ void WebView2PopupWindow::finishController(
         static_cast<void>(completePendingRequest(false));
     }
     if (FAILED(result)) {
-        closeInternal(true);
+        closeAfterPopupFailure(PopupFailureTiming::AsynchronousCompletion,
+                               [this](const bool notifyOwner) {
+                                   closeInternal(notifyOwner);
+                               });
         return;
     }
     ShowWindow(window_, SW_SHOWNORMAL);
@@ -255,10 +255,11 @@ HRESULT WebView2PopupWindow::registerPermissionRequested() {
     EventRegistrationToken token{};
     const HRESULT result = webView_->add_PermissionRequested(
         Callback<ICoreWebView2PermissionRequestedEventHandler>(
-            [weakLifetime](ICoreWebView2*,
-                           ICoreWebView2PermissionRequestedEventArgs* const args) {
+            [this, weakLifetime](
+                ICoreWebView2*,
+                ICoreWebView2PermissionRequestedEventArgs* const args) {
                 if (!weakLifetime.expired()) {
-                    static_cast<void>(denyPermission(args));
+                    return handleSafetyDecision(denyPermission(args));
                 }
                 return S_OK;
             })
@@ -283,10 +284,11 @@ HRESULT WebView2PopupWindow::registerScreenCaptureStarting() {
     EventRegistrationToken token{};
     result = webView27->add_ScreenCaptureStarting(
         Callback<ICoreWebView2ScreenCaptureStartingEventHandler>(
-            [weakLifetime](ICoreWebView2*,
-                           ICoreWebView2ScreenCaptureStartingEventArgs* const args) {
+            [this, weakLifetime](
+                ICoreWebView2*,
+                ICoreWebView2ScreenCaptureStartingEventArgs* const args) {
                 if (!weakLifetime.expired()) {
-                    static_cast<void>(screenCaptureDefaultDeny(args));
+                    return handleSafetyDecision(cancelScreenCapture(args));
                 }
                 return S_OK;
             })
@@ -311,10 +313,11 @@ HRESULT WebView2PopupWindow::registerDownloadStarting() {
     EventRegistrationToken token{};
     result = webView4->add_DownloadStarting(
         Callback<ICoreWebView2DownloadStartingEventHandler>(
-            [weakLifetime](ICoreWebView2*,
-                           ICoreWebView2DownloadStartingEventArgs* const args) {
+            [this, weakLifetime](
+                ICoreWebView2*,
+                ICoreWebView2DownloadStartingEventArgs* const args) {
                 if (!weakLifetime.expired()) {
-                    static_cast<void>(cancelDownload(args));
+                    return handleSafetyDecision(cancelDownload(args));
                 }
                 return S_OK;
             })
@@ -338,11 +341,11 @@ HRESULT WebView2PopupWindow::registerCertificateError() {
     EventRegistrationToken token{};
     result = webView14->add_ServerCertificateErrorDetected(
         Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler>(
-            [weakLifetime](
+            [this, weakLifetime](
                 ICoreWebView2*,
                 ICoreWebView2ServerCertificateErrorDetectedEventArgs* const args) {
                 if (!weakLifetime.expired()) {
-                    static_cast<void>(cancelCertificateError(args));
+                    return handleSafetyDecision(cancelCertificateError(args));
                 }
                 return S_OK;
             })
@@ -367,11 +370,11 @@ HRESULT WebView2PopupWindow::registerExternalProtocol() {
     EventRegistrationToken token{};
     result = webView18->add_LaunchingExternalUriScheme(
         Callback<ICoreWebView2LaunchingExternalUriSchemeEventHandler>(
-            [weakLifetime](
+            [this, weakLifetime](
                 ICoreWebView2*,
                 ICoreWebView2LaunchingExternalUriSchemeEventArgs* const args) {
                 if (!weakLifetime.expired()) {
-                    static_cast<void>(cancelExternalUri(args));
+                    return handleSafetyDecision(cancelExternalUri(args));
                 }
                 return S_OK;
             })
@@ -431,6 +434,12 @@ HRESULT WebView2PopupWindow::registerWindowCloseRequested() {
         });
     }
     return result;
+}
+
+HRESULT WebView2PopupWindow::handleSafetyDecision(
+    const HRESULT safetyResult) noexcept {
+    return completePopupSafetyDecision(
+        safetyResult, [this] { closeInternal(true); });
 }
 
 HRESULT WebView2PopupWindow::completePendingRequest(

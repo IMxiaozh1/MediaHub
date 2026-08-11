@@ -24,24 +24,22 @@ class BrowserLifecycleGate final {
     bool isPermanentlyShutdown_{false};
 };
 
-// 失效的主 Controller 完成回调必须显式关闭 Runtime 已创建的 Controller。
-template <typename Controller>
-[[nodiscard]] bool acceptControllerCompletion(
-    const bool isCurrentLifecycle, Controller* const controller) noexcept {
-    if (isCurrentLifecycle) {
-        return true;
-    }
-    if (controller != nullptr) {
-        static_cast<void>(controller->Close());
-    }
-    return false;
-}
-
 // 关闭阶段不复用面向用户操作的状态门禁，始终执行一次无等待全屏退出提交。
 template <typename Request>
 [[nodiscard]] auto submitShutdownFullScreenExit(Request&& request)
     noexcept(noexcept(std::forward<Request>(request)())) {
     return std::forward<Request>(request)();
+}
+
+enum class PopupFailureTiming {
+    SynchronousCreate,
+    AsynchronousCompletion,
+};
+
+// 同步创建失败由调用方回收；只有异步完成失败才通知 owner 延迟回收。
+template <typename Close>
+void closeAfterPopupFailure(const PopupFailureTiming timing, Close&& close) {
+    close(timing == PopupFailureTiming::AsynchronousCompletion);
 }
 
 // 统一限制主浏览器拥有的登录子窗口数量，并在关闭开始后拒绝新预约。

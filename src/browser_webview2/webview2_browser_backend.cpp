@@ -1103,19 +1103,21 @@ class WebView2BrowserBackend::Impl final {
                 [this, weakLifetime, lifecycleSerial,
                  generation](const HRESULT status,
                              ICoreWebView2Controller* const controller) -> HRESULT {
+                    ControllerAdoptionTransaction<ICoreWebView2Controller>
+                        controllerTransaction(controller);
                     const bool isCurrentLifecycle =
                         !weakLifetime.expired() &&
                         isActive(weakLifetime, lifecycleSerial, generation);
-                    if (!acceptControllerCompletion(isCurrentLifecycle, controller)) {
-                        return S_OK;
-                    }
-                    if (FAILED(status) || controller == nullptr) {
+                    if (!controllerTransaction.canAdopt(isCurrentLifecycle, status)) {
+                        if (!isCurrentLifecycle) {
+                            return S_OK;
+                        }
                         const HRESULT error = FAILED(status) ? status : E_POINTER;
                         reportError(generation, classifyInitializationError(error), error,
                                     "controller_creation_failed");
                         return S_OK;
                     }
-                    finishController(controller, generation);
+                    finishController(controllerTransaction.adopt(), generation);
                     return S_OK;
                 })
                 .Get());

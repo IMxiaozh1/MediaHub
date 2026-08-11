@@ -55,6 +55,7 @@ class WebView2PopupWindow final {
     [[nodiscard]] HRESULT registerExternalProtocol();
     [[nodiscard]] HRESULT registerNewWindowRequested();
     [[nodiscard]] HRESULT registerWindowCloseRequested();
+    [[nodiscard]] HRESULT handleSafetyDecision(HRESULT safetyResult) noexcept;
     [[nodiscard]] HRESULT completePendingRequest(bool attachWebView) noexcept;
     void resizeController() noexcept;
     void closeInternal(bool notifyOwner) noexcept;

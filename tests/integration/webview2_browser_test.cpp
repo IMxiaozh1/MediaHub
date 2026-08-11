@@ -22,6 +22,7 @@
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
 #include "mediahub/logging/logger.h"
 #include "webview2_default_deny.h"
+#include "webview2_handles.h"
 #include "webview2_pending_request.h"
 #include "webview2_state.h"
 
@@ -522,11 +523,13 @@ class WebView2BrowserTest final : public QObject {
     void suspensionIgnoresCompletionAfterInvalidation();
     void popupCoordinatorLimitsThreeWindowsAndRejectsShutdown();
     void popupRequestCompletesEverySafetyActionExactlyOnce();
+    void popupFailureReclamationHasSingleOwner();
     void navigationBindsExplicitGenerationsInOrder();
     void navigationStopsBeforeStartingAndIgnoresOldCompletion();
     void navigationUsesCurrentGenerationForHistory();
     void clearDataWaitsForMatchingInternalBlankNavigation();
     void defaultDenyPoliciesApplyExactArguments();
+    void popupSafetyFailuresCloseBeforeReturning();
     void pendingSensitiveDecisionsCompleteExactlyOnce();
     void permissionRejectionCompletesWithoutArgs3();
     void screenCaptureDecisionsAllowOnlyOnce();
@@ -540,7 +543,7 @@ class WebView2BrowserTest final : public QObject {
     void downloadCancellationFailureAllowsRetryAndShutdownRepeats();
     void downloadTerminalSnapshotSurvivesProgressReadFailures();
     void shutdownPermanentlyRejectsReinitialization();
-    void controllerCompletionClosesOnlyStaleController();
+    void controllerCompletionAdoptsOnlyCurrentSuccess();
     void shutdownFullScreenExitRemainsReachableAndOrdered();
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
@@ -667,6 +670,69 @@ void WebView2BrowserTest::popupRequestCompletesEverySafetyActionExactlyOnce() {
                                    QStringLiteral("new_window"),
                                    QStringLiteral("handled"),
                                    QStringLiteral("deferral")}));
+}
+
+void WebView2BrowserTest::popupFailureReclamationHasSingleOwner() {
+    constexpr std::uintptr_t kReusedAddress = 0x1234;
+    std::uintptr_t activeAddress = kReusedAddress;
+    int activeCount = 1;
+    int releaseCount = 0;
+    std::vector<std::function<void()>> queuedReclaims;
+
+    bool syncNotifiesOwner = true;
+    int syncCloseCalls = 0;
+    closeAfterPopupFailure(
+        PopupFailureTiming::SynchronousCreate,
+        [&syncNotifiesOwner, &syncCloseCalls](const bool notifyOwner) {
+            ++syncCloseCalls;
+            syncNotifiesOwner = notifyOwner;
+        });
+    QCOMPARE(syncCloseCalls, 1);
+    QVERIFY(!syncNotifiesOwner);
+
+    activeAddress = 0;
+    --activeCount;
+    ++releaseCount;
+    activeAddress = kReusedAddress;
+    ++activeCount;
+    QCOMPARE(queuedReclaims.size(), std::size_t{0});
+    QCOMPARE(activeAddress, kReusedAddress);
+    QCOMPARE(activeCount, 1);
+
+    bool asyncNotifiesOwner = false;
+    int asyncCloseCalls = 0;
+    closeAfterPopupFailure(
+        PopupFailureTiming::AsynchronousCompletion,
+        [&asyncNotifiesOwner, &asyncCloseCalls](const bool notifyOwner) {
+            ++asyncCloseCalls;
+            asyncNotifiesOwner = notifyOwner;
+        });
+    QCOMPARE(asyncCloseCalls, 1);
+    QVERIFY(asyncNotifiesOwner);
+    queuedReclaims.push_back([&activeAddress, &activeCount, &releaseCount] {
+        if (activeAddress == kReusedAddress) {
+            activeAddress = 0;
+            --activeCount;
+            ++releaseCount;
+        }
+    });
+
+    auto reclaim = std::move(queuedReclaims.front());
+    queuedReclaims.erase(queuedReclaims.begin());
+    reclaim();
+    QCOMPARE(activeAddress, std::uintptr_t{0});
+    QCOMPARE(activeCount, 0);
+    QCOMPARE(releaseCount, 2);
+    QCOMPARE(queuedReclaims.size(), std::size_t{0});
+
+    QFile popupSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
+    QVERIFY(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString popupSource = QString::fromUtf8(popupSourceFile.readAll());
+    QVERIFY(popupSource.contains(QStringLiteral(
+        "closeAfterPopupFailure(PopupFailureTiming::SynchronousCreate")));
+    QVERIFY(popupSource.contains(QStringLiteral(
+        "closeAfterPopupFailure(PopupFailureTiming::AsynchronousCompletion")));
 }
 
 void WebView2BrowserTest::navigationBindsExplicitGenerationsInOrder() {
@@ -796,6 +862,61 @@ void WebView2BrowserTest::defaultDenyPoliciesApplyExactArguments() {
     QVERIFY(cancelCertificateError<FakeCertificateArgs>(nullptr) == E_POINTER);
     QVERIFY(cancelExternalUri<FakeCancelArgs>(nullptr) == E_POINTER);
     QVERIFY(rejectNewWindow<FakeHandledArgs>(nullptr) == E_POINTER);
+}
+
+void WebView2BrowserTest::popupSafetyFailuresCloseBeforeReturning() {
+    FakePermissionArgs permission;
+    permission.result = E_ACCESSDENIED;
+    QCOMPARE(denyPermission(&permission), E_ACCESSDENIED);
+
+    FakeDownloadArgs screenCapture;
+    screenCapture.cancelResult = E_ACCESSDENIED;
+    QCOMPARE(cancelScreenCapture(&screenCapture), E_ACCESSDENIED);
+    QCOMPARE(screenCapture.cancelCalls, 1);
+    QCOMPARE(screenCapture.handledCalls, 1);
+
+    FakeDownloadArgs download;
+    download.cancelResult = E_ACCESSDENIED;
+    QCOMPARE(cancelDownload(&download), E_ACCESSDENIED);
+    QCOMPARE(download.cancelCalls, 1);
+    QCOMPARE(download.handledCalls, 1);
+
+    FakeCertificateArgs certificate;
+    certificate.result = E_ACCESSDENIED;
+    QCOMPARE(cancelCertificateError(&certificate), E_ACCESSDENIED);
+
+    FakeCancelArgs externalUri;
+    externalUri.result = E_ACCESSDENIED;
+    QCOMPARE(cancelExternalUri(&externalUri), E_ACCESSDENIED);
+
+    int closeCalls = 0;
+    QCOMPARE(completePopupSafetyDecision(S_OK, [&closeCalls] { ++closeCalls; }),
+             S_OK);
+    QCOMPARE(closeCalls, 0);
+
+    QCOMPARE(completePopupSafetyDecision(E_ACCESSDENIED,
+                                         [&closeCalls] { ++closeCalls; }),
+             S_OK);
+    QCOMPARE(closeCalls, 1);
+
+    QFile popupSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
+    QVERIFY(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString popupSource = QString::fromUtf8(popupSourceFile.readAll());
+    const QStringList handlerMarkers{
+        QStringLiteral("handleSafetyDecision(denyPermission(args))"),
+        QStringLiteral("handleSafetyDecision(cancelScreenCapture(args))"),
+        QStringLiteral("handleSafetyDecision(cancelDownload(args))"),
+        QStringLiteral("handleSafetyDecision(cancelCertificateError(args))"),
+        QStringLiteral("handleSafetyDecision(cancelExternalUri(args))"),
+    };
+    for (const QString& marker : handlerMarkers) {
+        QVERIFY2(popupSource.contains(marker), qPrintable(marker));
+    }
+    QVERIFY(popupSource.contains(QStringLiteral(
+        "safetyResult, [this] { closeInternal(true); }")));
+    QVERIFY(!popupSource.contains(QStringLiteral("PostMessageW(")));
+    QVERIFY(!popupSource.contains(QStringLiteral("kSafetyFailureCloseMessage")));
 }
 
 void WebView2BrowserTest::pendingSensitiveDecisionsCompleteExactlyOnce() {
@@ -1481,16 +1602,45 @@ void WebView2BrowserTest::shutdownPermanentlyRejectsReinitialization() {
     QVERIFY(!listener.reachedTerminalState());
 }
 
-void WebView2BrowserTest::controllerCompletionClosesOnlyStaleController() {
+void WebView2BrowserTest::controllerCompletionAdoptsOnlyCurrentSuccess() {
     FakeClosableController staleController;
-    QVERIFY(!acceptControllerCompletion(false, &staleController));
+    {
+        ControllerAdoptionTransaction<FakeClosableController> transaction(
+            &staleController);
+        QVERIFY(!transaction.canAdopt(false, S_OK));
+    }
     QCOMPARE(staleController.closeCalls, 1);
 
-    FakeClosableController currentController;
-    QVERIFY(acceptControllerCompletion(true, &currentController));
-    QCOMPARE(currentController.closeCalls, 0);
+    FakeClosableController failedController;
+    {
+        ControllerAdoptionTransaction<FakeClosableController> transaction(
+            &failedController);
+        QVERIFY(!transaction.canAdopt(true, E_ACCESSDENIED));
+    }
+    QCOMPARE(failedController.closeCalls, 1);
 
-    QVERIFY(!acceptControllerCompletion<FakeClosableController>(false, nullptr));
+    FakeClosableController acceptedController;
+    {
+        ControllerAdoptionTransaction<FakeClosableController> transaction(
+            &acceptedController);
+        QVERIFY(transaction.canAdopt(true, S_OK));
+        QCOMPARE(transaction.adopt(), &acceptedController);
+    }
+    QCOMPARE(acceptedController.closeCalls, 0);
+
+    ControllerAdoptionTransaction<FakeClosableController> nullTransaction(nullptr);
+    QVERIFY(!nullTransaction.canAdopt(true, S_OK));
+
+    QFile mainSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QFile popupSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
+    QVERIFY(mainSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    QVERIFY(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString marker =
+        QStringLiteral("ControllerAdoptionTransaction<ICoreWebView2Controller>");
+    QVERIFY(QString::fromUtf8(mainSourceFile.readAll()).contains(marker));
+    QVERIFY(QString::fromUtf8(popupSourceFile.readAll()).contains(marker));
 }
 
 void WebView2BrowserTest::shutdownFullScreenExitRemainsReachableAndOrdered() {
