@@ -137,6 +137,19 @@ bool isTerminalState(const libvlc_state_t state) noexcept {
          state == libvlc_Ended || state == libvlc_Error;
 }
 
+// 调用线程：唯一内核控制线程或旧播放器回收线程。测试观察器异常不得越过内核边界。
+void runBeforeRetiredPlayerStopObserver(
+    const std::function<void()>& observer) noexcept {
+  if (!observer) {
+    return;
+  }
+  try {
+    observer();
+  } catch (...) {
+    // 测试观察器不得影响真实播放内核回收。
+  }
+}
+
 std::uint64_t nonnegativeCounter(const int value) noexcept {
   return static_cast<std::uint64_t>(std::max(value, 0));
 }
@@ -1220,13 +1233,7 @@ class VlcPlayerEngine::Impl {
       static_cast<void>(libvlc_audio_set_volume(rawPlayer, 0));
       static_cast<void>(libvlc_audio_set_track(rawPlayer, -1));
       static_cast<void>(libvlc_video_set_track(rawPlayer, -1));
-      if (beforeStop) {
-        try {
-          beforeStop();
-        } catch (...) {
-          // 测试观察器不得影响真实播放内核回收。
-        }
-      }
+      runBeforeRetiredPlayerStopObserver(beforeStop);
       libvlc_media_player_stop(rawPlayer);
     };
     if (waitsForRetirement) {
@@ -1318,9 +1325,10 @@ class VlcPlayerEngine::Impl {
     return true;
   }
 
+  // 调用线程：唯一内核控制线程。终态仍可能保留旧 vout，换媒体或 HWND 前必须 Stop。
   void stopCurrentMedia() {
-    if (media_ &&
-        !isTerminalState(libvlc_media_player_get_state(player_.get()))) {
+    if (media_) {
+      runBeforeRetiredPlayerStopObserver(options_.beforeRetiredPlayerStop);
       libvlc_media_player_stop(player_.get());
     }
     stopAudioAnalysis();

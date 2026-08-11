@@ -818,6 +818,46 @@ TEST(VlcPlayerEngineTest, ReopensAndReplaysGeneratedWavAfterNaturalEnd) {
   engine.setEventListener(nullptr);
 }
 
+TEST(VlcPlayerEngineTest,
+     StopsEndedLocalPlayerBeforeApplyingReplayVideoSurface) {
+  GeneratedWav media(300ms);
+  RecordingListener listener;
+  std::atomic<bool> hasStoppedEndedPlayer{false};
+  std::atomic<bool> replaySurfaceAppliedAfterStop{false};
+  auto* const firstSurface = reinterpret_cast<void*>(0x1234);
+  auto* const replaySurface = reinterpret_cast<void*>(0x5678);
+  auto options = testOptions();
+  options.beforeRetiredPlayerStop = [&hasStoppedEndedPlayer] {
+    hasStoppedEndedPlayer.store(true);
+  };
+  options.videoSurfaceObserver =
+      [replaySurface, &hasStoppedEndedPlayer,
+       &replaySurfaceAppliedAfterStop](void* const nativeHandle) {
+        if (nativeHandle == replaySurface) {
+          replaySurfaceAppliedAfterStop.store(hasStoppedEndedPlayer.load());
+        }
+      };
+  VlcPlayerEngine engine(std::move(options));
+  engine.setEventListener(&listener);
+  const auto item = core::makeMediaItem(media.source());
+
+  engine.open(item, firstSurface);
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+  engine.play();
+  ASSERT_TRUE(listener.waitForEnd());
+  ASSERT_EQ(engine.state(), core::PlaybackState::Ended);
+
+  const auto nextOpening =
+      listener.stateCount(core::PlaybackState::Opening) + 1;
+  engine.open(item, replaySurface);
+  ASSERT_TRUE(
+      listener.waitForStateCount(core::PlaybackState::Opening, nextOpening));
+  EXPECT_TRUE(hasStoppedEndedPlayer.load());
+  EXPECT_TRUE(replaySurfaceAppliedAfterStop.load());
+  EXPECT_TRUE(listener.waitForReleasedVideoSurface(firstSurface));
+  engine.setEventListener(nullptr);
+}
+
 TEST(VlcPlayerEngineTest, RepeatedlyDestroysActivePlayersWithinBoundedTime) {
   GeneratedWav media(1s);
   for (int iteration = 0; iteration < 5; ++iteration) {

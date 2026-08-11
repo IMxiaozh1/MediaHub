@@ -270,6 +270,7 @@ private slots:
   void routesPauseResumeAndStopThroughPresenter();
   void rendersBufferingAsNonInteractiveWait();
   void allowsReplayAfterNaturalEnd();
+  void replaysSequentialLastVideoOnFreshSurfaceAfterNaturalEnd();
   void keepsProgressAtEndAfterLatePositionEvents();
   void keepsNaturalEndInteractiveAfterLateStoppedEvent();
   void resumesAfterSeekingFromNaturalEnd();
@@ -2423,6 +2424,65 @@ void MainWindowTest::allowsReplayAfterNaturalEnd() {
     QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 1);
     QCOMPARE(harness.engine.commands().back().position, 0ms);
   }
+}
+
+void MainWindowTest::
+    replaysSequentialLastVideoOnFreshSurfaceAfterNaturalEnd() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  harness.presenter.addLocalFiles({QStringLiteral("C:/list/first.mp3"),
+                                   QStringLiteral("C:/list/last.mp4")});
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  const QModelIndex lastItem = playlistView->model()->index(1, 0);
+  QVERIFY(QMetaObject::invokeMethod(playlistView, "doubleClicked",
+                                    Qt::DirectConnection,
+                                    Q_ARG(QModelIndex, lastItem)));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  const auto playingCommands = harness.engine.commands();
+  const auto playingOpen = std::find_if(
+      playingCommands.rbegin(), playingCommands.rend(), [](const auto& command) {
+        return command.kind == test::FakeEngineCommandKind::Open;
+      });
+  QVERIFY(playingOpen != playingCommands.rend());
+  void* const firstVideoSurface = playingOpen->nativeHandle;
+  QVERIFY(firstVideoSurface != nullptr);
+
+  harness.engine.emitEndReached();
+  QTRY_COMPARE(statusText(harness), QStringLiteral("播放结束"));
+  QCOMPARE(playlistView->currentIndex().row(), 1);
+  const int opensBeforeReplay =
+      commandCount(harness, test::FakeEngineCommandKind::Open);
+  const int playsBeforeReplay =
+      commandCount(harness, test::FakeEngineCommandKind::Play);
+
+  QTest::mouseClick(
+      requiredChild<QToolButton>(harness.window, "playPauseButton"),
+      Qt::LeftButton);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
+               opensBeforeReplay + 1);
+  const auto replayCommands = harness.engine.commands();
+  const auto replayOpen = std::find_if(
+      replayCommands.rbegin(), replayCommands.rend(), [](const auto& command) {
+        return command.kind == test::FakeEngineCommandKind::Open;
+      });
+  QVERIFY(replayOpen != replayCommands.rend());
+  QVERIFY(replayOpen->nativeHandle != nullptr);
+  QVERIFY(replayOpen->nativeHandle != firstVideoSurface);
+
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
+               playsBeforeReplay + 1);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Seek), 1);
+  QCOMPARE(harness.engine.commands().back().position, 0ms);
+  QVERIFY(requiredChild<VideoOutputWidget>(harness.window, "videoOutputWidget")
+              ->isVideoActive());
 }
 
 void MainWindowTest::keepsProgressAtEndAfterLatePositionEvents() {
