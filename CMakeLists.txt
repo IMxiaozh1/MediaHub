@@ -11,6 +11,8 @@ option(MEDIAHUB_CORE_ONLY "Build only the dependency-free core library and unit 
 option(MEDIAHUB_PACKAGE_RELEASE "Enable the Windows Release installation rules" OFF)
 
 set(MEDIAHUB_VLC_ROOT "" CACHE PATH "Path to an extracted VLC win64 archive")
+set(MEDIAHUB_WEBVIEW2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/Third_Party/webview2"
+    CACHE PATH "Path to the fixed Microsoft WebView2 SDK")
 
 if(NOT MEDIAHUB_CORE_ONLY AND NOT MEDIAHUB_VLC_ROOT)
     message(FATAL_ERROR
@@ -42,6 +44,31 @@ if(NOT MEDIAHUB_CORE_ONLY)
                 "MEDIAHUB_VLC_ROOT must point to the root of an extracted VLC win64 archive.")
         endif()
     endforeach()
+
+    if(NOT WIN32)
+        message(FATAL_ERROR "The WebView2 backend currently supports Windows x64 only.")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+        message(FATAL_ERROR
+            "The WebView2 backend requires a 64-bit Windows build. Configure an x64 generator.")
+    endif()
+
+    set(MEDIAHUB_WEBVIEW2_INCLUDE_DIR "${MEDIAHUB_WEBVIEW2_ROOT}/include")
+    set(MEDIAHUB_WEBVIEW2_STATIC_LOADER
+        "${MEDIAHUB_WEBVIEW2_ROOT}/x64/WebView2LoaderStatic.lib")
+    set(MEDIAHUB_WEBVIEW2_REQUIRED_ITEMS
+        "${MEDIAHUB_WEBVIEW2_INCLUDE_DIR}/WebView2.h"
+        "${MEDIAHUB_WEBVIEW2_INCLUDE_DIR}/WebView2EnvironmentOptions.h"
+        "${MEDIAHUB_WEBVIEW2_STATIC_LOADER}"
+    )
+    foreach(requiredItem IN LISTS MEDIAHUB_WEBVIEW2_REQUIRED_ITEMS)
+        if(NOT EXISTS "${requiredItem}")
+            message(FATAL_ERROR
+                "The WebView2 SDK is incomplete: ${requiredItem} was not found. "
+                "Set MEDIAHUB_WEBVIEW2_ROOT to the fixed SDK directory containing include/ "
+                "and x64/WebView2LoaderStatic.lib.")
+        endif()
+    endforeach()
 endif()
 
 include(CTest)
@@ -54,6 +81,16 @@ function(mediahub_enable_warnings targetName)
 endfunction()
 
 if(NOT MEDIAHUB_CORE_ONLY)
+    add_library(mediahub_webview2_sdk INTERFACE)
+    add_library(MediaHub::WebView2 ALIAS mediahub_webview2_sdk)
+    target_include_directories(mediahub_webview2_sdk SYSTEM INTERFACE
+        "${MEDIAHUB_WEBVIEW2_INCLUDE_DIR}")
+    target_link_libraries(mediahub_webview2_sdk INTERFACE
+        "${MEDIAHUB_WEBVIEW2_STATIC_LOADER}"
+        ole32
+        version
+    )
+
     find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Concurrent Network Widgets)
     if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)
         find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Test)
@@ -286,6 +323,11 @@ if(NOT MEDIAHUB_CORE_ONLY)
     target_link_libraries(mediahub_vlc_probe PRIVATE MediaHub::LibVLC)
     mediahub_enable_warnings(mediahub_vlc_probe)
     mediahub_deploy_vlc(mediahub_vlc_probe)
+
+    add_executable(mediahub_webview2_probe tools/webview2_probe/main.cpp)
+    set_target_properties(mediahub_webview2_probe PROPERTIES OUTPUT_NAME MediaHubWebView2Probe)
+    target_link_libraries(mediahub_webview2_probe PRIVATE MediaHub::WebView2)
+    mediahub_enable_warnings(mediahub_webview2_probe)
 endif()
 
 if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)
@@ -293,6 +335,11 @@ if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)
         add_test(NAME stage1_vlc_probe COMMAND mediahub_vlc_probe)
         set_tests_properties(stage1_vlc_probe PROPERTIES
             PASS_REGULAR_EXPRESSION "libVLC version: 3\\.0\\.21"
+            TIMEOUT 10
+        )
+        add_test(NAME stage1_webview2_probe COMMAND mediahub_webview2_probe)
+        set_tests_properties(stage1_webview2_probe PROPERTIES
+            PASS_REGULAR_EXPRESSION "WebView2 Runtime version: .+"
             TIMEOUT 10
         )
     endif()
