@@ -24,6 +24,8 @@ class EngineEventBridge final : public QObject,
   void deactivate() noexcept;
 
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
+  void onOpenStarted(core::OpenRequestId requestId) noexcept override;
+  // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onStateChanged(core::PlaybackState state) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onPositionChanged(core::PlaybackPosition position) noexcept override;
@@ -37,8 +39,11 @@ class EngineEventBridge final : public QObject,
   void onEndReached() noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onError(core::PlaybackError error) noexcept override;
+  // 调用线程：旧播放器回收线程。函数只投递已释放的嵌入句柄。
+  void onVideoSurfaceReleased(void* nativeHandle) noexcept override;
 
  signals:
+  void openStarted(mediahub::core::OpenRequestId requestId);
   void stateChanged(core::PlaybackState state);
   void positionChanged(core::PlaybackPosition position);
   void durationChanged(mediahub::gui::OptionalDuration duration);
@@ -46,6 +51,7 @@ class EngineEventBridge final : public QObject,
   void audioWaveformChanged(core::AudioWaveform waveform);
   void endReached();
   void errorOccurred(core::PlaybackError error);
+  void videoSurfaceReleased(void* nativeHandle);
 
  private:
   std::atomic_bool isActive_{true};

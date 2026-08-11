@@ -97,6 +97,7 @@ class PlayerPresenter final : public QObject {
   void handleLivePlaylistLoaded(LivePlaylistLoadResult result);
   void handleLivePlaylistFailure(LivePlaylistLoadError error);
   void attachVideoSurface(void* nativeHandle);
+  void handleOpenStarted(core::OpenRequestId requestId);
   void handleStateChanged(core::PlaybackState state);
   void handlePositionChanged(core::PlaybackPosition position);
   void handleDurationChanged(OptionalDuration duration);
@@ -105,6 +106,7 @@ class PlayerPresenter final : public QObject {
   void handleLyricsResult(LyricsResult result);
   void handleEndReached();
   void handleError(core::PlaybackError error);
+  void handleVideoSurfaceReleased(void* nativeHandle);
   void handleNetworkOpenTimeout();
   void rememberNetworkUrl(const QString& url);
   void rememberLivePlaylistUrl(const QString& url);
@@ -156,6 +158,7 @@ class PlayerPresenter final : public QObject {
   PlaylistModel livePlaylistModel_;
   std::optional<core::MediaItem> currentPlaybackItem_;
   std::optional<PlaylistKind> currentPlaybackKind_;
+  core::OpenRequestId pendingOpenRequestId_{0};
   PlaylistKind activePlaylistKind_{PlaylistKind::Local};
   core::PlaybackPosition position_;
   std::optional<std::chrono::milliseconds> seekPreviewPosition_;
@@ -170,6 +173,7 @@ class PlayerPresenter final : public QObject {
   QString lastLivePlaylistUrl_;
   QString activeLivePlaylistRequestUrl_;
   QString pendingPlaylistProbeUrl_;
+  void* fallbackVideoSurface_{nullptr};
   QString livePlaylistStatusText_{QStringLiteral("输入远程 M3U/M3U8 清单 URL")};
   int volume_{100};
   int bufferingPercentage_{0};
@@ -189,6 +193,7 @@ class PlayerPresenter final : public QObject {
   bool ignoresCancelledNetworkEvents_{false};
   bool isNetworkRefreshPending_{false};
   bool isNetworkDisconnected_{false};
+  bool isEngineBusy_{false};
   bool isLivePlaylistLoading_{false};
   bool isPreparingMedia_{false};
   bool isRestartPlayRequested_{false};

@@ -8,6 +8,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
+#include <QResizeEvent>
 #include <QShowEvent>
 #include <algorithm>
 #include <cmath>
@@ -137,6 +138,15 @@ void VideoOutputWidget::setPresentation(const bool isVideoActive,
   // 视频活动时画布由 libVLC 直接绘制，Qt 不再擦除或声明自己覆盖全部像素。
   setAttribute(Qt::WA_NoSystemBackground, isVideoActive_);
   setAttribute(Qt::WA_OpaquePaintEvent, !isVideoActive_);
+  if (activeVideoSurface_ != nullptr) {
+    if (isVideoActive_) {
+      activeVideoSurface_->setGeometry(rect());
+      activeVideoSurface_->show();
+      activeVideoSurface_->raise();
+    } else {
+      activeVideoSurface_->hide();
+    }
+  }
   if (isVideoActive_) {
     return;
   }
@@ -202,8 +212,63 @@ UiPresentationMode VideoOutputWidget::presentationMode() const noexcept {
   return presentationMode_;
 }
 
+void* VideoOutputWidget::beginVideoSurfaceSession() {
+  if (activeVideoSurface_ != nullptr) {
+    activeVideoSurface_->hide();
+    auto* const oldHandle = reinterpret_cast<void*>(
+        static_cast<quintptr>(activeVideoSurface_->winId()));
+    if (releasedVideoSurfaces_.erase(oldHandle) > 0) {
+      const auto oldSurface = std::find(videoSurfaces_.begin(),
+                                        videoSurfaces_.end(),
+                                        activeVideoSurface_);
+      if (oldSurface != videoSurfaces_.end()) {
+        videoSurfaces_.erase(oldSurface);
+      }
+      delete activeVideoSurface_;
+    }
+  }
+
+  auto* const surface = new QWidget(this);
+  surface->setObjectName(
+      QStringLiteral("videoSurface%1").arg(videoSurfaces_.size() + 1));
+  surface->setAttribute(Qt::WA_NativeWindow);
+  surface->setAttribute(Qt::WA_NoSystemBackground);
+  surface->setAttribute(Qt::WA_OpaquePaintEvent);
+  surface->setGeometry(rect());
+  videoSurfaces_.push_back(surface);
+  activeVideoSurface_ = surface;
+  if (isVideoActive_) {
+    surface->show();
+    surface->raise();
+  }
+  const WId windowId = surface->winId();
+  return reinterpret_cast<void*>(static_cast<quintptr>(windowId));
+}
+
+void VideoOutputWidget::releaseVideoSurface(void* const nativeHandle) {
+  const auto releasedSurface = std::find_if(
+      videoSurfaces_.begin(), videoSurfaces_.end(),
+      [nativeHandle](QWidget* const surface) {
+        return reinterpret_cast<void*>(static_cast<quintptr>(surface->winId())) ==
+               nativeHandle;
+      });
+  if (releasedSurface == videoSurfaces_.end()) {
+    return;
+  }
+  if (*releasedSurface == activeVideoSurface_) {
+    releasedVideoSurfaces_.insert(nativeHandle);
+    return;
+  }
+  delete *releasedSurface;
+  videoSurfaces_.erase(releasedSurface);
+}
+
 void VideoOutputWidget::showEvent(QShowEvent* const event) {
   QWidget::showEvent(event);
+  if (activeVideoSurface_ != nullptr && isVideoActive_) {
+    activeVideoSurface_->show();
+    activeVideoSurface_->raise();
+  }
   publishSurface();
 }
 
@@ -213,6 +278,13 @@ bool VideoOutputWidget::event(QEvent* const event) {
     publishSurface();
   }
   return wasHandled;
+}
+
+void VideoOutputWidget::resizeEvent(QResizeEvent* const event) {
+  QWidget::resizeEvent(event);
+  for (auto* const surface : videoSurfaces_) {
+    surface->setGeometry(rect());
+  }
 }
 
 void VideoOutputWidget::paintEvent(QPaintEvent* const event) {

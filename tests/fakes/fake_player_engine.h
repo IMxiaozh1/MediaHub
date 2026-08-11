@@ -29,12 +29,14 @@ struct FakeEngineCommand {
   double playbackRate{1.0};
   bool flag{false};
   void* nativeHandle{nullptr};
+  core::OpenRequestId openRequestId{0};
 };
 
 // 测试专用内核。控制请求只被记录，事件仅在测试显式调用 emit 方法时同步发出。
 class FakePlayerEngine final : public core::PlayerEngine {
  public:
-  void open(core::MediaItem item) override;
+  core::OpenRequestId open(core::MediaItem item,
+                           void* nativeVideoHandle = nullptr) override;
   void play() override;
   void pause() override;
   void stop() override;
@@ -57,6 +59,8 @@ class FakePlayerEngine final : public core::PlayerEngine {
   void setNetworkStreamActivity(
       std::optional<core::NetworkStreamActivity> activity);
 
+  // 调用线程：测试线程。显式确认指定打开请求已进入内核处理阶段。
+  void emitOpenStarted(core::OpenRequestId requestId);
   // 调用线程：测试线程。回调在调用者线程中同步执行，方便精确控制事件顺序。
   void emitStateChanged(core::PlaybackState state);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
@@ -71,6 +75,8 @@ class FakePlayerEngine final : public core::PlayerEngine {
   void emitEndReached();
   // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitError(core::PlaybackError error);
+  // 调用线程：测试线程。通知界面旧播放器已释放指定视频句柄。
+  void emitVideoSurfaceReleased(void* nativeHandle);
 
  private:
   void record(FakeEngineCommand command);
@@ -82,6 +88,8 @@ class FakePlayerEngine final : public core::PlayerEngine {
   core::PlaybackPosition position_;
   std::optional<core::NetworkStreamActivity> networkStreamActivity_;
   core::PlayerEventListener* listener_{nullptr};
+  core::OpenRequestId latestOpenRequestId_{0};
+  core::OpenRequestId announcedOpenRequestId_{0};
 };
 
 }  // namespace mediahub::test

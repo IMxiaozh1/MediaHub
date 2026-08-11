@@ -32,7 +32,8 @@ class VlcPlayerEngine final : public core::PlayerEngine {
   VlcPlayerEngine(VlcPlayerEngine&&) = delete;
   VlcPlayerEngine& operator=(VlcPlayerEngine&&) = delete;
 
-  void open(core::MediaItem item) override;
+  core::OpenRequestId open(core::MediaItem item,
+                           void* nativeVideoHandle = nullptr) override;
   void play() override;
   void pause() override;
   void stop() override;

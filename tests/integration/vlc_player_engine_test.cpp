@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -28,6 +29,12 @@ using test::GeneratedWav;
 // libVLC 回调线程只写受互斥量保护的测试快照，并通过条件变量唤醒测试线程。
 class RecordingListener final : public core::PlayerEventListener {
  public:
+  void onOpenStarted(const core::OpenRequestId requestId) noexcept override {
+    const std::lock_guard lock(mutex_);
+    openRequestIds_.push_back(requestId);
+    changed_.notify_all();
+  }
+
   void onStateChanged(const core::PlaybackState state) noexcept override {
     const std::lock_guard lock(mutex_);
     states_.push_back(state);
@@ -77,6 +84,12 @@ class RecordingListener final : public core::PlayerEventListener {
   void onError(core::PlaybackError error) noexcept override {
     const std::lock_guard lock(mutex_);
     errors_.push_back(std::move(error));
+    changed_.notify_all();
+  }
+
+  void onVideoSurfaceReleased(void* const nativeHandle) noexcept override {
+    const std::lock_guard lock(mutex_);
+    releasedVideoSurfaces_.push_back(nativeHandle);
     changed_.notify_all();
   }
 
@@ -160,6 +173,17 @@ class RecordingListener final : public core::PlayerEventListener {
                              [&] { return errors_.size() >= expected; });
   }
 
+  [[nodiscard]] bool waitForReleasedVideoSurface(
+      void* const nativeHandle,
+      const std::chrono::milliseconds timeout = 1s) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout, [&] {
+      return std::find(releasedVideoSurfaces_.begin(),
+                       releasedVideoSurfaces_.end(),
+                       nativeHandle) != releasedVideoSurfaces_.end();
+    });
+  }
+
   [[nodiscard]] core::PlaybackError lastError() const {
     const std::lock_guard lock(mutex_);
     return errors_.back();
@@ -200,6 +224,8 @@ class RecordingListener final : public core::PlayerEventListener {
   std::size_t nonSilentWaveformCount_{0};
   std::size_t endCount_{0};
   std::vector<core::PlaybackError> errors_;
+  std::vector<core::OpenRequestId> openRequestIds_;
+  std::vector<void*> releasedVideoSurfaces_;
 };
 
 class VideoSurfaceRecorder final {
@@ -241,16 +267,21 @@ class RetirementGate final {
  public:
   void waitBeforeStop() {
     std::unique_lock lock(mutex_);
-    hasReachedStop_ = true;
+    ++reachedStopCount_;
+    ++activeWaiterCount_;
     changed_.notify_all();
     changed_.wait(lock, [this] { return canStop_; });
+    --activeWaiterCount_;
+    changed_.notify_all();
   }
 
   [[nodiscard]] bool waitUntilReached(
+      const std::size_t expectedCount = 1,
       const std::chrono::milliseconds timeout = 1s) {
     std::unique_lock lock(mutex_);
-    return changed_.wait_for(lock, timeout,
-                             [this] { return hasReachedStop_; });
+    return changed_.wait_for(lock, timeout, [this, expectedCount] {
+      return reachedStopCount_ >= expectedCount;
+    });
   }
 
   void allowStop() {
@@ -259,10 +290,18 @@ class RetirementGate final {
     changed_.notify_all();
   }
 
+  [[nodiscard]] bool waitUntilIdle(
+      const std::chrono::milliseconds timeout = 1s) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout,
+                             [this] { return activeWaiterCount_ == 0; });
+  }
+
  private:
   std::mutex mutex_;
   std::condition_variable changed_;
-  bool hasReachedStop_{false};
+  std::size_t reachedStopCount_{0};
+  std::size_t activeWaiterCount_{0};
   bool canStop_{false};
 };
 
@@ -430,9 +469,123 @@ TEST(VlcPlayerEngineTest,
                               core::MediaSourceKind::NetworkStream,
                               "third.ts"});
   retirementGate.allowStop();
+  EXPECT_TRUE(retirementGate.waitUntilIdle());
   EXPECT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
   EXPECT_FALSE(
       listener.waitForStateCount(core::PlaybackState::Opening, 3, 500ms));
+}
+
+TEST(VlcPlayerEngineTest,
+     OpensOnDistinctSurfaceWhilePreviousPlayerRetirementIsBlocked) {
+  RecordingListener listener;
+  RetirementGate retirementGate;
+  VideoSurfaceRecorder surfaceRecorder;
+  auto options = testOptions();
+  options.beforeRetiredPlayerStop = [&retirementGate] {
+    retirementGate.waitBeforeStop();
+  };
+  options.videoSurfaceObserver = [&surfaceRecorder](void *const nativeHandle) {
+    surfaceRecorder.record(nativeHandle);
+  };
+  VlcPlayerEngine engine(std::move(options));
+  engine.setEventListener(&listener);
+  auto *const firstSurface = reinterpret_cast<void *>(0x1234);
+  auto *const secondSurface = reinterpret_cast<void *>(0x5678);
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/first.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "first.ts"},
+              firstSurface);
+  ASSERT_TRUE(surfaceRecorder.waitFor(firstSurface));
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/second.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "second.ts"},
+              secondSurface);
+  ASSERT_TRUE(retirementGate.waitUntilReached());
+  EXPECT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2,
+                                         500ms));
+  EXPECT_TRUE(surfaceRecorder.waitFor(secondSurface));
+  EXPECT_FALSE(surfaceRecorder.waitFor(nullptr, 100ms));
+  engine.stop();
+  EXPECT_TRUE(listener.waitForStateCount(core::PlaybackState::Stopped, 1,
+                                         500ms));
+  EXPECT_TRUE(retirementGate.waitUntilReached(2));
+  retirementGate.allowStop();
+  EXPECT_TRUE(retirementGate.waitUntilIdle());
+  EXPECT_TRUE(listener.waitForReleasedVideoSurface(firstSurface));
+  EXPECT_FALSE(listener.waitForReleasedVideoSurface(secondSurface, 100ms));
+}
+
+TEST(VlcPlayerEngineTest, ReleasesPreviousSurfaceAfterSynchronousLocalSwitch) {
+  GeneratedWav media(2s);
+  RecordingListener listener;
+  VlcPlayerEngine engine(testOptions());
+  engine.setEventListener(&listener);
+  auto* const firstSurface = reinterpret_cast<void*>(0x1234);
+  auto* const secondSurface = reinterpret_cast<void*>(0x5678);
+  const core::MediaItem item{media.source(),
+                             core::MediaSourceKind::LocalFile,
+                             "generated.wav"};
+
+  engine.open(item, firstSurface);
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+  engine.open(item, secondSurface);
+
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
+  EXPECT_TRUE(listener.waitForReleasedVideoSurface(firstSurface));
+  EXPECT_FALSE(listener.waitForReleasedVideoSurface(secondSurface, 100ms));
+}
+
+TEST(VlcPlayerEngineTest,
+     BoundsBlockedRetirementsAndKeepsOneStopSlotAvailable) {
+  RecordingListener listener;
+  RetirementGate retirementGate;
+  auto options = testOptions();
+  options.beforeRetiredPlayerStop = [&retirementGate] {
+    retirementGate.waitBeforeStop();
+  };
+  VlcPlayerEngine engine(std::move(options));
+  engine.setEventListener(&listener);
+  const std::array<void*, 5> surfaces{
+      reinterpret_cast<void*>(0x1000), reinterpret_cast<void*>(0x2000),
+      reinterpret_cast<void*>(0x3000), reinterpret_cast<void*>(0x4000),
+      reinterpret_cast<void*>(0x5000)};
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/first.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "first.ts"},
+              surfaces[0]);
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
+  for (std::size_t index = 1; index < 4; ++index) {
+    engine.open(core::MediaItem{
+                    "http://127.0.0.1:1/next.ts",
+                    core::MediaSourceKind::NetworkStream, "next.ts"},
+                surfaces[index]);
+    ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening,
+                                           index + 1));
+    ASSERT_TRUE(retirementGate.waitUntilReached(index));
+  }
+
+  engine.open(core::MediaItem{"http://127.0.0.1:1/rejected.ts",
+                              core::MediaSourceKind::NetworkStream,
+                              "rejected.ts"},
+              surfaces[4]);
+  ASSERT_TRUE(listener.waitForError());
+  EXPECT_EQ(listener.lastError().kind, core::PlaybackErrorKind::EngineBusy);
+  EXPECT_EQ(listener.lastError().userMessage,
+            "多个旧直播仍在退出，请稍候后重试。");
+  EXPECT_FALSE(
+      listener.waitForStateCount(core::PlaybackState::Opening, 5, 100ms));
+  EXPECT_TRUE(listener.waitForReleasedVideoSurface(surfaces[4]));
+
+  engine.stop();
+  EXPECT_TRUE(listener.waitForStateCount(core::PlaybackState::Stopped, 1,
+                                         500ms));
+  EXPECT_TRUE(retirementGate.waitUntilReached(4));
+  retirementGate.allowStop();
+  EXPECT_TRUE(retirementGate.waitUntilIdle());
 }
 
 TEST(VlcPlayerEngineTest, SwitchesFromNetworkDescriptorToLocalAudio) {

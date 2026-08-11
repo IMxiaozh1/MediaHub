@@ -5,6 +5,7 @@
 namespace mediahub::gui {
 
 EngineEventBridge::EngineEventBridge(QObject* const parent) : QObject(parent) {
+  qRegisterMetaType<core::OpenRequestId>("mediahub::core::OpenRequestId");
   qRegisterMetaType<core::PlaybackState>("mediahub::core::PlaybackState");
   qRegisterMetaType<core::PlaybackPosition>("mediahub::core::PlaybackPosition");
   qRegisterMetaType<core::PlaybackError>("mediahub::core::PlaybackError");
@@ -14,6 +15,13 @@ EngineEventBridge::EngineEventBridge(QObject* const parent) : QObject(parent) {
 
 void EngineEventBridge::deactivate() noexcept {
   isActive_.store(false, std::memory_order_release);
+}
+
+void EngineEventBridge::onOpenStarted(
+    const core::OpenRequestId requestId) noexcept {
+  if (isActive_.load(std::memory_order_acquire)) {
+    emit openStarted(requestId);
+  }
 }
 
 void EngineEventBridge::onStateChanged(
@@ -58,6 +66,13 @@ void EngineEventBridge::onEndReached() noexcept {
 void EngineEventBridge::onError(core::PlaybackError error) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
     emit errorOccurred(std::move(error));
+  }
+}
+
+void EngineEventBridge::onVideoSurfaceReleased(
+    void* const nativeHandle) noexcept {
+  if (isActive_.load(std::memory_order_acquire)) {
+    emit videoSurfaceReleased(nativeHandle);
   }
 }
 

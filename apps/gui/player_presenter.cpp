@@ -94,6 +94,8 @@ std::string errorKindName(const core::PlaybackErrorKind kind) {
     return "audio_device_unavailable";
   case core::PlaybackErrorKind::EngineNotInitialized:
     return "engine_not_initialized";
+  case core::PlaybackErrorKind::EngineBusy:
+    return "engine_busy";
   case core::PlaybackErrorKind::Unknown:
     return "unknown";
   }
@@ -429,6 +431,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
   connect(&window_, &MainWindow::closing, this, &PlayerPresenter::shutdown);
 
   // 强制排队可避免同步内核回调在原调用栈中重新进入控制接口。
+  connect(&eventBridge_, &EngineEventBridge::openStarted, this,
+          &PlayerPresenter::handleOpenStarted, Qt::QueuedConnection);
   connect(&eventBridge_, &EngineEventBridge::stateChanged, this,
           &PlayerPresenter::handleStateChanged, Qt::QueuedConnection);
   connect(&eventBridge_, &EngineEventBridge::positionChanged, this,
@@ -443,6 +447,9 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
           &PlayerPresenter::handleEndReached, Qt::QueuedConnection);
   connect(&eventBridge_, &EngineEventBridge::errorOccurred, this,
           &PlayerPresenter::handleError, Qt::QueuedConnection);
+  connect(&eventBridge_, &EngineEventBridge::videoSurfaceReleased, this,
+          &PlayerPresenter::handleVideoSurfaceReleased,
+          Qt::QueuedConnection);
   connect(lyricsService_, &LyricsService::resultReady, this,
           &PlayerPresenter::handleLyricsResult);
   connect(livePlaylistService_, &LivePlaylistService::loadSucceeded, this,
@@ -681,6 +688,7 @@ void PlayerPresenter::openCurrentPlaybackItem(const bool isNetworkRefresh) {
     return;
   }
   const auto &item = *currentPlaybackItem_;
+  const bool wasVideoMedia = isVideoMedia_;
 
   mediaName_ = fromUtf8(item.displayName);
   currentSourcePath_ = fromUtf8(item.source);
@@ -702,6 +710,7 @@ void PlayerPresenter::openCurrentPlaybackItem(const bool isNetworkRefresh) {
   ignoresCancelledNetworkEvents_ = false;
   isNetworkRefreshPending_ = isNetworkRefresh && isNetworkMedia_;
   isNetworkDisconnected_ = false;
+  isEngineBusy_ = false;
   isVideoMedia_ =
       isNetworkMedia_ ||
       !isAudioFile(QString::fromUtf8(item.source.data(),
@@ -719,11 +728,15 @@ void PlayerPresenter::openCurrentPlaybackItem(const bool isNetworkRefresh) {
     logger_->log(logging::LogLevel::Info, "presenter", "media_open_requested",
                  {{"media", item.displayName}});
   }
-  render();
-  if (isNetworkOpenPending_) {
-    networkOpenTimeoutTimer_->start();
+  void* videoSurface = nullptr;
+  if (isVideoMedia_ || wasVideoMedia) {
+    videoSurface = window_.prepareVideoSurface();
+    if (videoSurface == nullptr) {
+      videoSurface = fallbackVideoSurface_;
+    }
   }
-  engine_.open(item);
+  render();
+  pendingOpenRequestId_ = engine_.open(item, videoSurface);
 }
 
 void PlayerPresenter::shutdown() noexcept {
@@ -773,7 +786,22 @@ void PlayerPresenter::shutdown() noexcept {
 void PlayerPresenter::attachVideoSurface(void *const nativeHandle) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (!isShuttingDown_) {
+    fallbackVideoSurface_ = nativeHandle;
     engine_.setVideoSurface(nativeHandle);
+  }
+}
+
+void PlayerPresenter::handleOpenStarted(const core::OpenRequestId requestId) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || requestId != pendingOpenRequestId_) {
+    return;
+  }
+  if (isNetworkMedia_ && isNetworkOpenPending_) {
+    networkOpenTimeoutTimer_->start();
+  }
+  if (isAutoPlayPending_) {
+    isAutoPlayPending_ = false;
+    engine_.play();
   }
 }
 
@@ -827,6 +855,7 @@ void PlayerPresenter::requestStop() {
     seekPreviewPosition_.reset();
     isNetworkRefreshPending_ = false;
     isNetworkDisconnected_ = false;
+    isEngineBusy_ = false;
     if (!isNetworkMedia_) {
       clearCurrentLocalResumePosition();
       persistAppState();
@@ -943,7 +972,15 @@ void PlayerPresenter::submitSeek(const std::chrono::milliseconds target) {
       }
       lastAppliedPlaybackRate_ = 1.0;
       render();
-      engine_.open(*currentPlaybackItem_);
+      void* videoSurface = nullptr;
+      if (isVideoMedia_) {
+        videoSurface = window_.prepareVideoSurface();
+        if (videoSurface == nullptr) {
+          videoSurface = fallbackVideoSurface_;
+        }
+      }
+      pendingOpenRequestId_ =
+          engine_.open(*currentPlaybackItem_, videoSurface);
     } else {
       render();
     }
@@ -1372,11 +1409,6 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
     render();
     engine_.seek(position_.current);
   }
-
-  if (state == core::PlaybackState::Opening && isAutoPlayPending_) {
-    isAutoPlayPending_ = false;
-    engine_.play();
-  }
 }
 
 void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
@@ -1524,6 +1556,7 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
   }
 
   const bool wasStartedNetwork = isNetworkMedia_ && hasCurrentMediaStarted_;
+  isEngineBusy_ = error.kind == core::PlaybackErrorKind::EngineBusy;
 
   isAutoPlayPending_ = false;
   isSeeking_ = false;
@@ -1551,6 +1584,13 @@ void PlayerPresenter::handleError(core::PlaybackError error) {
     emit stateApplied(stateMachine_.state());
   }
   window_.showPlaybackError(fromUtf8(error.userMessage));
+}
+
+void PlayerPresenter::handleVideoSurfaceReleased(void* const nativeHandle) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (!isShuttingDown_) {
+    window_.releaseVideoSurface(nativeHandle);
+  }
 }
 
 void PlayerPresenter::handleNetworkOpenTimeout() {
@@ -2136,6 +2176,13 @@ PlayerViewState PlayerPresenter::makeViewState() const {
     viewState.canStop = false;
   }
 
+  if (isEngineBusy_) {
+    viewState.statusText = QStringLiteral("旧直播正在退出，请稍候后重试");
+    viewState.canPlay = false;
+    viewState.canPause = false;
+    viewState.canStop = true;
+  }
+
   if (isCurrentLivePlaybackMarked) {
     viewState.canPlay = false;
     viewState.canPause = false;
@@ -2168,6 +2215,11 @@ PlayerViewState PlayerPresenter::makeViewState() const {
 
   if (isPreparingMedia_) {
     viewState.videoPlaceholder = QStringLiteral("正在准备视频画面...");
+    return viewState;
+  }
+
+  if (isEngineBusy_) {
+    viewState.videoPlaceholder = QStringLiteral("旧直播正在退出，请稍候后重试");
     return viewState;
   }
 

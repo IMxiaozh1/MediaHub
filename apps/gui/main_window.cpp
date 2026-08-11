@@ -1835,6 +1835,14 @@ void MainWindow::setRecentLocalMedia(
           &MainWindow::recentLocalMediaClearRequested);
 }
 
+void* MainWindow::prepareVideoSurface() {
+  return videoOutput_->beginVideoSurfaceSession();
+}
+
+void MainWindow::releaseVideoSurface(void* const nativeHandle) {
+  videoOutput_->releaseVideoSurface(nativeHandle);
+}
+
 void MainWindow::showLiveUrlHistory() {
   LiveUrlHistoryDialog dialog(livePlaylistHistoryUrls_, this);
   const int result = dialog.exec();

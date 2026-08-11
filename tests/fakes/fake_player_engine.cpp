@@ -4,10 +4,17 @@
 
 namespace mediahub::test {
 
-void FakePlayerEngine::open(core::MediaItem item) {
+core::OpenRequestId FakePlayerEngine::open(core::MediaItem item,
+                                           void* const nativeVideoHandle) {
   FakeEngineCommand command{FakeEngineCommandKind::Open};
   command.media = std::move(item);
-  record(std::move(command));
+  command.nativeHandle = nativeVideoHandle;
+  {
+    const std::lock_guard lock(mutex_);
+    command.openRequestId = ++latestOpenRequestId_;
+    commands_.push_back(command);
+  }
+  return command.openRequestId;
 }
 
 void FakePlayerEngine::play() {
@@ -95,10 +102,31 @@ void FakePlayerEngine::setNetworkStreamActivity(
   networkStreamActivity_ = std::move(activity);
 }
 
+void FakePlayerEngine::emitOpenStarted(const core::OpenRequestId requestId) {
+  {
+    const std::lock_guard lock(mutex_);
+    announcedOpenRequestId_ = requestId;
+  }
+  if (auto* const currentListener = listener()) {
+    currentListener->onOpenStarted(requestId);
+  }
+}
+
 void FakePlayerEngine::emitStateChanged(const core::PlaybackState state) {
+  core::OpenRequestId openRequestId = 0;
   {
     const std::lock_guard lock(mutex_);
     state_ = state;
+    if (state == core::PlaybackState::Opening &&
+        announcedOpenRequestId_ != latestOpenRequestId_) {
+      announcedOpenRequestId_ = latestOpenRequestId_;
+      openRequestId = latestOpenRequestId_;
+    }
+  }
+  if (openRequestId != 0) {
+    if (auto* const currentListener = listener()) {
+      currentListener->onOpenStarted(openRequestId);
+    }
   }
   if (auto* const currentListener = listener()) {
     currentListener->onStateChanged(state);
@@ -147,6 +175,12 @@ void FakePlayerEngine::emitEndReached() {
 void FakePlayerEngine::emitError(core::PlaybackError error) {
   if (auto* const currentListener = listener()) {
     currentListener->onError(std::move(error));
+  }
+}
+
+void FakePlayerEngine::emitVideoSurfaceReleased(void* const nativeHandle) {
+  if (auto* const currentListener = listener()) {
+    currentListener->onVideoSurfaceReleased(nativeHandle);
   }
 }
 

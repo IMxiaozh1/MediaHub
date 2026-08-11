@@ -85,6 +85,7 @@ enum class PlaybackErrorKind {
   UnsupportedFormat,
   AudioDeviceUnavailable,
   EngineNotInitialized,
+  EngineBusy,
   Unknown,
 };
 

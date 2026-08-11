@@ -83,6 +83,10 @@ class MainWindow final : public QMainWindow {
   void setLiveSourceMemos(const QVector<LiveSourceMemo>& memos);
   // 调用线程：GUI 主线程。最近播放菜单只展示本机记录，选择后再交给 presenter。
   void setRecentLocalMedia(const QVector<RecentLocalMediaItem>& items);
+  // 调用线程：GUI 主线程。每次视频打开使用新的子窗口，避免与仍在回收的旧 vout 共用。
+  [[nodiscard]] void* prepareVideoSurface();
+  // 调用线程：GUI 主线程。旧 vout 完全退出后回收对应子窗口。
+  void releaseVideoSurface(void* nativeHandle);
 
  signals:
   void localFilesSelected(const QStringList& filePaths);

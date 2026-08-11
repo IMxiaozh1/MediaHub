@@ -17,6 +17,7 @@ namespace {
 using namespace std::chrono_literals;
 
 enum class ObservedEventKind {
+  OpenStarted,
   State,
   Position,
   Duration,
@@ -24,11 +25,17 @@ enum class ObservedEventKind {
   Waveform,
   End,
   Error,
+  VideoSurfaceReleased,
 };
 
 // 回调在 FakePlayerEngine 的 emit 调用线程同步记录，不进行跨线程操作。
 class RecordingListener final : public core::PlayerEventListener {
  public:
+  void onOpenStarted(const core::OpenRequestId requestId) noexcept override {
+    events.push_back(ObservedEventKind::OpenStarted);
+    lastOpenRequestId = requestId;
+  }
+
   void onStateChanged(const core::PlaybackState state) noexcept override {
     events.push_back(ObservedEventKind::State);
     lastState = state;
@@ -64,6 +71,11 @@ class RecordingListener final : public core::PlayerEventListener {
     lastError = std::move(error);
   }
 
+  void onVideoSurfaceReleased(void* const nativeHandle) noexcept override {
+    events.push_back(ObservedEventKind::VideoSurfaceReleased);
+    lastReleasedVideoSurface = nativeHandle;
+  }
+
   std::vector<ObservedEventKind> events;
   core::PlaybackState lastState{core::PlaybackState::Idle};
   core::PlaybackPosition lastPosition;
@@ -71,6 +83,8 @@ class RecordingListener final : public core::PlayerEventListener {
   int lastBufferingPercentage{0};
   core::AudioWaveform lastWaveform;
   core::PlaybackError lastError;
+  core::OpenRequestId lastOpenRequestId{0};
+  void* lastReleasedVideoSurface{nullptr};
 };
 
 // 把同一测试线程上的状态事件交给状态机，并保留每次校验结果。
@@ -79,6 +93,7 @@ class StateMachineListener final : public core::PlayerEventListener {
   explicit StateMachineListener(core::PlaybackStateMachine& machine)
       : machine_(machine) {}
 
+  void onOpenStarted(core::OpenRequestId) noexcept override {}
   void onStateChanged(const core::PlaybackState state) noexcept override {
     results.push_back(machine_.transitionTo(state));
   }
@@ -90,6 +105,7 @@ class StateMachineListener final : public core::PlayerEventListener {
   void onAudioWaveformChanged(core::AudioWaveform) noexcept override {}
   void onEndReached() noexcept override {}
   void onError(core::PlaybackError) noexcept override {}
+  void onVideoSurfaceReleased(void*) noexcept override {}
 
   std::vector<core::PlaybackTransitionResult> results;
 
@@ -106,7 +122,7 @@ TEST(FakePlayerEngineTest, RecordsEveryControlRequestWithoutCompletingIt) {
   int surfaceToken = 0;
   void* const nativeHandle = &surfaceToken;
 
-  engine.open(item);
+  const auto openRequestId = engine.open(item, nativeHandle);
   engine.play();
   engine.pause();
   engine.stop();
@@ -121,6 +137,9 @@ TEST(FakePlayerEngineTest, RecordsEveryControlRequestWithoutCompletingIt) {
   EXPECT_EQ(commands[0].kind, FakeEngineCommandKind::Open);
   ASSERT_TRUE(commands[0].media.has_value());
   EXPECT_EQ(*commands[0].media, item);
+  EXPECT_EQ(openRequestId, core::OpenRequestId{1});
+  EXPECT_EQ(commands[0].openRequestId, openRequestId);
+  EXPECT_EQ(commands[0].nativeHandle, nativeHandle);
   EXPECT_EQ(commands[1].kind, FakeEngineCommandKind::Play);
   EXPECT_EQ(commands[2].kind, FakeEngineCommandKind::Pause);
   EXPECT_EQ(commands[3].kind, FakeEngineCommandKind::Stop);

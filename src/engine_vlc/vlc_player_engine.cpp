@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -35,6 +36,8 @@ constexpr auto kWaveformEventInterval = 66ms;
 constexpr auto kNetworkActivityPollInterval = 250ms;
 constexpr auto kShutdownTimeout = 2s;
 constexpr auto kShutdownPollInterval = 10ms;
+constexpr std::size_t kMaxConcurrentRetirements = 4;
+constexpr std::size_t kMaxOpenRetirements = kMaxConcurrentRetirements - 1;
 constexpr float kWarmUnityPlaybackRate = 1.001F;
 constexpr unsigned kWaveformSampleRate = 48'000;
 constexpr char kVideoFileCachingOption[] = ":file-caching=30";
@@ -259,6 +262,84 @@ bool hasObviouslyInvalidMp4Content(const std::filesystem::path& path) {
          });
 }
 
+// 监听器状态由共享对象持有，使脱离主控制线程的回收任务也能安全投递完成事件。
+class EventDispatcher final {
+ public:
+  // 调用线程：应用控制线程。切换监听器前等待任意内核线程上的旧回调退出。
+  void setListener(core::PlayerEventListener* const listener) noexcept {
+    std::unique_lock lock(mutex_);
+    listener_ = nullptr;
+    callbacksDrained_.wait(lock, [this] { return activeCallbacks_ == 0; });
+    if (isActive_) {
+      listener_ = listener;
+    }
+  }
+
+  // 调用线程：引擎析构线程。停用后等待已经取得监听器的回调退出。
+  void deactivate() noexcept {
+    std::unique_lock lock(mutex_);
+    isActive_ = false;
+    listener_ = nullptr;
+    callbacksDrained_.wait(lock, [this] { return activeCallbacks_ == 0; });
+  }
+
+  template <typename Callback>
+  // 调用线程：任意内核线程或旧播放器回收线程。监听器只在回调期间受保护。
+  void dispatch(Callback&& callback) noexcept {
+    core::PlayerEventListener* listener = nullptr;
+    {
+      const std::lock_guard lock(mutex_);
+      if (!isActive_ || listener_ == nullptr) {
+        return;
+      }
+      listener = listener_;
+      ++activeCallbacks_;
+    }
+
+    callback(*listener);
+
+    {
+      const std::lock_guard lock(mutex_);
+      --activeCallbacks_;
+      if (activeCallbacks_ == 0) {
+        callbacksDrained_.notify_all();
+      }
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable callbacksDrained_;
+  core::PlayerEventListener* listener_{nullptr};
+  std::size_t activeCallbacks_{0};
+  bool isActive_{true};
+};
+
+// 回收线程可能永久停在第三方调用中；计数器为正常切换设置硬上限并预留一次 Stop。
+class RetirementLimiter final {
+ public:
+  // 调用线程：唯一内核控制线程。成功后必须由回收线程在退出时归还名额。
+  [[nodiscard]] bool tryAcquire(const std::size_t limit) noexcept {
+    auto active = active_.load(std::memory_order_relaxed);
+    while (active < limit) {
+      if (active_.compare_exchange_weak(active, active + 1,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 调用线程：旧播放器回收线程。只在第三方停止和释放全部完成后归还名额。
+  void release() noexcept {
+    active_.fetch_sub(1, std::memory_order_acq_rel);
+  }
+
+ private:
+  std::atomic<std::size_t> active_{0};
+};
+
 }  // namespace
 
 class VlcPlayerEngine::Impl {
@@ -289,11 +370,14 @@ class VlcPlayerEngine::Impl {
 
   // libVLC 3 在断流时的 stop/set_media 可能等待网络读取，所有控制命令
   // 串行放到工作线程，让 GUI 调用立即返回。
-  void open(core::MediaItem item) {
+  core::OpenRequestId open(core::MediaItem item,
+                           void* const nativeVideoHandle) {
     const auto requestId = latestOpenRequestId_.fetch_add(1) + 1;
-    enqueueCommand([this, item = std::move(item), requestId]() mutable {
-      openNow(std::move(item), requestId);
+    enqueueCommand([this, item = std::move(item), requestId,
+                    nativeVideoHandle]() mutable {
+      openNow(std::move(item), requestId, nativeVideoHandle);
     });
+    return requestId;
   }
 
   void play() {
@@ -354,20 +438,60 @@ class VlcPlayerEngine::Impl {
   }
 
   void setEventListener(core::PlayerEventListener* const listener) {
-    std::unique_lock lock(mutex_);
-    listener_ = nullptr;
-    callbacksDrained_.wait(lock, [this] { return activeCallbacks_ == 0; });
-    if (!isShuttingDown_) {
-      listener_ = listener;
+    {
+      const std::lock_guard lock(mutex_);
+      if (isShuttingDown_) {
+        eventDispatcher_->setListener(nullptr);
+        return;
+      }
     }
+    eventDispatcher_->setListener(listener);
   }
 
  private:
-  void openNow(core::MediaItem item, const std::size_t requestId) {
+  // 调用线程：唯一内核控制线程。被取代且从未使用的请求句柄会立即归还 GUI。
+  void openNow(core::MediaItem item, const core::OpenRequestId requestId,
+               void* const nativeVideoHandle) {
     if (requestId != latestOpenRequestId_.load()) {
+      if (nativeVideoHandle != nullptr &&
+          nativeVideoHandle != playerVideoSurface_) {
+        dispatch([nativeVideoHandle](
+                     core::PlayerEventListener& listener) noexcept {
+          listener.onVideoSurfaceReleased(nativeVideoHandle);
+        });
+      }
       return;
     }
-    clearCurrentMedia(displayNameFor(item), item.kind);
+    void* const previousVideoSurface = videoSurface_;
+    if (nativeVideoHandle != nullptr) {
+      videoSurface_ = nativeVideoHandle;
+    }
+    if (!clearCurrentMedia(displayNameFor(item), item.kind)) {
+      videoSurface_ = previousVideoSurface;
+      if (nativeVideoHandle != nullptr &&
+          nativeVideoHandle != playerVideoSurface_) {
+        dispatch([nativeVideoHandle](
+                     core::PlayerEventListener& listener) noexcept {
+          listener.onVideoSurfaceReleased(nativeVideoHandle);
+        });
+      }
+      reportError(core::PlaybackErrorKind::EngineBusy,
+                  "Retired player capacity exhausted",
+                  "多个旧直播仍在退出，请稍候后重试。");
+      return;
+    }
+    if (playerVideoSurface_ != videoSurface_) {
+      void* const releasedSurface = playerVideoSurface_;
+      applyVideoSurface(player_.get(), videoSurface_,
+                        options_.videoSurfaceObserver);
+      playerVideoSurface_ = videoSurface_;
+      if (releasedSurface != nullptr) {
+        dispatch([releasedSurface](
+                     core::PlayerEventListener& listener) noexcept {
+          listener.onVideoSurfaceReleased(releasedSurface);
+        });
+      }
+    }
     // 旧直播停止期间可能收到更多选择请求，只打开最后一次选择的媒体。
     if (requestId != latestOpenRequestId_.load()) {
       return;
@@ -403,6 +527,9 @@ class VlcPlayerEngine::Impl {
         isNetworkMedia_ = true;
         currentDisplayName_ = displayNameFor(item);
       }
+      dispatch([requestId](core::PlayerEventListener& listener) noexcept {
+        listener.onOpenStarted(requestId);
+      });
       updateState(core::PlaybackState::Opening);
       return;
     }
@@ -493,6 +620,9 @@ class VlcPlayerEngine::Impl {
       isNetworkMedia_ = false;
       currentDisplayName_ = displayNameFor(item);
     }
+    dispatch([requestId](core::PlayerEventListener& listener) noexcept {
+      listener.onOpenStarted(requestId);
+    });
     updateState(core::PlaybackState::Opening);
   }
 
@@ -542,7 +672,13 @@ class VlcPlayerEngine::Impl {
       isNetworkMedia = isNetworkMedia_;
     }
     if (isNetworkMedia) {
-      replacePrimaryPlayer(true, true);
+      if (!replacePrimaryPlayer(true, true, false,
+                                kMaxConcurrentRetirements)) {
+        reportError(core::PlaybackErrorKind::EngineBusy,
+                    "Retired player capacity exhausted during stop",
+                    "多个旧直播仍在退出，暂时无法停止当前直播。");
+        return;
+      }
       {
         const std::lock_guard lock(mutex_);
         position_ = {};
@@ -638,6 +774,7 @@ class VlcPlayerEngine::Impl {
     videoSurface_ = nativeHandle;
     applyVideoSurface(player_.get(), nativeHandle,
                       options_.videoSurfaceObserver);
+    playerVideoSurface_ = nativeHandle;
   }
 
   void enqueueCommand(std::function<void()> command) {
@@ -733,25 +870,7 @@ class VlcPlayerEngine::Impl {
 
   template <typename Callback>
   void dispatch(Callback&& callback) noexcept {
-    core::PlayerEventListener* listener = nullptr;
-    {
-      const std::lock_guard lock(mutex_);
-      if (isShuttingDown_ || listener_ == nullptr) {
-        return;
-      }
-      listener = listener_;
-      ++activeCallbacks_;
-    }
-
-    callback(*listener);
-
-    {
-      const std::lock_guard lock(mutex_);
-      --activeCallbacks_;
-      if (activeCallbacks_ == 0) {
-        callbacksDrained_.notify_all();
-      }
-    }
+    eventDispatcher_->dispatch(std::forward<Callback>(callback));
   }
 
   void attachEvents() {
@@ -1082,30 +1201,69 @@ class VlcPlayerEngine::Impl {
     callbacksDrained_.wait(lock, [this] { return activeAudioCallbacks_ == 0; });
   }
 
-  // 调用线程：内核控制线程。等待旧 vout 完全释放，不会阻塞 GUI 主线程。
-  void retirePrimaryPlayer(VlcPlayerPtr player) noexcept {
-    if (!player) {
+  // 调用线程：内核控制线程。不同句柄允许后台回收；同句柄重用时必须等旧 vout 退出。
+  void retirePrimaryPlayer(VlcPlayerPtr player,
+                           libvlc_instance_t* const owner,
+                           void* const retiredSurface,
+                           const bool waitsForRetirement,
+                           std::function<void()> beforeStop) noexcept {
+    if (!player || owner == nullptr) {
+      if (!waitsForRetirement) {
+        retirementLimiter_->release();
+      }
       return;
     }
 
-    libvlc_audio_set_mute(player.get(), 1);
-    static_cast<void>(libvlc_audio_set_volume(player.get(), 0));
-    static_cast<void>(libvlc_audio_set_track(player.get(), -1));
-    static_cast<void>(libvlc_video_set_track(player.get(), -1));
-    if (options_.beforeRetiredPlayerStop) {
-      try {
-        options_.beforeRetiredPlayerStop();
-      } catch (...) {
-        // 测试观察器不得影响真实播放内核回收。
+    const auto stopPlayer = [beforeStop = std::move(beforeStop)](
+                                libvlc_media_player_t* const rawPlayer) {
+      libvlc_audio_set_mute(rawPlayer, 1);
+      static_cast<void>(libvlc_audio_set_volume(rawPlayer, 0));
+      static_cast<void>(libvlc_audio_set_track(rawPlayer, -1));
+      static_cast<void>(libvlc_video_set_track(rawPlayer, -1));
+      if (beforeStop) {
+        try {
+          beforeStop();
+        } catch (...) {
+          // 测试观察器不得影响真实播放内核回收。
+        }
       }
+      libvlc_media_player_stop(rawPlayer);
+    };
+    if (waitsForRetirement) {
+      stopPlayer(player.get());
+      player.reset();
+      return;
     }
-    libvlc_media_player_stop(player.get());
-    // 在返回前释放最后一个播放器引用，确保旧 vout 已经让出嵌入窗口。
-    player.reset();
+
+    auto* const rawPlayer = player.release();
+    libvlc_retain(owner);
+    const auto eventDispatcher = eventDispatcher_;
+    const auto retirementLimiter = retirementLimiter_;
+    try {
+      std::thread([rawPlayer, owner, retiredSurface, stopPlayer,
+                   eventDispatcher, retirementLimiter] {
+        // 独立句柄让新 vout 可以立即启动；这个线程可被 libVLC 长时间阻塞。
+        stopPlayer(rawPlayer);
+        libvlc_media_player_release(rawPlayer);
+        libvlc_release(owner);
+        if (retiredSurface != nullptr) {
+          eventDispatcher->dispatch(
+              [retiredSurface](core::PlayerEventListener& listener) noexcept {
+                listener.onVideoSurfaceReleased(retiredSurface);
+              });
+        }
+        retirementLimiter->release();
+      }).detach();
+    } catch (...) {
+      // 创建线程失败时保留引用和名额；硬上限会阻止继续累积泄漏或阻塞 GUI。
+    }
   }
 
-  void replacePrimaryPlayer(const bool preserveMedia,
-                            const bool reuseInstance) {
+  // 调用线程：唯一内核控制线程。完成播放器交接后可把旧播放器移交回收线程。
+  [[nodiscard]] bool replacePrimaryPlayer(
+      const bool preserveMedia, const bool reuseInstance,
+      const bool waitsForRetirement,
+      const std::size_t asyncRetirementLimit) {
     VlcInstancePtr replacementInstance;
     libvlc_instance_t* replacementOwner = instance_.get();
     if (!reuseInstance) {
@@ -1123,24 +1281,41 @@ class VlcPlayerEngine::Impl {
       libvlc_media_player_set_media(replacement.get(), media_.get());
     }
 
+    std::function<void()> beforeStop = options_.beforeRetiredPlayerStop;
+    if (!waitsForRetirement &&
+        !retirementLimiter_->tryAcquire(asyncRetirementLimit)) {
+      return false;
+    }
+
     detachEvents();
     auto retiredPlayer = std::move(player_);
+    auto* retiredOwner = instance_.get();
+    const auto retiredSurface = playerVideoSurface_;
     VlcInstancePtr retiredInstance;
     if (!reuseInstance) {
       retiredInstance = std::move(instance_);
+      retiredOwner = retiredInstance.get();
       instance_ = std::move(replacementInstance);
     }
     player_ = std::move(replacement);
-    retirePrimaryPlayer(std::move(retiredPlayer));
-    if (videoSurface_ != nullptr) {
-      applyVideoSurface(player_.get(), videoSurface_,
-                        options_.videoSurfaceObserver);
-    }
+    applyVideoSurface(player_.get(), videoSurface_,
+                      options_.videoSurfaceObserver);
+    playerVideoSurface_ = videoSurface_;
+    // 停止直播时新播放器继续持有同一句柄，旧播放器退出不代表窗口可销毁。
+    void* const releasedSurface =
+        retiredSurface == playerVideoSurface_ ? nullptr : retiredSurface;
     try {
       attachEvents();
     } catch (...) {
+      retirePrimaryPlayer(std::move(retiredPlayer), retiredOwner,
+                          releasedSurface, waitsForRetirement,
+                          std::move(beforeStop));
       throw;
     }
+    retirePrimaryPlayer(std::move(retiredPlayer), retiredOwner,
+                        releasedSurface, waitsForRetirement,
+                        std::move(beforeStop));
+    return true;
   }
 
   void stopCurrentMedia() {
@@ -1151,16 +1326,21 @@ class VlcPlayerEngine::Impl {
     stopAudioAnalysis();
   }
 
-  void clearCurrentMedia(std::string displayName,
-                         const core::MediaSourceKind nextSourceKind) {
+  [[nodiscard]] bool clearCurrentMedia(
+      std::string displayName,
+      const core::MediaSourceKind nextSourceKind) {
     bool wasNetworkMedia = false;
     {
       const std::lock_guard lock(mutex_);
       wasNetworkMedia = isNetworkMedia_;
     }
     if (wasNetworkMedia) {
-      replacePrimaryPlayer(
-          false, nextSourceKind == core::MediaSourceKind::NetworkStream);
+      if (!replacePrimaryPlayer(
+              false, nextSourceKind == core::MediaSourceKind::NetworkStream,
+              playerVideoSurface_ == videoSurface_,
+              kMaxOpenRetirements)) {
+        return false;
+      }
       stopAudioAnalysis();
     } else {
       stopCurrentMedia();
@@ -1180,6 +1360,7 @@ class VlcPlayerEngine::Impl {
       lastWaveformNotification_ = {};
     }
     resetWaveform();
+    return true;
   }
 
   void waitUntilPlayerStops(libvlc_media_player_t* const player) noexcept {
@@ -1197,8 +1378,8 @@ class VlcPlayerEngine::Impl {
     {
       const std::lock_guard lock(mutex_);
       isShuttingDown_ = true;
-      listener_ = nullptr;
     }
+    eventDispatcher_->deactivate();
 
     // 先等已提交的控制命令退出，再断开事件和释放 libVLC 对象。
     stopCommandWorker();
@@ -1207,8 +1388,7 @@ class VlcPlayerEngine::Impl {
     {
       std::unique_lock lock(mutex_);
       callbacksDrained_.wait(lock, [this] {
-        return activeCallbacks_ == 0 && activeLibVlcCallbacks_ == 0 &&
-               activeAudioCallbacks_ == 0;
+        return activeLibVlcCallbacks_ == 0 && activeAudioCallbacks_ == 0;
       });
     }
     if (player_) {
@@ -1239,7 +1419,12 @@ class VlcPlayerEngine::Impl {
   int volume_{100};
   bool isMuted_{false};
   void* videoSurface_{nullptr};
-  std::atomic<std::size_t> latestOpenRequestId_{0};
+  void* playerVideoSurface_{nullptr};
+  std::atomic<core::OpenRequestId> latestOpenRequestId_{0};
+  std::shared_ptr<EventDispatcher> eventDispatcher_{
+      std::make_shared<EventDispatcher>()};
+  std::shared_ptr<RetirementLimiter> retirementLimiter_{
+      std::make_shared<RetirementLimiter>()};
 
   std::mutex commandMutex_;
   std::condition_variable commandReady_;
@@ -1250,8 +1435,6 @@ class VlcPlayerEngine::Impl {
   mutable std::mutex mutex_;
   std::mutex waveformAnalysisMutex_;
   std::condition_variable callbacksDrained_;
-  core::PlayerEventListener* listener_{nullptr};
-  std::size_t activeCallbacks_{0};
   std::size_t activeLibVlcCallbacks_{0};
   std::size_t activeAudioCallbacks_{0};
   bool isShuttingDown_{false};
@@ -1270,8 +1453,9 @@ VlcPlayerEngine::VlcPlayerEngine(const VlcPlayerEngineOptions options)
 
 VlcPlayerEngine::~VlcPlayerEngine() = default;
 
-void VlcPlayerEngine::open(core::MediaItem item) {
-  impl_->open(std::move(item));
+core::OpenRequestId VlcPlayerEngine::open(core::MediaItem item,
+                                          void* const nativeVideoHandle) {
+  return impl_->open(std::move(item), nativeVideoHandle);
 }
 
 void VlcPlayerEngine::play() { impl_->play(); }

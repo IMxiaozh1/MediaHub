@@ -199,6 +199,15 @@ int commandCount(const GuiHarness &harness,
       [kind](const auto &command) { return command.kind == kind; }));
 }
 
+core::OpenRequestId latestOpenRequestId(const GuiHarness& harness) {
+  const auto commands = harness.engine.commands();
+  const auto openCommand = std::find_if(
+      commands.rbegin(), commands.rend(), [](const auto& command) {
+        return command.kind == test::FakeEngineCommandKind::Open;
+      });
+  return openCommand == commands.rend() ? 0 : openCommand->openRequestId;
+}
+
 bool requestPlaylistContextMenu(QListView &view, const int row) {
   const QModelIndex index = view.model()->index(row, 0);
   if (!index.isValid()) {
@@ -239,6 +248,8 @@ private slots:
   void keepsNetworkStreamsNonSeekableWhenEngineReportsLiveWindow();
   void rejectsInvalidNetworkUrlBeforeCallingEngine();
   void rendersNetworkBufferingAndStopsTimeoutAfterPlaying();
+  void startsNetworkTimeoutOnlyAfterEngineBeginsOpening();
+  void keepsStopAvailableWhenRetiredPlayerCapacityIsExhausted();
   void cancelsAndTimesOutNetworkOpeningWithoutAcceptingLateEvents();
   void doesNotAutomaticallyReconnectInterruptedNetwork();
   void refreshesCurrentNetworkByButtonAndF5();
@@ -1296,12 +1307,13 @@ void MainWindowTest::rendersNetworkBufferingAndStopsTimeoutAfterPlaying() {
   auto *const timeoutTimer =
       harness.presenter.findChild<QTimer *>("networkOpenTimeoutTimer");
   QVERIFY(timeoutTimer != nullptr);
-  QVERIFY(timeoutTimer->isActive());
+  QVERIFY(!timeoutTimer->isActive());
   QCOMPARE(statusText(harness), QStringLiteral("正在连接..."));
   QVERIFY(
       requiredChild<QToolButton>(harness.window, "stopButton")->isEnabled());
 
   harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_VERIFY(timeoutTimer->isActive());
   QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 1);
   harness.engine.emitBufferingChanged(42);
   harness.engine.emitStateChanged(core::PlaybackState::Buffering);
@@ -1312,6 +1324,84 @@ void MainWindowTest::rendersNetworkBufferingAndStopsTimeoutAfterPlaying() {
   harness.engine.emitStateChanged(core::PlaybackState::Playing);
   QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
   QVERIFY(!timeoutTimer->isActive());
+}
+
+void MainWindowTest::startsNetworkTimeoutOnlyAfterEngineBeginsOpening() {
+  GuiHarness harness;
+  auto *const timeoutTimer =
+      harness.presenter.findChild<QTimer *>("networkOpenTimeoutTimer");
+  QVERIFY(timeoutTimer != nullptr);
+
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/first.m3u8"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/second.m3u8"));
+  QCOMPARE(statusText(harness), QStringLiteral("正在连接..."));
+  QVERIFY(!timeoutTimer->isActive());
+
+  std::vector<void*> openSurfaces;
+  for (const auto& command : harness.engine.commands()) {
+    if (command.kind == test::FakeEngineCommandKind::Open) {
+      openSurfaces.push_back(command.nativeHandle);
+    }
+  }
+  QCOMPARE(openSurfaces.size(), std::size_t{2});
+  QVERIFY(openSurfaces[0] != nullptr);
+  QVERIFY(openSurfaces[1] != nullptr);
+  QVERIFY(openSurfaces[0] != openSurfaces[1]);
+
+  const auto openCommands = harness.engine.commands();
+  std::vector<core::OpenRequestId> openRequestIds;
+  for (const auto& command : openCommands) {
+    if (command.kind == test::FakeEngineCommandKind::Open) {
+      openRequestIds.push_back(command.openRequestId);
+    }
+  }
+  QCOMPARE(openRequestIds.size(), std::size_t{2});
+  harness.engine.emitOpenStarted(openRequestIds[0]);
+  QCoreApplication::processEvents();
+  QVERIFY(!timeoutTimer->isActive());
+
+  harness.engine.emitOpenStarted(openRequestIds[1]);
+  QTRY_VERIFY(timeoutTimer->isActive());
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+}
+
+void MainWindowTest::
+    keepsStopAvailableWhenRetiredPlayerCapacityIsExhausted() {
+  GuiHarness harness;
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/first.m3u8"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/rejected.m3u8"));
+
+  harness.engine.emitStateChanged(core::PlaybackState::Failed);
+  harness.engine.emitError(core::PlaybackError{
+      core::PlaybackErrorKind::EngineBusy,
+      "Retired player capacity exhausted",
+      "多个旧直播仍在退出，请稍候后重试。",
+  });
+  QTRY_COMPARE(statusText(harness),
+               QStringLiteral("旧直播正在退出，请稍候后重试"));
+  auto* const stopButton =
+      requiredChild<QToolButton>(harness.window, "stopButton");
+  QVERIFY(stopButton->isEnabled());
+  QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")
+              ->text()
+              .contains(QStringLiteral("多个旧直播仍在退出")));
+
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness),
+               QStringLiteral("旧直播正在退出，请稍候后重试"));
+  QVERIFY(stopButton->isEnabled());
+  QTest::mouseClick(stopButton, Qt::LeftButton);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Stop), 1);
 }
 
 void MainWindowTest::
@@ -2301,6 +2391,7 @@ void MainWindowTest::allowsReplayAfterNaturalEnd() {
         Qt::LeftButton);
     QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
                  opensBefore + 1);
+    harness.engine.emitOpenStarted(latestOpenRequestId(harness));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);
     QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
                  playsBefore + 1);
@@ -2324,6 +2415,7 @@ void MainWindowTest::allowsReplayAfterNaturalEnd() {
     QTest::keyClick(&harness.window, Qt::Key_Space);
     QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
                  opensBefore + 1);
+    harness.engine.emitOpenStarted(latestOpenRequestId(harness));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);
     QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
                  playsBefore + 1);
@@ -2388,6 +2480,7 @@ void MainWindowTest::keepsNaturalEndInteractiveAfterLateStoppedEvent() {
   QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
            playsBeforeClick);
 
+  harness.engine.emitOpenStarted(latestOpenRequestId(harness));
   harness.engine.emitStateChanged(core::PlaybackState::Opening);
   QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
                playsBeforeClick + 1);
@@ -2439,6 +2532,7 @@ void MainWindowTest::resumesAfterSeekingFromNaturalEnd() {
     harness.engine.emitPositionChanged(core::PlaybackPosition{0ms, 120s, true});
     QCoreApplication::processEvents();
     QCOMPARE(progressSlider->value(), restartedProgress);
+    harness.engine.emitOpenStarted(latestOpenRequestId(harness));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);
     QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
                  playsBeforeClick + 1);
@@ -2591,6 +2685,17 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
   int receivedBufferingPercentage = 0;
   core::AudioWaveform receivedWaveform;
   core::PlaybackError receivedError;
+  core::OpenRequestId receivedOpenRequestId = 0;
+  void* releasedVideoSurface = nullptr;
+
+  connect(
+      &bridge, &EngineEventBridge::openStarted, &receiver,
+      [&receivedCount, &receivedOpenRequestId](
+          const core::OpenRequestId requestId) {
+        ++receivedCount;
+        receivedOpenRequestId = requestId;
+      },
+      Qt::QueuedConnection);
 
   connect(
       &bridge, &EngineEventBridge::stateChanged, &receiver,
@@ -2637,11 +2742,19 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
         receivedError = std::move(error);
       },
       Qt::QueuedConnection);
+  connect(
+      &bridge, &EngineEventBridge::videoSurfaceReleased, &receiver,
+      [&receivedCount, &releasedVideoSurface](void* const nativeHandle) {
+        ++receivedCount;
+        releasedVideoSurface = nativeHandle;
+      },
+      Qt::QueuedConnection);
 
   std::thread worker([&bridge] {
     core::AudioWaveform waveform;
     waveform.samples[12] = 0.6F;
     waveform.intensity = 0.7F;
+    bridge.onOpenStarted(42);
     bridge.onStateChanged(core::PlaybackState::Playing);
     bridge.onPositionChanged(core::PlaybackPosition{750ms, 3s, true});
     bridge.onDurationChanged(3s);
@@ -2653,10 +2766,13 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
         "Worker event",
         "工作线程错误",
     });
+    bridge.onVideoSurfaceReleased(reinterpret_cast<void*>(0x1234));
   });
   worker.join();
 
-  QTRY_COMPARE(receivedCount, 7);
+  QTRY_COMPARE(receivedCount, 9);
+  QCOMPARE(receivedOpenRequestId, core::OpenRequestId{42});
+  QCOMPARE(releasedVideoSurface, reinterpret_cast<void*>(0x1234));
   QCOMPARE(handledThread, QCoreApplication::instance()->thread());
   QCOMPARE(receivedPosition.current, 750ms);
   QVERIFY(receivedPosition.total ==
@@ -3712,7 +3828,8 @@ void MainWindowTest::removesCurrentItemsWithoutLeavingInvalidSelection() {
   auto *const timeoutTimer =
       harness.presenter.findChild<QTimer *>("networkOpenTimeoutTimer");
   QVERIFY(timeoutTimer != nullptr);
-  QVERIFY(timeoutTimer->isActive());
+  harness.engine.emitOpenStarted(latestOpenRequestId(harness));
+  QTRY_VERIFY(timeoutTimer->isActive());
   QCOMPARE(playlistView->contextMenuPolicy(), Qt::CustomContextMenu);
   QVERIFY(!removeAction->isEnabled());
   QVERIFY(requestPlaylistContextMenu(*playlistView, 0));
@@ -3761,13 +3878,19 @@ void MainWindowTest::mapsEveryErrorKindToStableLogValue() {
                 "audio_device_unavailable"},
       std::pair{core::PlaybackErrorKind::EngineNotInitialized,
                 "engine_not_initialized"},
+      std::pair{core::PlaybackErrorKind::EngineBusy, "engine_busy"},
       std::pair{core::PlaybackErrorKind::Unknown, "unknown"},
   };
 
   for (const auto &[kind, expected] : cases) {
     GuiHarness harness;
     harness.engine.emitError(core::PlaybackError{kind, "detail", "用户提示"});
-    QTRY_COMPARE(statusText(harness), QStringLiteral("播放失败"));
+    if (kind == core::PlaybackErrorKind::EngineBusy) {
+      QTRY_COMPARE(statusText(harness),
+                   QStringLiteral("旧直播正在退出，请稍候后重试"));
+    } else {
+      QTRY_COMPARE(statusText(harness), QStringLiteral("播放失败"));
+    }
     const std::string logs = harness.logOutput.str();
     QVERIFY(logs.find(std::string("kind=\"") + expected + '"') !=
             std::string::npos);
