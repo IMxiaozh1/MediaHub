@@ -107,6 +107,17 @@ class FakeHandledArgs final {
     HRESULT result{S_OK};
 };
 
+class FakeClosableController final {
+ public:
+    HRESULT Close() noexcept {
+        ++closeCalls;
+        return closeResult;
+    }
+
+    int closeCalls{0};
+    HRESULT closeResult{S_OK};
+};
+
 class FakeDeferral final {
  public:
     HRESULT Complete() noexcept {
@@ -528,6 +539,9 @@ class WebView2BrowserTest final : public QObject {
     void pendingDownloadCancellationFallsBackWithoutSubscriptions();
     void downloadCancellationFailureAllowsRetryAndShutdownRepeats();
     void downloadTerminalSnapshotSurvivesProgressReadFailures();
+    void shutdownPermanentlyRejectsReinitialization();
+    void controllerCompletionClosesOnlyStaleController();
+    void shutdownFullScreenExitRemainsReachableAndOrdered();
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
     void requiresEverySensitiveHandlerBeforeReady();
@@ -1450,6 +1464,68 @@ void WebView2BrowserTest::downloadTerminalSnapshotSurvivesProgressReadFailures()
     QCOMPARE(active.size(), std::size_t{1});
     active.clear();
     QVERIFY(!eraseTerminalDownloadIfCurrent(active, 7, 11, 11, false));
+}
+
+void WebView2BrowserTest::shutdownPermanentlyRejectsReinitialization() {
+    BrowserLifecycleGate gate;
+    QVERIFY(gate.beginInitialization());
+    gate.beginShutdown();
+    QVERIFY(!gate.beginInitialization());
+
+    WebView2BrowserBackend backend;
+    backend.shutdown();
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    backend.initialize(nullptr, QString{}, kGeneration);
+
+    QVERIFY(!listener.reachedTerminalState());
+}
+
+void WebView2BrowserTest::controllerCompletionClosesOnlyStaleController() {
+    FakeClosableController staleController;
+    QVERIFY(!acceptControllerCompletion(false, &staleController));
+    QCOMPARE(staleController.closeCalls, 1);
+
+    FakeClosableController currentController;
+    QVERIFY(acceptControllerCompletion(true, &currentController));
+    QCOMPARE(currentController.closeCalls, 0);
+
+    QVERIFY(!acceptControllerCompletion<FakeClosableController>(false, nullptr));
+}
+
+void WebView2BrowserTest::shutdownFullScreenExitRemainsReachableAndOrdered() {
+    int requestCalls = 0;
+    const HRESULT result = submitShutdownFullScreenExit([&requestCalls] {
+        ++requestCalls;
+        return E_ACCESSDENIED;
+    });
+    QCOMPARE(result, E_ACCESSDENIED);
+    QCOMPARE(requestCalls, 1);
+
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const int releaseStart = source.indexOf(
+        QStringLiteral("void releaseBrowserResources() noexcept"));
+    const int releaseEnd = source.indexOf(
+        QStringLiteral("void releaseComApartment() noexcept"), releaseStart);
+    QVERIFY(releaseStart >= 0);
+    QVERIFY(releaseEnd > releaseStart);
+    const QString release = source.mid(releaseStart, releaseEnd - releaseStart);
+
+    const int fullScreenExit = release.indexOf(
+        QStringLiteral("requestExitFullScreenForShutdown()"));
+    const int popupClose = release.indexOf(QStringLiteral("closePopups()"));
+    const int firstTokenReset = release.indexOf(
+        QStringLiteral("newWindowRequested_.reset"));
+    const int controllerClose = release.indexOf(
+        QStringLiteral("controller_->Close()"));
+    QVERIFY(fullScreenExit >= 0);
+    QVERIFY(popupClose > fullScreenExit);
+    QVERIFY(firstTokenReset > popupClose);
+    QVERIFY(controllerClose > firstTokenReset);
 }
 
 void WebView2BrowserTest::rejectsEmptyAndRelativeProfilePaths() {

@@ -245,6 +245,9 @@ class WebView2BrowserBackend::Impl final {
     void initialize(void* const parentWindowHandle,
                     const QString& userDataDirectory,
                     const std::uint64_t generation) {
+        if (!lifecycleGate_.beginInitialization()) {
+            return;
+        }
         isShuttingDown_ = true;
         ++lifecycleSerial_;
         lifetime_.reset();
@@ -798,9 +801,15 @@ class WebView2BrowserBackend::Impl final {
         if (isShuttingDown_ || !isReady_ || webView_ == nullptr) {
             return;
         }
+        logOperationFailure("fullscreen_exit_request_failed",
+                            submitFullScreenExitRequest());
+    }
+
+    // 调用线程：GUI 主线程。标准 exitFullscreen 脚本可重复提交且不会等待完成。
+    HRESULT submitFullScreenExitRequest() noexcept {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
-        const HRESULT result = webView_->ExecuteScript(
+        return webView_->ExecuteScript(
             L"document.fullscreenElement && document.exitFullscreen();",
             Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
                 [this, weakLifetime, lifecycleSerial](const HRESULT status,
@@ -812,7 +821,16 @@ class WebView2BrowserBackend::Impl final {
                     return S_OK;
                 })
                 .Get());
-        logOperationFailure("fullscreen_exit_request_failed", result);
+    }
+
+    // 调用线程：GUI 主线程。关闭门禁生效后仍提交一次退出请求，不等待脚本完成。
+    void requestExitFullScreenForShutdown() noexcept {
+        if (webView_ == nullptr) {
+            return;
+        }
+        const HRESULT result = submitShutdownFullScreenExit(
+            [this] { return submitFullScreenExitRequest(); });
+        logOperationFailure("fullscreen_shutdown_exit_request_failed", result);
     }
 
     // 调用线程：GUI 主线程。不等待浏览器子进程。
@@ -826,6 +844,7 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。只释放本适配器持有的 COM 对象，不等待子进程。
     void shutdown() noexcept {
+        lifecycleGate_.beginShutdown();
         if (isShuttingDown_ && lifetime_ == nullptr && controller_ == nullptr &&
             environment_ == nullptr && !ownsComApartmentReference_) {
             listener_ = nullptr;
@@ -1084,8 +1103,10 @@ class WebView2BrowserBackend::Impl final {
                 [this, weakLifetime, lifecycleSerial,
                  generation](const HRESULT status,
                              ICoreWebView2Controller* const controller) -> HRESULT {
-                    if (weakLifetime.expired() ||
-                        !isActive(weakLifetime, lifecycleSerial, generation)) {
+                    const bool isCurrentLifecycle =
+                        !weakLifetime.expired() &&
+                        isActive(weakLifetime, lifecycleSerial, generation);
+                    if (!acceptControllerCompletion(isCurrentLifecycle, controller)) {
                         return S_OK;
                     }
                     if (FAILED(status) || controller == nullptr) {
@@ -2155,7 +2176,7 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：创建 COM 对象的 GUI STA；必须先撤销全部事件，再关闭 Controller。
     void releaseBrowserResources() noexcept {
-        exitFullScreen();
+        requestExitFullScreenForShutdown();
         closePopups();
         cancelPendingSensitiveRequests();
         newWindowRequested_.reset();
@@ -2215,6 +2236,7 @@ class WebView2BrowserBackend::Impl final {
     std::unordered_map<std::uint64_t, ActiveDownload> retryDownloads_;
     std::vector<std::unique_ptr<WebView2PopupWindow>> popupWindows_;
     PopupCoordinator popupCoordinator_;
+    BrowserLifecycleGate lifecycleGate_;
     std::shared_ptr<int> lifetime_;
     std::uint64_t nextSensitiveRequestId_{1};
     std::uint64_t lifecycleSerial_{0};

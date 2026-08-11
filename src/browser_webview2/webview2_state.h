@@ -5,8 +5,44 @@
 #include <deque>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 
 namespace mediahub::browser_webview2 {
+
+// 区分可初始化阶段与永久关闭终态，关闭后不允许重新拉起浏览器资源。
+class BrowserLifecycleGate final {
+ public:
+    // 调用线程：创建 Environment 的 GUI STA。
+    [[nodiscard]] bool beginInitialization() const noexcept {
+        return !isPermanentlyShutdown_;
+    }
+
+    // 调用线程：创建 Environment 的 GUI STA；状态一旦进入便不可恢复。
+    void beginShutdown() noexcept { isPermanentlyShutdown_ = true; }
+
+ private:
+    bool isPermanentlyShutdown_{false};
+};
+
+// 失效的主 Controller 完成回调必须显式关闭 Runtime 已创建的 Controller。
+template <typename Controller>
+[[nodiscard]] bool acceptControllerCompletion(
+    const bool isCurrentLifecycle, Controller* const controller) noexcept {
+    if (isCurrentLifecycle) {
+        return true;
+    }
+    if (controller != nullptr) {
+        static_cast<void>(controller->Close());
+    }
+    return false;
+}
+
+// 关闭阶段不复用面向用户操作的状态门禁，始终执行一次无等待全屏退出提交。
+template <typename Request>
+[[nodiscard]] auto submitShutdownFullScreenExit(Request&& request)
+    noexcept(noexcept(std::forward<Request>(request)())) {
+    return std::forward<Request>(request)();
+}
 
 // 统一限制主浏览器拥有的登录子窗口数量，并在关闭开始后拒绝新预约。
 class PopupCoordinator final {
