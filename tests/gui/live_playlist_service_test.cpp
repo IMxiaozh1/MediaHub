@@ -1,6 +1,7 @@
 #include "live_playlist_service.h"
 
 #include <QByteArray>
+#include <QFile>
 #include <QHash>
 #include <QHostAddress>
 #include <QList>
@@ -9,6 +10,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTest>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 #include <optional>
@@ -122,6 +124,7 @@ private slots:
   void initTestCase();
   void rejectsInvalidPlaylistUrls();
   void loadsValidListAndResolvesAgainstFinalRedirectUrl();
+  void loadsLocalPlaylistFilesAndReportsFailures();
   void rejectsInvalidTextAndOrdinaryHlsManifests();
   void enforcesResponseAndEntryLimits();
   void reportsTimeoutAndNetworkFailure();
@@ -180,6 +183,59 @@ void LivePlaylistServiceTest::
            QStringLiteral("第二路"));
   QCOMPARE(loaded->duplicateChannelCount, 1U);
   QCOMPARE(loaded->skippedChannelCount, 1U);
+}
+
+void LivePlaylistServiceTest::loadsLocalPlaylistFilesAndReportsFailures() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString playlistPath =
+      directory.filePath(QStringLiteral("本地频道.m3u8"));
+  QFile playlist(playlistPath);
+  QVERIFY(playlist.open(QIODevice::WriteOnly));
+  const QByteArray playlistContent =
+      "#EXTM3U\n"
+      "#PLAYLIST: IPTV Channel List\n"
+      "#AUTHOR: Test\n"
+      "#EXTINF:-1 tvg-name=\"CCTV-1\" response-time=\"120ms\",CCTV-1\n"
+      "http://192.0.2.1/live/index.m3u8\n"
+      "#EXTINF:-1 tvg-name=\"凤凰中文\",凤凰中文\n"
+      "https://example.test/phoenix.m3u8\n";
+  QCOMPARE(playlist.write(playlistContent), playlistContent.size());
+  playlist.close();
+
+  LivePlaylistService service(nullptr, testLimits());
+  QSignalSpy loadedSpy(&service, &LivePlaylistService::loadSucceeded);
+  QSignalSpy failureSpy(&service, &LivePlaylistService::loadFailed);
+  service.loadLocalFile(playlistPath);
+
+  QTRY_COMPARE(loadedSpy.count(), 1);
+  const LivePlaylistLoadResult result =
+      qvariant_cast<LivePlaylistLoadResult>(loadedSpy.takeFirst().front());
+  QCOMPARE(result.library.channels.size(), 2U);
+  QCOMPARE(QString::fromStdString(result.library.channels[0].name),
+           QStringLiteral("CCTV-1"));
+  QCOMPARE(QString::fromStdString(result.library.channels[1].name),
+           QStringLiteral("凤凰中文"));
+  QCOMPARE(failureSpy.count(), 0);
+
+  const QString hlsPath = directory.filePath(QStringLiteral("single.m3u8"));
+  QFile hlsFile(hlsPath);
+  QVERIFY(hlsFile.open(QIODevice::WriteOnly));
+  const QByteArray hlsContent =
+      "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts\n";
+  QCOMPARE(hlsFile.write(hlsContent), hlsContent.size());
+  hlsFile.close();
+  service.loadLocalFile(hlsPath);
+  QTRY_COMPARE(failureSpy.count(), 1);
+  QCOMPARE(qvariant_cast<LivePlaylistLoadError>(
+               failureSpy.takeFirst().front()),
+           LivePlaylistLoadError::HlsMediaManifest);
+
+  service.loadLocalFile(directory.filePath(QStringLiteral("missing.m3u8")));
+  QTRY_COMPARE(failureSpy.count(), 1);
+  QCOMPARE(qvariant_cast<LivePlaylistLoadError>(
+               failureSpy.takeFirst().front()),
+           LivePlaylistLoadError::LocalFileUnreadable);
 }
 
 void LivePlaylistServiceTest::rejectsInvalidTextAndOrdinaryHlsManifests() {

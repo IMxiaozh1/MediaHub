@@ -1754,8 +1754,8 @@ void MainWindow::chooseLocalFile() {
   const QStringList filePaths = QFileDialog::getOpenFileNames(
       this, QStringLiteral("打开本地媒体"), {},
       QStringLiteral(
-          "媒体文件 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.mp4 *.mkv "
-          "*.avi *.mov *.webm);;所有文件 (*.*)"));
+          "媒体与直播清单 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.mp4 "
+          "*.mkv *.avi *.mov *.webm *.m3u *.m3u8);;所有文件 (*.*)"));
   if (!filePaths.isEmpty()) {
     emit localFilesSelected(filePaths);
   }

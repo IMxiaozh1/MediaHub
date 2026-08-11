@@ -1,6 +1,8 @@
 #include "live_playlist_service.h"
 
 #include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
 #include <QFutureWatcher>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -165,6 +167,47 @@ std::optional<std::string> resolveStreamUrl(const QUrl &baseUrl,
                      static_cast<std::size_t>(encoded.size()));
 }
 
+struct BackgroundReadResult {
+  QByteArray responseBody;
+  QUrl finalUrl;
+  std::optional<LivePlaylistLoadError> error;
+};
+
+BackgroundReadResult backgroundFailure(const LivePlaylistLoadError error) {
+  BackgroundReadResult result;
+  result.error = error;
+  return result;
+}
+
+// 调用线程：Qt 线程池工作线程，禁止在此操作 Qt 控件。
+BackgroundReadResult readLocalPlaylist(const QString &filePath,
+                                       const LivePlaylistLimits limits) {
+  const QFileInfo fileInfo(filePath);
+  if (!fileInfo.exists() || !fileInfo.isFile()) {
+    return backgroundFailure(LivePlaylistLoadError::LocalFileUnreadable);
+  }
+  if (fileInfo.size() > limits.maximumResponseBytes) {
+    return backgroundFailure(LivePlaylistLoadError::ResponseTooLarge);
+  }
+
+  QFile file(fileInfo.absoluteFilePath());
+  if (!file.open(QIODevice::ReadOnly)) {
+    return backgroundFailure(LivePlaylistLoadError::LocalFileUnreadable);
+  }
+  QByteArray responseBody = file.read(limits.maximumResponseBytes + 1);
+  if (file.error() != QFileDevice::NoError) {
+    return backgroundFailure(LivePlaylistLoadError::LocalFileUnreadable);
+  }
+  if (responseBody.size() > limits.maximumResponseBytes) {
+    return backgroundFailure(LivePlaylistLoadError::ResponseTooLarge);
+  }
+
+  BackgroundReadResult result;
+  result.responseBody = std::move(responseBody);
+  result.finalUrl = QUrl::fromLocalFile(fileInfo.absoluteFilePath());
+  return result;
+}
+
 #ifdef Q_OS_WIN
 
 struct WinHttpHandleDeleter {
@@ -176,18 +219,6 @@ struct WinHttpHandleDeleter {
 };
 
 using WinHttpHandle = std::unique_ptr<void, WinHttpHandleDeleter>;
-
-struct NativeRequestResult {
-  QByteArray responseBody;
-  QUrl finalUrl;
-  std::optional<LivePlaylistLoadError> error;
-};
-
-NativeRequestResult nativeFailure(const LivePlaylistLoadError error) {
-  NativeRequestResult result;
-  result.error = error;
-  return result;
-}
 
 LivePlaylistLoadError currentWinHttpError() {
   return GetLastError() == ERROR_WINHTTP_TIMEOUT
@@ -227,8 +258,8 @@ std::optional<QString> responseHeader(const HINTERNET request,
 }
 
 // 调用线程：Qt 线程池工作线程，禁止在此操作 Qt 控件。
-NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
-                                     const LivePlaylistLimits limits) {
+BackgroundReadResult fetchWithWinHttp(const QUrl &initialUrl,
+                                      const LivePlaylistLimits limits) {
   QElapsedTimer elapsed;
   elapsed.start();
 
@@ -236,7 +267,7 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
       WinHttpOpen(L"MediaHub/0.2", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
   if (session == nullptr) {
-    return nativeFailure(currentWinHttpError());
+    return backgroundFailure(currentWinHttpError());
   }
 
   QUrl currentUrl = initialUrl;
@@ -245,14 +276,14 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
     const qint64 remainingMilliseconds =
         static_cast<qint64>(limits.timeoutMilliseconds) - elapsed.elapsed();
     if (remainingMilliseconds <= 0) {
-      return nativeFailure(LivePlaylistLoadError::Timeout);
+      return backgroundFailure(LivePlaylistLoadError::Timeout);
     }
     const int timeoutMilliseconds = static_cast<int>(std::min<qint64>(
         remainingMilliseconds, std::numeric_limits<int>::max()));
     if (!WinHttpSetTimeouts(session.get(), timeoutMilliseconds,
                             timeoutMilliseconds, timeoutMilliseconds,
                             timeoutMilliseconds)) {
-      return nativeFailure(currentWinHttpError());
+      return backgroundFailure(currentWinHttpError());
     }
 
     const QByteArray asciiHost = QUrl::toAce(currentUrl.host());
@@ -264,14 +295,14 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
     const int requestedPort = currentUrl.port(defaultPort);
     if (requestedPort <= 0 ||
         requestedPort > std::numeric_limits<INTERNET_PORT>::max()) {
-      return nativeFailure(LivePlaylistLoadError::InvalidUrl);
+      return backgroundFailure(LivePlaylistLoadError::InvalidUrl);
     }
 
     WinHttpHandle connection(
         WinHttpConnect(session.get(), host.c_str(),
                        static_cast<INTERNET_PORT>(requestedPort), 0));
     if (connection == nullptr) {
-      return nativeFailure(currentWinHttpError());
+      return backgroundFailure(currentWinHttpError());
     }
 
     const std::wstring resource = requestResource(currentUrl).toStdWString();
@@ -283,7 +314,7 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
         WinHttpOpenRequest(connection.get(), L"GET", resource.c_str(), nullptr,
                            WINHTTP_NO_REFERER, acceptTypes, flags));
     if (request == nullptr) {
-      return nativeFailure(currentWinHttpError());
+      return backgroundFailure(currentWinHttpError());
     }
 
     DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
@@ -296,13 +327,13 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
                           &disabledFeatures, sizeof(disabledFeatures)) ||
         !WinHttpSetOption(request.get(), WINHTTP_OPTION_AUTOLOGON_POLICY,
                           &autoLogonPolicy, sizeof(autoLogonPolicy))) {
-      return nativeFailure(currentWinHttpError());
+      return backgroundFailure(currentWinHttpError());
     }
 
     if (!WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
         !WinHttpReceiveResponse(request.get(), nullptr)) {
-      return nativeFailure(currentWinHttpError());
+      return backgroundFailure(currentWinHttpError());
     }
 
     DWORD statusCode = 0;
@@ -312,29 +343,29 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
                                  WINHTTP_QUERY_FLAG_NUMBER,
                              WINHTTP_HEADER_NAME_BY_INDEX, &statusCode,
                              &statusCodeSize, WINHTTP_NO_HEADER_INDEX)) {
-      return nativeFailure(currentWinHttpError());
+      return backgroundFailure(currentWinHttpError());
     }
 
     if (statusCode >= 300 && statusCode < 400) {
       if (followedRedirects >= limits.maximumRedirects) {
-        return nativeFailure(LivePlaylistLoadError::TooManyRedirects);
+        return backgroundFailure(LivePlaylistLoadError::TooManyRedirects);
       }
       const auto location =
           responseHeader(request.get(), WINHTTP_QUERY_LOCATION);
       if (!location.has_value()) {
-        return nativeFailure(LivePlaylistLoadError::NetworkFailure);
+        return backgroundFailure(LivePlaylistLoadError::NetworkFailure);
       }
       const QUrl target =
           currentUrl.resolved(QUrl(*location, QUrl::StrictMode));
       if (!isSafeRedirect(currentUrl, target)) {
-        return nativeFailure(LivePlaylistLoadError::UnsafeRedirect);
+        return backgroundFailure(LivePlaylistLoadError::UnsafeRedirect);
       }
       currentUrl = target;
       ++followedRedirects;
       continue;
     }
     if (statusCode < 200 || statusCode >= 300) {
-      return nativeFailure(LivePlaylistLoadError::NetworkFailure);
+      return backgroundFailure(LivePlaylistLoadError::NetworkFailure);
     }
 
     if (const auto contentLength =
@@ -343,7 +374,7 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
       bool isLengthValid = false;
       const qlonglong length = contentLength->toLongLong(&isLengthValid);
       if (isLengthValid && length > limits.maximumResponseBytes) {
-        return nativeFailure(LivePlaylistLoadError::ResponseTooLarge);
+        return backgroundFailure(LivePlaylistLoadError::ResponseTooLarge);
       }
     }
 
@@ -351,14 +382,14 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
     while (true) {
       DWORD availableBytes = 0;
       if (!WinHttpQueryDataAvailable(request.get(), &availableBytes)) {
-        return nativeFailure(currentWinHttpError());
+        return backgroundFailure(currentWinHttpError());
       }
       if (availableBytes == 0) {
         break;
       }
       if (static_cast<qint64>(responseBody.size()) + availableBytes >
           limits.maximumResponseBytes) {
-        return nativeFailure(LivePlaylistLoadError::ResponseTooLarge);
+        return backgroundFailure(LivePlaylistLoadError::ResponseTooLarge);
       }
 
       const int chunkSize = static_cast<int>(std::min<DWORD>(
@@ -367,13 +398,13 @@ NativeRequestResult fetchWithWinHttp(const QUrl &initialUrl,
       DWORD readBytes = 0;
       if (!WinHttpReadData(request.get(), chunk.data(),
                            static_cast<DWORD>(chunk.size()), &readBytes)) {
-        return nativeFailure(currentWinHttpError());
+        return backgroundFailure(currentWinHttpError());
       }
       chunk.resize(static_cast<int>(readBytes));
       responseBody.append(chunk);
     }
 
-    NativeRequestResult result;
+    BackgroundReadResult result;
     result.responseBody = std::move(responseBody);
     result.finalUrl = currentUrl;
     return result;
@@ -403,7 +434,7 @@ LivePlaylistService::LivePlaylistService(
   timeoutTimer_->setObjectName(QStringLiteral("livePlaylistTimeoutTimer"));
   timeoutTimer_->setSingleShot(true);
   connect(timeoutTimer_, &QTimer::timeout, this, [this] {
-    if (currentReply_ != nullptr || nativeRequestWatcher_ != nullptr) {
+    if (currentReply_ != nullptr || backgroundRequestWatcher_ != nullptr) {
       finishFailure(LivePlaylistLoadError::Timeout, generation_);
     }
   });
@@ -433,13 +464,25 @@ void LivePlaylistService::load(const QString &playlistUrl) {
   }
 }
 
+void LivePlaylistService::loadLocalFile(const QString &filePath) {
+  Q_ASSERT(thread() == QThread::currentThread());
+  cancel();
+
+  if (filePath.isEmpty()) {
+    emit loadFailed(LivePlaylistLoadError::LocalFileUnreadable);
+    return;
+  }
+  timeoutTimer_->start(limits_.timeoutMilliseconds);
+  startLocalFileRequest(filePath, generation_);
+}
+
 void LivePlaylistService::cancel() noexcept {
   ++generation_;
   timeoutTimer_->stop();
   responseBody_.clear();
-  if (nativeRequestWatcher_ != nullptr) {
+  if (backgroundRequestWatcher_ != nullptr) {
     QFutureWatcherBase *const watcher =
-        std::exchange(nativeRequestWatcher_, nullptr);
+        std::exchange(backgroundRequestWatcher_, nullptr);
     disconnect(watcher, nullptr, this, nullptr);
     watcher->deleteLater();
   }
@@ -489,16 +532,17 @@ void LivePlaylistService::startRequest(const QUrl &url,
 void LivePlaylistService::startNativeRequest(const QUrl &url,
                                              const std::uint64_t generation) {
 #ifdef Q_OS_WIN
-  auto *const watcher = new QFutureWatcher<NativeRequestResult>(this);
-  nativeRequestWatcher_ = watcher;
-  connect(watcher, &QFutureWatcher<NativeRequestResult>::finished, this,
+  auto *const watcher = new QFutureWatcher<BackgroundReadResult>(this);
+  backgroundRequestWatcher_ = watcher;
+  connect(watcher, &QFutureWatcher<BackgroundReadResult>::finished, this,
           [this, watcher, generation] {
-            if (nativeRequestWatcher_ != watcher || generation != generation_) {
+            if (backgroundRequestWatcher_ != watcher ||
+                generation != generation_) {
               watcher->deleteLater();
               return;
             }
-            nativeRequestWatcher_ = nullptr;
-            NativeRequestResult result = watcher->result();
+            backgroundRequestWatcher_ = nullptr;
+            BackgroundReadResult result = watcher->result();
             watcher->deleteLater();
             if (result.error.has_value()) {
               finishFailure(*result.error, generation);
@@ -512,6 +556,32 @@ void LivePlaylistService::startNativeRequest(const QUrl &url,
 #else
   startRequest(url, generation);
 #endif
+}
+
+void LivePlaylistService::startLocalFileRequest(
+    const QString &filePath, const std::uint64_t generation) {
+  auto *const watcher = new QFutureWatcher<BackgroundReadResult>(this);
+  backgroundRequestWatcher_ = watcher;
+  connect(watcher, &QFutureWatcher<BackgroundReadResult>::finished, this,
+          [this, watcher, generation] {
+            if (backgroundRequestWatcher_ != watcher ||
+                generation != generation_) {
+              watcher->deleteLater();
+              return;
+            }
+            backgroundRequestWatcher_ = nullptr;
+            BackgroundReadResult result = watcher->result();
+            watcher->deleteLater();
+            if (result.error.has_value()) {
+              finishFailure(*result.error, generation);
+              return;
+            }
+            finishResponse(std::move(result.responseBody), result.finalUrl,
+                           generation);
+          });
+  watcher->setFuture(QtConcurrent::run([filePath, limits = limits_] {
+    return readLocalPlaylist(filePath, limits);
+  }));
 }
 
 void LivePlaylistService::consumeReplyData(QNetworkReply *const reply,
@@ -622,9 +692,9 @@ void LivePlaylistService::finishFailure(const LivePlaylistLoadError error,
   }
   timeoutTimer_->stop();
   responseBody_.clear();
-  if (nativeRequestWatcher_ != nullptr) {
+  if (backgroundRequestWatcher_ != nullptr) {
     QFutureWatcherBase *const watcher =
-        std::exchange(nativeRequestWatcher_, nullptr);
+        std::exchange(backgroundRequestWatcher_, nullptr);
     disconnect(watcher, nullptr, this, nullptr);
     watcher->deleteLater();
   }

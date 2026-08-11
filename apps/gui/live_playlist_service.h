@@ -26,6 +26,7 @@ struct LivePlaylistLimits {
 
 enum class LivePlaylistLoadError {
   InvalidUrl,
+  LocalFileUnreadable,
   NetworkFailure,
   Timeout,
   TooManyRedirects,
@@ -44,7 +45,7 @@ struct LivePlaylistLoadResult {
   std::size_t duplicateChannelCount{0};
 };
 
-// 在 GUI 主线程异步读取远程清单，并在解析前强制执行资源与重定向限制。
+// 在 GUI 主线程异步读取本地或远程清单，并在解析前强制执行资源与重定向限制。
 class LivePlaylistService : public QObject {
   Q_OBJECT
 
@@ -56,6 +57,8 @@ class LivePlaylistService : public QObject {
 
   // 调用线程：GUI 主线程。新请求会取消旧请求，迟到结果不会继续发出信号。
   virtual void load(const QString& playlistUrl);
+  // 调用线程：GUI 主线程。本地文件在线程池读取，不阻塞界面事件循环。
+  virtual void loadLocalFile(const QString& filePath);
   // 调用线程：GUI 主线程。取消当前请求但不报告失败。
   virtual void cancel() noexcept;
 
@@ -66,6 +69,8 @@ class LivePlaylistService : public QObject {
  private:
   void startRequest(const QUrl& url, std::uint64_t generation);
   void startNativeRequest(const QUrl& url, std::uint64_t generation);
+  void startLocalFileRequest(const QString& filePath,
+                             std::uint64_t generation);
   void consumeReplyData(QNetworkReply* reply, std::uint64_t generation);
   void handleReplyFinished(QNetworkReply* reply, std::uint64_t generation);
   void finishResponse(QByteArray responseBody, const QUrl& finalUrl,
@@ -78,7 +83,7 @@ class LivePlaylistService : public QObject {
   QNetworkAccessManager* networkManager_{nullptr};
   QTimer* timeoutTimer_{nullptr};
   QNetworkReply* currentReply_{nullptr};
-  QFutureWatcherBase* nativeRequestWatcher_{nullptr};
+  QFutureWatcherBase* backgroundRequestWatcher_{nullptr};
   QByteArray responseBody_;
   std::uint64_t generation_{0};
   int followedRedirects_{0};

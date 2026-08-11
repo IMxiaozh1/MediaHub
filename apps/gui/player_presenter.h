@@ -43,7 +43,7 @@ class PlayerPresenter final : public QObject {
 
   // 调用线程：GUI 主线程。路径来自文件选择器，使用 UTF-8 交给核心接口。
   void openLocalFile(const QString& filePath);
-  // 调用线程：GUI 主线程。保持输入顺序追加文件并播放本批次第一项。
+  // 调用线程：GUI 主线程。普通媒体保持顺序追加；单个 M3U/M3U8 解析到直播列表。
   void addLocalFiles(const QStringList& filePaths);
   // 调用线程：GUI 主线程。校验用户提供的直播地址后加入列表并播放。
   void openNetworkUrl(const QString& url);
@@ -58,6 +58,11 @@ class PlayerPresenter final : public QObject {
   enum class PlaylistKind {
     Local,
     Live,
+  };
+
+  enum class LivePlaylistRequestKind {
+    Remote,
+    Local,
   };
 
   // 调用线程：GUI 主线程。以下方法只由主线程输入或队列事件调用。
@@ -91,8 +96,12 @@ class PlayerPresenter final : public QObject {
   void changePlaylistKind(int kindIndex);
   void requestLivePlaylistLoad(const QString& playlistUrl);
   void cancelLivePlaylistLoad();
-  void startLivePlaylistLoad(const QString& playlistUrl,
-                             bool fallsBackToDirectPlayback);
+  void startRemoteLivePlaylistLoad(const QString& playlistUrl,
+                                   bool fallsBackToDirectPlayback);
+  void startLocalLivePlaylistLoad(const QString& filePath);
+  void rememberLocalPlaylistFile(const QString& filePath);
+  void addLocalMediaFiles(const QStringList& filePaths);
+  void openDirectLocalMedia(core::MediaItem item);
   void openDirectNetworkUrl(const QString& normalizedUrl);
   void handleLivePlaylistLoaded(LivePlaylistLoadResult result);
   void handleLivePlaylistFailure(LivePlaylistLoadError error);
@@ -125,7 +134,8 @@ class PlayerPresenter final : public QObject {
   void restoreAppState();
   void persistAppState() noexcept;
   void openCurrentPlaylistItem(PlaylistKind playlistKind,
-                               bool isNetworkRefresh = false);
+                               bool isNetworkRefresh = false,
+                               bool parsesLocalPlaylist = true);
   void openCurrentPlaybackItem(bool isNetworkRefresh = false);
   [[nodiscard]] core::Playlist& playlist(PlaylistKind playlistKind) noexcept;
   [[nodiscard]] const core::Playlist& playlist(
@@ -171,8 +181,9 @@ class PlayerPresenter final : public QObject {
   QVector<LiveSourceMemo> liveSourceMemos_;
   std::vector<LocalPlaybackRecord> recentLocalMedia_;
   QString lastLivePlaylistUrl_;
-  QString activeLivePlaylistRequestUrl_;
-  QString pendingPlaylistProbeUrl_;
+  QString activeLivePlaylistRequestSource_;
+  std::optional<LivePlaylistRequestKind> activeLivePlaylistRequestKind_;
+  std::optional<core::MediaItem> pendingPlaylistFallbackItem_;
   void* fallbackVideoSurface_{nullptr};
   QString livePlaylistStatusText_{QStringLiteral("输入远程 M3U/M3U8 清单 URL")};
   int volume_{100};

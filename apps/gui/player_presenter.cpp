@@ -48,6 +48,17 @@ bool isAmbiguousHlsAddress(const QString &address) {
       .endsWith(QStringLiteral(".m3u8"), Qt::CaseInsensitive);
 }
 
+bool isLocalPlaylistFile(const QString &filePath) {
+  const QString suffix = QFileInfo(filePath).suffix();
+  return suffix.compare(QStringLiteral("m3u"), Qt::CaseInsensitive) == 0 ||
+         suffix.compare(QStringLiteral("m3u8"), Qt::CaseInsensitive) == 0;
+}
+
+bool isAmbiguousLocalHlsFile(const QString &filePath) {
+  return QFileInfo(filePath).suffix().compare(QStringLiteral("m3u8"),
+                                               Qt::CaseInsensitive) == 0;
+}
+
 std::optional<double> normalizedPlaybackRate(const double requestedRate) {
   const auto match =
       std::find_if(kPlaybackRates.begin(), kPlaybackRates.end(),
@@ -245,10 +256,13 @@ bool isSeekAvailable(const core::PlaybackPosition &position,
                                  state == core::PlaybackState::Paused);
 }
 
-QString livePlaylistErrorMessage(const LivePlaylistLoadError error) {
+QString livePlaylistErrorMessage(const LivePlaylistLoadError error,
+                                 const bool isLocalFile) {
   switch (error) {
   case LivePlaylistLoadError::InvalidUrl:
     return QStringLiteral("请输入完整的 HTTP 或 HTTPS 清单 URL。");
+  case LivePlaylistLoadError::LocalFileUnreadable:
+    return QStringLiteral("无法读取本地 M3U/M3U8 清单文件。");
   case LivePlaylistLoadError::NetworkFailure:
     return QStringLiteral("清单读取失败，请检查网络或服务状态后重试。");
   case LivePlaylistLoadError::Timeout:
@@ -264,8 +278,10 @@ QString livePlaylistErrorMessage(const LivePlaylistLoadError error) {
   case LivePlaylistLoadError::InvalidFormat:
     return QStringLiteral("链接内容不是有效的 M3U/M3U8 清单。");
   case LivePlaylistLoadError::HlsMediaManifest:
-    return QStringLiteral(
-        "该链接是单路 HLS 媒体清单，请使用“打开网络地址”播放。");
+    return isLocalFile
+               ? QStringLiteral("该文件是单路 HLS 媒体清单，无法展开为频道列表。")
+               : QStringLiteral(
+                     "该链接是单路 HLS 媒体清单，请使用“打开网络地址”播放。");
   case LivePlaylistLoadError::TooManyEntries:
     return QStringLiteral("清单超过 5000 项，未替换当前直播列表。");
   case LivePlaylistLoadError::NoPlayableEntries:
@@ -278,6 +294,8 @@ std::string livePlaylistErrorName(const LivePlaylistLoadError error) {
   switch (error) {
   case LivePlaylistLoadError::InvalidUrl:
     return "invalid_url";
+  case LivePlaylistLoadError::LocalFileUnreadable:
+    return "local_file_unreadable";
   case LivePlaylistLoadError::NetworkFailure:
     return "network_failure";
   case LivePlaylistLoadError::Timeout:
@@ -476,6 +494,27 @@ void PlayerPresenter::addLocalFiles(const QStringList &filePaths) {
     return;
   }
 
+  const auto playlistFile = std::find_if(
+      filePaths.cbegin(), filePaths.cend(), isLocalPlaylistFile);
+  if (playlistFile != filePaths.cend()) {
+    if (filePaths.size() != 1) {
+      window_.showPlaybackError(
+          QStringLiteral("本地 M3U/M3U8 清单请单独选择或拖入。"));
+      return;
+    }
+    startLocalLivePlaylistLoad(*playlistFile);
+    return;
+  }
+
+  addLocalMediaFiles(filePaths);
+}
+
+void PlayerPresenter::addLocalMediaFiles(const QStringList &filePaths) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_ || filePaths.isEmpty()) {
+    return;
+  }
+
   std::vector<core::MediaItem> items;
   items.reserve(static_cast<std::size_t>(filePaths.size()));
   for (const auto &filePath : filePaths) {
@@ -528,7 +567,8 @@ void PlayerPresenter::openNetworkUrl(const QString &url) {
   rememberNetworkUrl(normalizedUrl);
   if (isPlaylistAddress(normalizedUrl)) {
     window_.setLivePlaylistUrl(normalizedUrl);
-    startLivePlaylistLoad(normalizedUrl, isAmbiguousHlsAddress(normalizedUrl));
+    startRemoteLivePlaylistLoad(normalizedUrl,
+                                isAmbiguousHlsAddress(normalizedUrl));
     return;
   }
 
@@ -536,7 +576,9 @@ void PlayerPresenter::openNetworkUrl(const QString &url) {
     livePlaylistService_->cancel();
     isLivePlaylistLoading_ = false;
   }
-  pendingPlaylistProbeUrl_.clear();
+  activeLivePlaylistRequestSource_.clear();
+  activeLivePlaylistRequestKind_.reset();
+  pendingPlaylistFallbackItem_.reset();
   openDirectNetworkUrl(normalizedUrl);
 }
 
@@ -559,8 +601,31 @@ void PlayerPresenter::openDirectNetworkUrl(const QString &normalizedUrl) {
   openCurrentPlaylistItem(PlaylistKind::Live);
 }
 
+void PlayerPresenter::openDirectLocalMedia(core::MediaItem item) {
+  const QString identity = localPathIdentity(fromUtf8(item.source));
+  std::optional<std::size_t> existingIndex;
+  for (std::size_t index = 0; index < localPlaylist_.size(); ++index) {
+    if (localPathIdentity(fromUtf8(localPlaylist_.at(index).source)) ==
+        identity) {
+      existingIndex = index;
+      break;
+    }
+  }
+  if (existingIndex.has_value()) {
+    static_cast<void>(localPlaylist_.select(*existingIndex));
+  } else {
+    const std::size_t newIndex = localPlaylist_.size();
+    localPlaylist_.add(std::vector<core::MediaItem>{std::move(item)});
+    static_cast<void>(localPlaylist_.select(newIndex));
+  }
+  activePlaylistKind_ = PlaylistKind::Local;
+  localPlaylistModel_.refresh();
+  persistAppState();
+  openCurrentPlaylistItem(PlaylistKind::Local, false, false);
+}
+
 void PlayerPresenter::requestLivePlaylistLoad(const QString &playlistUrl) {
-  startLivePlaylistLoad(playlistUrl, false);
+  startRemoteLivePlaylistLoad(playlistUrl, false);
 }
 
 void PlayerPresenter::cancelLivePlaylistLoad() {
@@ -570,13 +635,14 @@ void PlayerPresenter::cancelLivePlaylistLoad() {
   }
   livePlaylistService_->cancel();
   isLivePlaylistLoading_ = false;
-  pendingPlaylistProbeUrl_.clear();
-  activeLivePlaylistRequestUrl_.clear();
+  pendingPlaylistFallbackItem_.reset();
+  activeLivePlaylistRequestSource_.clear();
+  activeLivePlaylistRequestKind_.reset();
   livePlaylistStatusText_ = QStringLiteral("已取消载入直播清单");
   render();
 }
 
-void PlayerPresenter::startLivePlaylistLoad(
+void PlayerPresenter::startRemoteLivePlaylistLoad(
     const QString &playlistUrl, const bool fallsBackToDirectPlayback) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_) {
@@ -584,9 +650,13 @@ void PlayerPresenter::startLivePlaylistLoad(
   }
   const QString normalizedUrl = playlistUrl.trimmed();
   activePlaylistKind_ = PlaylistKind::Live;
-  pendingPlaylistProbeUrl_ =
-      fallsBackToDirectPlayback ? normalizedUrl : QString{};
-  activeLivePlaylistRequestUrl_ = normalizedUrl;
+  pendingPlaylistFallbackItem_ =
+      fallsBackToDirectPlayback
+          ? std::optional<core::MediaItem>(core::makeMediaItem(
+                utf8String(normalizedUrl)))
+          : std::nullopt;
+  activeLivePlaylistRequestSource_ = normalizedUrl;
+  activeLivePlaylistRequestKind_ = LivePlaylistRequestKind::Remote;
   lastLivePlaylistUrl_ = normalizedUrl;
   persistAppState();
   isLivePlaylistLoading_ = true;
@@ -595,14 +665,65 @@ void PlayerPresenter::startLivePlaylistLoad(
   livePlaylistService_->load(normalizedUrl);
 }
 
+void PlayerPresenter::startLocalLivePlaylistLoad(const QString &filePath) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+
+  activePlaylistKind_ = PlaylistKind::Live;
+  pendingPlaylistFallbackItem_ =
+      isAmbiguousLocalHlsFile(filePath)
+          ? std::optional<core::MediaItem>(core::makeMediaItem(
+                utf8String(filePath), utf8String(QFileInfo(filePath).fileName())))
+          : std::nullopt;
+  activeLivePlaylistRequestSource_ = filePath;
+  activeLivePlaylistRequestKind_ = LivePlaylistRequestKind::Local;
+  isLivePlaylistLoading_ = true;
+  livePlaylistStatusText_ = QStringLiteral("正在读取并解析本地直播清单...");
+  render();
+  livePlaylistService_->loadLocalFile(filePath);
+}
+
+void PlayerPresenter::rememberLocalPlaylistFile(const QString &filePath) {
+  const QString identity = localPathIdentity(filePath);
+  std::optional<std::size_t> existingIndex;
+  for (std::size_t index = 0; index < localPlaylist_.size(); ++index) {
+    if (localPathIdentity(fromUtf8(localPlaylist_.at(index).source)) ==
+        identity) {
+      existingIndex = index;
+      break;
+    }
+  }
+
+  if (existingIndex.has_value()) {
+    static_cast<void>(localPlaylist_.select(*existingIndex));
+  } else {
+    const QFileInfo fileInfo(filePath);
+    const QString displayName =
+        fileInfo.fileName().isEmpty() ? filePath : fileInfo.fileName();
+    const std::size_t newIndex = localPlaylist_.size();
+    localPlaylist_.add(std::vector<core::MediaItem>{core::makeMediaItem(
+        utf8String(filePath), utf8String(displayName))});
+    static_cast<void>(localPlaylist_.select(newIndex));
+  }
+  localPlaylistModel_.refresh();
+  persistAppState();
+}
+
 void PlayerPresenter::handleLivePlaylistLoaded(LivePlaylistLoadResult result) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_ || !isLivePlaylistLoading_) {
     return;
   }
-  const QString loadedPlaylistUrl = activeLivePlaylistRequestUrl_;
-  pendingPlaylistProbeUrl_.clear();
-  activeLivePlaylistRequestUrl_.clear();
+  const QString loadedPlaylistSource = activeLivePlaylistRequestSource_;
+  const bool wasRemoteRequest =
+      activeLivePlaylistRequestKind_ == LivePlaylistRequestKind::Remote;
+  const bool wasLocalRequest =
+      activeLivePlaylistRequestKind_ == LivePlaylistRequestKind::Local;
+  pendingPlaylistFallbackItem_.reset();
+  activeLivePlaylistRequestSource_.clear();
+  activeLivePlaylistRequestKind_.reset();
 
   std::vector<core::MediaItem> items;
   items.reserve(result.library.channels.size());
@@ -616,7 +737,11 @@ void PlayerPresenter::handleLivePlaylistLoaded(LivePlaylistLoadResult result) {
   livePlaylist_ = std::move(replacement);
   isLivePlaylistLoading_ = false;
   livePlaylistModel_.refresh();
-  rememberLivePlaylistUrl(loadedPlaylistUrl);
+  if (wasRemoteRequest) {
+    rememberLivePlaylistUrl(loadedPlaylistSource);
+  } else if (wasLocalRequest) {
+    rememberLocalPlaylistFile(loadedPlaylistSource);
+  }
   livePlaylistStatusText_ =
       QStringLiteral("已载入 %1 项 · 重复 %2 项 · 跳过 %3 项")
           .arg(static_cast<qulonglong>(livePlaylist_.size()))
@@ -637,16 +762,24 @@ void PlayerPresenter::handleLivePlaylistFailure(
   if (isShuttingDown_ || !isLivePlaylistLoading_) {
     return;
   }
+  const bool wasLocalRequest =
+      activeLivePlaylistRequestKind_ == LivePlaylistRequestKind::Local;
   isLivePlaylistLoading_ = false;
-  activeLivePlaylistRequestUrl_.clear();
+  activeLivePlaylistRequestSource_.clear();
+  activeLivePlaylistRequestKind_.reset();
   if (error == LivePlaylistLoadError::HlsMediaManifest &&
-      !pendingPlaylistProbeUrl_.isEmpty()) {
-    const QString directUrl = std::exchange(pendingPlaylistProbeUrl_, {});
-    openDirectNetworkUrl(directUrl);
+      pendingPlaylistFallbackItem_.has_value()) {
+    core::MediaItem fallbackItem =
+        std::exchange(pendingPlaylistFallbackItem_, std::nullopt).value();
+    if (fallbackItem.kind == core::MediaSourceKind::NetworkStream) {
+      openDirectNetworkUrl(fromUtf8(fallbackItem.source));
+    } else {
+      openDirectLocalMedia(std::move(fallbackItem));
+    }
     return;
   }
-  pendingPlaylistProbeUrl_.clear();
-  livePlaylistStatusText_ = livePlaylistErrorMessage(error);
+  pendingPlaylistFallbackItem_.reset();
+  livePlaylistStatusText_ = livePlaylistErrorMessage(error, wasLocalRequest);
   if (logger_ != nullptr) {
     logger_->log(logging::LogLevel::Warning, "presenter",
                  "live_playlist_load_failed",
@@ -666,9 +799,15 @@ void PlayerPresenter::changePlaylistKind(const int kindIndex) {
 }
 
 void PlayerPresenter::openCurrentPlaylistItem(const PlaylistKind playlistKind,
-                                              const bool isNetworkRefresh) {
+                                              const bool isNetworkRefresh,
+                                              const bool parsesLocalPlaylist) {
   const auto *const item = playlist(playlistKind).currentItem();
   if (item == nullptr) {
+    return;
+  }
+  if (parsesLocalPlaylist && playlistKind == PlaylistKind::Local &&
+      isLocalPlaylistFile(fromUtf8(item->source))) {
+    startLocalLivePlaylistLoad(fromUtf8(item->source));
     return;
   }
   if (currentPlaybackItem_.has_value() &&

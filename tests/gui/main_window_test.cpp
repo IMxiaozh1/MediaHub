@@ -99,6 +99,12 @@ public:
     }
   }
 
+  void loadLocalFile(const QString &filePath) override {
+    ++localLoadCount;
+    lastLocalFilePath = filePath;
+    isPending = true;
+  }
+
   void cancel() noexcept override {
     ++cancelCount;
     isPending = false;
@@ -115,7 +121,9 @@ public:
   }
 
   QString lastPlaylistUrl;
+  QString lastLocalFilePath;
   int loadCount{0};
+  int localLoadCount{0};
   int cancelCount{0};
   bool isPending{false};
 };
@@ -239,6 +247,8 @@ private slots:
   void opensUtf8LocalFileAndStartsAfterOpeningEvent();
   void opensValidatedNetworkUrlWithoutLoggingPrivateParts();
   void expandsPlaylistUrlsAndFallsBackForSingleHlsStreams();
+  void expandsLocalIptvPlaylistAndFallsBackForLocalHlsManifest();
+  void reparsesLegacyLocalPlaylistItemsOnActivation();
   void separatesLocalAndLiveListsWithoutStoppingPlayback();
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
@@ -755,6 +765,106 @@ void MainWindowTest::expandsPlaylistUrlsAndFallsBackForSingleHlsStreams() {
   QCOMPARE(harness.engine.commands().back().media->source,
            hlsUrl.toUtf8().toStdString());
   QCOMPARE(playlistView->model()->rowCount(), 3);
+}
+
+void MainWindowTest::
+    expandsLocalIptvPlaylistAndFallsBackForLocalHlsManifest() {
+  GuiHarness harness;
+  auto *const tabs = requiredChild<QTabBar>(harness.window, "playlistKindTabs");
+  auto *const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto *const statusLabel =
+      requiredChild<QLabel>(harness.window, "livePlaylistStatusLabel");
+  const QString playlistPath = QStringLiteral("C:/IPTV 清单/cn_all.m3u8");
+
+  harness.presenter.openLocalFile(playlistPath);
+
+  QCOMPARE(harness.livePlaylistService.localLoadCount, 1);
+  QCOMPARE(harness.livePlaylistService.lastLocalFilePath, playlistPath);
+  QCOMPARE(harness.livePlaylistService.loadCount, 0);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+  QCOMPARE(tabs->currentIndex(), 1);
+  QVERIFY(statusLabel->text().contains(QStringLiteral("本地直播清单")));
+
+  LivePlaylistLoadResult result;
+  result.library.channels = {
+      {"CCTV-1", "", "http://192.0.2.1/live/index.m3u8", "", "", ""},
+      {"凤凰中文", "", "https://example.test/phoenix.m3u8", "", "", ""},
+  };
+  harness.livePlaylistService.complete(std::move(result));
+
+  QCOMPARE(playlistView->model()->rowCount(), 2);
+  QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("CCTV-1"));
+  QCOMPARE(playlistView->model()->index(1, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("凤凰中文"));
+  QVERIFY(statusLabel->text().contains(QStringLiteral("已载入 2 项")));
+  QVERIFY(harness.logOutput.str().find("IPTV") == std::string::npos);
+
+  tabs->setCurrentIndex(0);
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+  QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("cn_all.m3u8"));
+  harness.presenter.openLocalFile(playlistPath);
+  QCOMPARE(harness.livePlaylistService.localLoadCount, 2);
+  LivePlaylistLoadResult repeatedResult;
+  repeatedResult.library.channels = {
+      {"CCTV-1", "", "http://192.0.2.1/live/index.m3u8", "", "", ""},
+  };
+  harness.livePlaylistService.complete(std::move(repeatedResult));
+  tabs->setCurrentIndex(0);
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+
+  const QString hlsPath = QStringLiteral("C:/IPTV 清单/single.m3u8");
+  harness.presenter.openLocalFile(hlsPath);
+  QCOMPARE(harness.livePlaylistService.localLoadCount, 3);
+  harness.livePlaylistService.fail(LivePlaylistLoadError::HlsMediaManifest);
+
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+  QVERIFY(harness.engine.commands().back().media.has_value());
+  QCOMPARE(harness.engine.commands().back().media->source,
+           hlsPath.toUtf8().toStdString());
+  QVERIFY(harness.engine.commands().back().media->kind ==
+          core::MediaSourceKind::LocalFile);
+  QCOMPARE(tabs->currentIndex(), 0);
+  QCOMPARE(playlistView->model()->rowCount(), 2);
+
+  harness.presenter.addLocalFiles(
+      {QStringLiteral("C:/one.mp3"), QStringLiteral("C:/channels.m3u")});
+  QCOMPARE(harness.livePlaylistService.localLoadCount, 3);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 1);
+}
+
+void MainWindowTest::reparsesLegacyLocalPlaylistItemsOnActivation() {
+  FakeAppStateStore store;
+  const QString playlistPath = QStringLiteral("C:/旧列表/cn_all.m3u8");
+  store.snapshot.localPlaylist = {core::makeMediaItem(
+      playlistPath.toUtf8().toStdString(), "cn_all.m3u8")};
+  GuiHarness harness(&store);
+  auto *const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+  QVERIFY(QMetaObject::invokeMethod(
+      playlistView, "doubleClicked", Qt::DirectConnection,
+      Q_ARG(QModelIndex, playlistView->model()->index(0, 0))));
+
+  QCOMPARE(harness.livePlaylistService.localLoadCount, 1);
+  QCOMPARE(harness.livePlaylistService.lastLocalFilePath, playlistPath);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 0);
+
+  LivePlaylistLoadResult result;
+  result.library.channels = {
+      {"CCTV-1", "", "http://192.0.2.1/live/index.m3u8", "", "", ""},
+  };
+  harness.livePlaylistService.complete(std::move(result));
+
+  QCOMPARE(requiredChild<QTabBar>(harness.window, "playlistKindTabs")
+               ->currentIndex(),
+           1);
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+  QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
+           QStringLiteral("CCTV-1"));
 }
 
 void MainWindowTest::separatesLocalAndLiveListsWithoutStoppingPlayback() {
