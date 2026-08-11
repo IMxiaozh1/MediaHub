@@ -1,0 +1,6 @@
+Third_Party/webview2/LICENSE.txt -text whitespace=-trailing-space
+Third_Party/webview2/NOTICE.txt -text whitespace=-trailing-space
+Third_Party/webview2/Microsoft.Web.WebView2.nuspec -text whitespace=-trailing-space
+Third_Party/webview2/include/WebView2.h -text whitespace=-trailing-space
+Third_Party/webview2/include/WebView2EnvironmentOptions.h -text whitespace=-trailing-space
+Third_Party/webview2/x64/WebView2LoaderStatic.lib binary

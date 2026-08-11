@@ -10,6 +10,12 @@ This Release package dynamically links to the following third-party software:
   available under GPL 2 or later and require a separate review before public
   binary distribution.
 
+The source tree also includes Microsoft WebView2 SDK 1.0.4129.50 as the fixed
+build input for the v0.6 browser integration. Its unmodified x64 native SDK
+files and legal materials are stored under `Third_Party/webview2/`. The SDK
+license is at `Third_Party/webview2/LICENSE.txt`, and the accompanying notices
+are at `Third_Party/webview2/NOTICE.txt`.
+
 The corresponding license texts are included in this directory:
 
 - `Qt-LGPL-3.0.txt`
@@ -18,6 +24,11 @@ The corresponding license texts are included in this directory:
 
 The Microsoft Visual C++ 2015-2022 Redistributable (x64) is a runtime
 prerequisite. Its installer is not bundled in this package.
+
+Microsoft Edge WebView2 Evergreen Runtime is also an external runtime
+prerequisite for the browser integration. It is installed and serviced
+independently by Microsoft and is not stored in this repository or bundled by
+this dependency stage.
 
 MediaHub uses dynamic linking. Users may replace the Qt and VLC runtime files
 with compatible builds bearing the same filenames. The MediaHub source code
