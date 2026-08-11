@@ -47,7 +47,11 @@
 #include <algorithm>
 #include <array>
 #include <initializer_list>
+#include <utility>
 
+#include "browser_backend.h"
+#include "browser_event_listener.h"
+#include "browser_page.h"
 #include "lyrics_view.h"
 #include "live_source_memo_dialog.h"
 #include "live_url_history_dialog.h"
@@ -66,6 +70,41 @@
 
 namespace mediahub::gui {
 namespace {
+
+class UnavailableBrowserBackend final : public BrowserBackend {
+ public:
+  void setEventListener(BrowserEventListener* listener) override {
+    listener_ = listener;
+  }
+
+  void initialize(void*, const QString&, std::uint64_t generation) override {
+    if (listener_ != nullptr) {
+      listener_->onBrowserError(generation, BrowserErrorKind::RuntimeUnavailable,
+                                0);
+    }
+  }
+
+  void navigate(const QString&, std::uint64_t) override {}
+  void goBack() override {}
+  void goForward() override {}
+  void reloadOrStop() override {}
+  void setBounds(const QRect&) override {}
+  void setVisible(bool) override {}
+  void setAudioMuted(bool) override {}
+  void setSuspended(bool) override {}
+  void clearBrowsingData(std::uint64_t) override {}
+  void answerPermission(std::uint64_t, BrowserPermissionDecision) override {}
+  void chooseDownloadPath(std::uint64_t, const QString&) override {}
+  void cancelDownload(std::uint64_t) override {}
+  void answerExternalProtocol(std::uint64_t, bool) override {}
+  void answerCertificateError(std::uint64_t,
+                              BrowserCertificateDecision) override {}
+  void exitFullScreen() override {}
+  void shutdown() noexcept override { listener_ = nullptr; }
+
+ private:
+  BrowserEventListener* listener_{nullptr};
+};
 
 constexpr int kNormalHorizontalMargin = 22;
 constexpr int kNormalVerticalMargin = 18;
@@ -528,8 +567,15 @@ void setNativeDarkTitleBar(QWidget* const window, const bool isDark) {
 
 }  // namespace
 
-MainWindow::MainWindow(QWidget* const parent)
+MainWindow::MainWindow(BrowserBackend* const browserBackend,
+                       QString browserProfileDirectory, QWidget* const parent)
     : QMainWindow(parent), windowIconManager_(this) {
+  if (browserBackend == nullptr) {
+    ownedBrowserBackend_ = std::make_unique<UnavailableBrowserBackend>();
+    browserBackend_ = ownedBrowserBackend_.get();
+  } else {
+    browserBackend_ = browserBackend;
+  }
   setWindowTitle(QStringLiteral("MediaHub"));
   windowIconManager_.apply();
   resize(1200, 800);
@@ -639,8 +685,45 @@ MainWindow::MainWindow(QWidget* const parent)
   nextShortcut->setObjectName(QStringLiteral("nextShortcut"));
   nextShortcut->setContext(Qt::WindowShortcut);
   centralSurface_ = new QWidget(this);
-  auto* const centralWidget = centralSurface_;
-  centralWidget->setObjectName(QStringLiteral("centralSurface"));
+  centralSurface_->setObjectName(QStringLiteral("centralSurface"));
+  auto* const outerLayout = new QVBoxLayout(centralSurface_);
+  outerLayout->setContentsMargins(0, 0, 0, 0);
+  outerLayout->setSpacing(0);
+
+  displayModePanel_ = new QFrame(centralSurface_);
+  displayModePanel_->setObjectName(QStringLiteral("displayModePanel"));
+  auto* const displayModeLayout = new QHBoxLayout(displayModePanel_);
+  displayModeLayout->setContentsMargins(22, 12, 22, 8);
+  displayModeLayout->setSpacing(8);
+  const auto makeModeButton = [this](const QString& objectName,
+                                     const QString& text) {
+    auto* const button = new QToolButton(displayModePanel_);
+    button->setObjectName(objectName);
+    button->setText(text);
+    button->setCheckable(true);
+    button->setAutoExclusive(true);
+    button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    button->setMinimumSize(116, 34);
+    return button;
+  };
+  localModeButton_ =
+      makeModeButton(QStringLiteral("localModeButton"), QStringLiteral("本地"));
+  liveModeButton_ =
+      makeModeButton(QStringLiteral("liveModeButton"), QStringLiteral("直播"));
+  webModeButton_ =
+      makeModeButton(QStringLiteral("webModeButton"), QStringLiteral("网页"));
+  displayModeLayout->addWidget(localModeButton_);
+  displayModeLayout->addWidget(liveModeButton_);
+  displayModeLayout->addWidget(webModeButton_);
+  displayModeLayout->addStretch(1);
+  outerLayout->addWidget(displayModePanel_);
+
+  auto* const displayModeContainer = new QWidget(centralSurface_);
+  displayModeStack_ = new QStackedLayout(displayModeContainer);
+  displayModeStack_->setContentsMargins(0, 0, 0, 0);
+  nativePlaybackPage_ = new QWidget(displayModeContainer);
+  nativePlaybackPage_->setObjectName(QStringLiteral("nativePlaybackPage"));
+  auto* const centralWidget = nativePlaybackPage_;
   rootLayout_ = new QVBoxLayout(centralWidget);
   rootLayout_->setContentsMargins(
       kNormalHorizontalMargin, kNormalVerticalMargin, kNormalHorizontalMargin,
@@ -1093,9 +1176,17 @@ MainWindow::MainWindow(QWidget* const parent)
   transportLayout->addLayout(timelineRow);
   rootLayout_->addWidget(transportPanel);
 
-  fullScreenChrome_ = {headerPanel_, mediaCard_};
+  browserPage_ = new BrowserPage(*browserBackend_,
+                                 std::move(browserProfileDirectory),
+                                 displayModeContainer);
+  displayModeStack_->addWidget(nativePlaybackPage_);
+  displayModeStack_->addWidget(browserPage_);
+  displayModeStack_->setCurrentWidget(nativePlaybackPage_);
+  outerLayout->addWidget(displayModeContainer, 1);
 
-  setCentralWidget(centralWidget);
+  fullScreenChrome_ = {displayModePanel_, headerPanel_, mediaCard_};
+
+  setCentralWidget(centralSurface_);
   setStyleSheet(mainWindowStyleSheet());
 
   connect(openAction_, &QAction::triggered, this, &MainWindow::chooseLocalFile);
@@ -1103,10 +1194,17 @@ MainWindow::MainWindow(QWidget* const parent)
           &MainWindow::chooseNetworkUrl);
   connect(openButton_, &QPushButton::clicked, this,
           &MainWindow::chooseLocalFile);
+  connect(localModeButton_, &QToolButton::clicked, this,
+          [this] { emit displayModeSelected(DisplayMode::Local); });
+  connect(liveModeButton_, &QToolButton::clicked, this,
+          [this] { emit displayModeSelected(DisplayMode::Live); });
+  connect(webModeButton_, &QToolButton::clicked, this,
+          [this] { emit displayModeSelected(DisplayMode::Web); });
   connect(playlistKindTabs_, &QTabBar::currentChanged, this,
           [this](const int kindIndex) {
             showPlaylistKind(kindIndex);
-            emit playlistKindSelected(kindIndex);
+            emit displayModeSelected(kindIndex == 1 ? DisplayMode::Live
+                                                     : DisplayMode::Local);
           });
   const auto requestLivePlaylistLoad = [this] {
     if (isLivePlaylistLoading_) {
@@ -1288,11 +1386,48 @@ MainWindow::MainWindow(QWidget* const parent)
           &MainWindow::videoSurfaceReady);
   connect(exitAction, &QAction::triggered, this, &MainWindow::close);
 
+  nativePlaybackShortcuts_ = {
+      playbackShortcut, networkRefreshShortcut, volumeUpShortcut,
+      volumeDownShortcut, muteShortcut, unmuteShortcut, seekBackwardShortcut,
+      previousShortcut, nextShortcut, fullScreenShortcut};
+
   PlayerViewState initialState;
   initialState.mediaName = QStringLiteral("未选择媒体");
   initialState.statusText = QStringLiteral("未打开媒体");
   applyViewState(initialState);
+  showDisplayMode(DisplayMode::Local);
   updatePlaylistResponsiveStyle();
+}
+
+MainWindow::~MainWindow() {
+  delete browserPage_;
+  browserPage_ = nullptr;
+}
+
+void MainWindow::showDisplayMode(const DisplayMode mode) {
+  const bool leavesWeb = displayMode_ == DisplayMode::Web &&
+                         mode != DisplayMode::Web;
+  if (leavesWeb) {
+    browserPage_->deactivate();
+  }
+
+  displayMode_ = mode;
+  const bool showsWeb = mode == DisplayMode::Web;
+  displayModeStack_->setCurrentWidget(showsWeb
+                                          ? static_cast<QWidget*>(browserPage_)
+                                          : nativePlaybackPage_);
+  localModeButton_->setChecked(mode == DisplayMode::Local);
+  liveModeButton_->setChecked(mode == DisplayMode::Live);
+  webModeButton_->setChecked(showsWeb);
+  for (QShortcut* const shortcut : nativePlaybackShortcuts_) {
+    shortcut->setEnabled(!showsWeb);
+  }
+
+  if (showsWeb) {
+    browserPage_->activate();
+  } else {
+    showPlaylistKind(mode == DisplayMode::Live ? 1 : 0);
+  }
 }
 
 void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
@@ -1604,6 +1739,11 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
     }
   }
   isLivePlaylistActive_ = showsLivePlaylist;
+  if (displayMode_ != DisplayMode::Web) {
+    displayMode_ = showsLivePlaylist ? DisplayMode::Live : DisplayMode::Local;
+    localModeButton_->setChecked(!showsLivePlaylist);
+    liveModeButton_->setChecked(showsLivePlaylist);
+  }
   const QSignalBlocker blocker(playlistKindTabs_);
   playlistKindTabs_->setCurrentIndex(showsLivePlaylist ? 1 : 0);
   QAbstractItemModel* const model =
@@ -1650,6 +1790,9 @@ void MainWindow::applyLivePlaylistFilter() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* const event) {
+  if (browserPage_ != nullptr) {
+    browserPage_->shutdown();
+  }
   emit closing();
   QMainWindow::closeEvent(event);
 }
@@ -1718,6 +1861,11 @@ bool MainWindow::eventFilter(QObject* const watched, QEvent* const event) {
   }
   const auto* const watchedWidget = qobject_cast<QWidget*>(watched);
   if (watchedWidget == nullptr || watchedWidget->window() != this) {
+    return QMainWindow::eventFilter(watched, event);
+  }
+  if (displayMode_ == DisplayMode::Web && browserPage_ != nullptr &&
+      (watchedWidget == browserPage_ ||
+       browserPage_->isAncestorOf(watchedWidget))) {
     return QMainWindow::eventFilter(watched, event);
   }
 

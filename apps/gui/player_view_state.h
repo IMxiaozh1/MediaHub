@@ -6,6 +6,12 @@ namespace mediahub::gui {
 
 inline constexpr int kProgressMaximum = 1000;
 
+enum class DisplayMode {
+    Local,
+    Live,
+    Web,
+};
+
 // 主窗口渲染所需的完整快照；控件不自行推导任何播放规则。
 struct PlayerViewState {
   QString mediaName;

@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -34,9 +35,12 @@ class QTabBar;
 class QTimer;
 class QToolButton;
 class QVBoxLayout;
+class QShortcut;
 
 namespace mediahub::gui {
 
+class BrowserBackend;
+class BrowserPage;
 class VideoOutputWidget;
 class LyricsView;
 struct LyricsResult;
@@ -51,8 +55,12 @@ class MainWindow final : public QMainWindow {
   Q_OBJECT
 
  public:
-  // 调用线程：GUI 主线程。parent 按 Qt 对象树规则持有本窗口。
-  explicit MainWindow(QWidget* parent = nullptr);
+  // 调用线程：GUI 主线程。browserBackend 为空时显示 Runtime 缺失提示。
+  explicit MainWindow(BrowserBackend* browserBackend = nullptr,
+                      QString browserProfileDirectory = {},
+                      QWidget* parent = nullptr);
+  // 调用线程：GUI 主线程。先销毁网页页，确保后端覆盖其关闭过程。
+  ~MainWindow() override;
 
   // 调用线程：GUI 主线程。所有控件启用状态均直接使用 presenter 的快照。
   void applyViewState(const PlayerViewState& viewState);
@@ -87,6 +95,8 @@ class MainWindow final : public QMainWindow {
   [[nodiscard]] void* prepareVideoSurface();
   // 调用线程：GUI 主线程。旧 vout 完全退出后回收对应子窗口。
   void releaseVideoSurface(void* nativeHandle);
+  // 调用线程：GUI 主线程。切换页面栈但不自动恢复任何媒体播放。
+  void showDisplayMode(DisplayMode mode);
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
@@ -124,6 +134,7 @@ class MainWindow final : public QMainWindow {
   void playlistItemRenameRequested(int row, const QString& displayName);
   void playbackModeRequested(int modeIndex);
   void videoSurfaceReady(void* nativeHandle);
+  void displayModeSelected(DisplayMode mode);
   void closing();
 
  protected:
@@ -192,6 +203,9 @@ class MainWindow final : public QMainWindow {
   QToolButton* playbackModeButton_{nullptr};
   QToolButton* playlistToggleButton_{nullptr};
   QToolButton* livePlaylistHistoryButton_{nullptr};
+  QToolButton* localModeButton_{nullptr};
+  QToolButton* liveModeButton_{nullptr};
+  QToolButton* webModeButton_{nullptr};
   QTabBar* playlistKindTabs_{nullptr};
   QLineEdit* livePlaylistUrlEdit_{nullptr};
   QLineEdit* livePlaylistSearchEdit_{nullptr};
@@ -205,11 +219,15 @@ class MainWindow final : public QMainWindow {
   QFrame* headerPanel_{nullptr};
   QFrame* mediaCard_{nullptr};
   QFrame* transportPanel_{nullptr};
+  QFrame* displayModePanel_{nullptr};
   QWidget* centralSurface_{nullptr};
+  QWidget* nativePlaybackPage_{nullptr};
   QWidget* mediaDisplay_{nullptr};
   VideoOutputWidget* videoOutput_{nullptr};
   LyricsView* lyricsView_{nullptr};
   QStackedLayout* mediaDisplayStack_{nullptr};
+  QStackedLayout* displayModeStack_{nullptr};
+  BrowserPage* browserPage_{nullptr};
   QLabel* mediaNameLabel_{nullptr};
   QLabel* statusLabel_{nullptr};
   QLabel* errorLabel_{nullptr};
@@ -223,6 +241,7 @@ class MainWindow final : public QMainWindow {
   QLabel* modeBadgeLabel_{nullptr};
   QVBoxLayout* rootLayout_{nullptr};
   QTimer* rightKeyHoldTimer_{nullptr};
+  QList<QShortcut*> nativePlaybackShortcuts_;
   QList<QWidget*> fullScreenChrome_;
   QList<int> playlistContextRows_;
   QStringList recentNetworkUrls_;
@@ -233,6 +252,7 @@ class MainWindow final : public QMainWindow {
   QAbstractItemModel* livePlaylistModel_{nullptr};
   int keyboardSeekStepSeconds_{5};
   std::optional<UiPresentationMode> presentationMode_;
+  DisplayMode displayMode_{DisplayMode::Local};
   int currentPlaylistIndex_{-1};
   int currentLivePlaybackIndex_{-1};
   bool isPlaylistExpanded_{true};
@@ -245,6 +265,8 @@ class MainWindow final : public QMainWindow {
   bool isCurrentPlaybackInActivePlaylist_{false};
   bool isRightKeyPressed_{false};
   bool isRightKeyHoldActive_{false};
+  std::unique_ptr<BrowserBackend> ownedBrowserBackend_;
+  BrowserBackend* browserBackend_{nullptr};
 };
 
 }  // namespace mediahub::gui

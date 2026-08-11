@@ -55,6 +55,7 @@
 
 #include "engine_event_bridge.h"
 #include "app_state_store.h"
+#include "fakes/fake_browser_backend.h"
 #include "fakes/fake_player_engine.h"
 #include "lyrics_service.h"
 #include "lyrics_view.h"
@@ -150,7 +151,8 @@ struct GuiHarness {
   logging::Logger logger{logOutput};
   test::FakePlayerEngine engine;
   EngineEventBridge eventBridge;
-  MainWindow window;
+  test::FakeBrowserBackend browserBackend;
+  MainWindow window{&browserBackend, QStringLiteral("C:/temporary-profile")};
   FakeLyricsService lyricsService;
   FakeLivePlaylistService livePlaylistService;
   PlayerPresenter presenter;
@@ -250,6 +252,8 @@ private slots:
   void expandsLocalIptvPlaylistAndFallsBackForLocalHlsManifest();
   void reparsesLegacyLocalPlaylistItemsOnActivation();
   void separatesLocalAndLiveListsWithoutStoppingPlayback();
+  void switchesToWebWithoutChangingPlaylistsAndPausesNativePlayback();
+  void pausesOnlyActiveNativePlaybackWhenEnteringWeb();
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
@@ -336,6 +340,79 @@ void MainWindowTest::initTestCase() {
   QVERIFY(settingsDirectory_.isValid());
   QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                      settingsDirectory_.path());
+}
+
+void MainWindowTest::switchesToWebWithoutChangingPlaylistsAndPausesNativePlayback() {
+  GuiHarness harness;
+  harness.presenter.addLocalFiles(
+      {QStringLiteral("C:/media/first.wav"), QStringLiteral("C:/media/second.wav")});
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  harness.window.show();
+  QCoreApplication::processEvents();
+  auto* const playlist = requiredChild<QListView>(harness.window, "playlistView");
+  const int originalRows = playlist->model()->rowCount();
+  const int originalPlayCommands =
+      commandCount(harness, test::FakeEngineCommandKind::Play);
+
+  QTest::mouseClick(requiredChild<QToolButton>(harness.window, "webModeButton"),
+                    Qt::LeftButton);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause), 1);
+  QCOMPARE(playlist->model()->rowCount(), originalRows);
+  QVERIFY(requiredChild<QWidget>(harness.window, "browserPage")->isVisible());
+
+  QTest::mouseClick(requiredChild<QToolButton>(harness.window, "localModeButton"),
+                    Qt::LeftButton);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
+           originalPlayCommands);
+  QCOMPARE(playlist->model()->rowCount(), originalRows);
+  QVERIFY(harness.browserBackend.hasFlagCommand(
+      test::FakeBrowserCommandKind::SetAudioMuted, true));
+  QVERIFY(harness.browserBackend.hasFlagCommand(
+      test::FakeBrowserCommandKind::SetSuspended, true));
+  QVERIFY(harness.browserBackend.hasFlagCommand(
+      test::FakeBrowserCommandKind::SetVisible, false));
+}
+
+void MainWindowTest::pausesOnlyActiveNativePlaybackWhenEnteringWeb() {
+  const auto verifyPauseCount = [](const core::PlaybackState targetState,
+                                   const int expectedPauseCount) {
+    GuiHarness harness;
+    harness.presenter.openLocalFile(QStringLiteral("C:/media/state.wav"));
+    harness.engine.emitStateChanged(core::PlaybackState::Opening);
+    if (targetState == core::PlaybackState::Buffering ||
+        targetState == core::PlaybackState::Playing ||
+        targetState == core::PlaybackState::Paused) {
+      harness.engine.emitStateChanged(core::PlaybackState::Buffering);
+    }
+    if (targetState == core::PlaybackState::Playing ||
+        targetState == core::PlaybackState::Paused) {
+      harness.engine.emitStateChanged(core::PlaybackState::Playing);
+    }
+    if (targetState == core::PlaybackState::Paused) {
+      harness.engine.emitStateChanged(core::PlaybackState::Paused);
+    }
+
+    harness.window.show();
+    QCoreApplication::processEvents();
+    QTest::mouseClick(
+        requiredChild<QToolButton>(harness.window, "webModeButton"),
+        Qt::LeftButton);
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause),
+             expectedPauseCount);
+    QTest::mouseClick(
+        requiredChild<QToolButton>(harness.window, "webModeButton"),
+        Qt::LeftButton);
+    QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause),
+             expectedPauseCount);
+  };
+
+  verifyPauseCount(core::PlaybackState::Opening, 1);
+  verifyPauseCount(core::PlaybackState::Buffering, 1);
+  verifyPauseCount(core::PlaybackState::Playing, 1);
+  verifyPauseCount(core::PlaybackState::Paused, 0);
 }
 
 void MainWindowTest::loadsReplaceableWindowIconsFromFixedSlots() {

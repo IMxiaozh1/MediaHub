@@ -93,6 +93,7 @@ class PlayerPresenter final : public QObject {
   void movePlaylistItem(int row, int targetRow);
   void renamePlaylistItem(int row, const QString& displayName);
   void changePlaybackMode(int modeIndex);
+  void changeDisplayMode(DisplayMode mode);
   void changePlaylistKind(int kindIndex);
   void requestLivePlaylistLoad(const QString& playlistUrl);
   void cancelLivePlaylistLoad();
@@ -170,6 +171,7 @@ class PlayerPresenter final : public QObject {
   std::optional<PlaylistKind> currentPlaybackKind_;
   core::OpenRequestId pendingOpenRequestId_{0};
   PlaylistKind activePlaylistKind_{PlaylistKind::Local};
+  DisplayMode displayMode_{DisplayMode::Local};
   core::PlaybackPosition position_;
   std::optional<std::chrono::milliseconds> seekPreviewPosition_;
   std::optional<std::chrono::milliseconds> pendingRestartPosition_;

@@ -178,6 +178,16 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         return count(kind) > 0;
     }
 
+    [[nodiscard]] bool hasFlagCommand(FakeBrowserCommandKind kind,
+                                      bool flag) const {
+        for (const FakeBrowserCommand& command : commands) {
+            if (command.kind == kind && command.flag == flag) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] const FakeBrowserCommand& lastCommand() const {
         return commands.back();
     }

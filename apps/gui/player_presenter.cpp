@@ -394,6 +394,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
           &PlayerPresenter::clearRecentLocalMedia);
   connect(&window_, &MainWindow::playlistKindSelected, this,
           &PlayerPresenter::changePlaylistKind);
+  connect(&window_, &MainWindow::displayModeSelected, this,
+          &PlayerPresenter::changeDisplayMode);
   connect(&window_, &MainWindow::playRequested, this,
           &PlayerPresenter::requestPlay);
   connect(&window_, &MainWindow::pauseRequested, this,
@@ -796,6 +798,38 @@ void PlayerPresenter::changePlaylistKind(const int kindIndex) {
   activePlaylistKind_ =
       kindIndex == 1 ? PlaylistKind::Live : PlaylistKind::Local;
   render();
+}
+
+void PlayerPresenter::changeDisplayMode(const DisplayMode mode) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (isShuttingDown_) {
+    return;
+  }
+
+  if (displayMode_ == mode) {
+    if (mode == DisplayMode::Local &&
+        activePlaylistKind_ != PlaylistKind::Local) {
+      changePlaylistKind(0);
+    } else if (mode == DisplayMode::Live &&
+               activePlaylistKind_ != PlaylistKind::Live) {
+      changePlaylistKind(1);
+    }
+    return;
+  }
+
+  if (mode == DisplayMode::Web) {
+    const core::PlaybackState state = stateMachine_.state();
+    if (state == core::PlaybackState::Opening ||
+        state == core::PlaybackState::Buffering ||
+        state == core::PlaybackState::Playing) {
+      engine_.pause();
+    }
+  } else {
+    changePlaylistKind(mode == DisplayMode::Live ? 1 : 0);
+  }
+
+  displayMode_ = mode;
+  window_.showDisplayMode(mode);
 }
 
 void PlayerPresenter::openCurrentPlaylistItem(const PlaylistKind playlistKind,
