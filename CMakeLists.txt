@@ -230,13 +230,36 @@ if(NOT MEDIAHUB_CORE_ONLY)
     endif()
     mediahub_enable_warnings(mediahub_gui_support)
 
+    add_library(mediahub_browser_webview2 STATIC
+        include/mediahub/browser_webview2/webview2_browser_backend.h
+        src/browser_webview2/webview2_browser_backend.cpp
+        src/browser_webview2/webview2_handles.h
+    )
+    target_include_directories(mediahub_browser_webview2
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    target_link_libraries(mediahub_browser_webview2
+        PRIVATE
+            mediahub_gui_support
+            mediahub_logging
+            MediaHub::WebView2
+            ole32
+            oleaut32
+    )
+    mediahub_enable_warnings(mediahub_browser_webview2)
+
     set(MEDIAHUB_GUI_SOURCES apps/gui/main.cpp)
     if(WIN32)
         list(APPEND MEDIAHUB_GUI_SOURCES apps/gui/resources/mediahub.rc)
     endif()
     add_executable(mediahub_gui WIN32 ${MEDIAHUB_GUI_SOURCES})
     set_target_properties(mediahub_gui PROPERTIES OUTPUT_NAME MediaHub)
-    target_link_libraries(mediahub_gui PRIVATE mediahub_engine_vlc mediahub_gui_support)
+    target_link_libraries(mediahub_gui
+        PRIVATE
+            mediahub_browser_webview2
+            mediahub_engine_vlc
+            mediahub_gui_support
+    )
     mediahub_enable_warnings(mediahub_gui)
     mediahub_deploy_qt(mediahub_gui)
     mediahub_deploy_vlc(mediahub_gui)

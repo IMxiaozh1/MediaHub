@@ -1,5 +1,7 @@
 #include <QApplication>
+#include <QDir>
 #include <QMessageBox>
+#include <QStandardPaths>
 #include <QTimer>
 #include <cstdlib>
 #include <exception>
@@ -8,6 +10,7 @@
 #include "app_state_store.h"
 #include "engine_event_bridge.h"
 #include "main_window.h"
+#include "mediahub/browser_webview2/webview2_browser_backend.h"
 #include "mediahub/engine_vlc/vlc_player_engine.h"
 #include "player_presenter.h"
 #include "shutdown_watchdog.h"
@@ -25,8 +28,14 @@ int main(int argc, char* argv[]) {
     {
       mediahub::engine_vlc::VlcPlayerEngine engine;
       logger.log(mediahub::logging::LogLevel::Info, "engine", "initialized");
+      mediahub::browser_webview2::WebView2BrowserBackend browserBackend(&logger);
+      const QString browserProfileDirectory =
+          QDir(QStandardPaths::writableLocation(
+                   QStandardPaths::AppLocalDataLocation))
+              .filePath(QStringLiteral("WebView2/Profile-v1"));
       mediahub::gui::EngineEventBridge eventBridge;
-      mediahub::gui::MainWindow mainWindow;
+      mediahub::gui::MainWindow mainWindow(&browserBackend,
+                                           browserProfileDirectory);
       mediahub::gui::QSettingsAppStateStore appStateStore;
       QObject::connect(&mainWindow, &mediahub::gui::MainWindow::closing,
                        &mainWindow,

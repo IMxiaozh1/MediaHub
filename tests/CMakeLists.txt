@@ -112,4 +112,16 @@ if(NOT MEDIAHUB_CORE_ONLY)
     mediahub_deploy_qt(mediahub_live_playlist_tests)
     add_test(NAME gui.live_playlist_service COMMAND mediahub_live_playlist_tests)
     set_tests_properties(gui.live_playlist_service PROPERTIES TIMEOUT 5)
+
+    add_executable(mediahub_webview2_tests
+        integration/webview2_browser_test.cpp
+    )
+    set_target_properties(mediahub_webview2_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_webview2_tests
+        PRIVATE mediahub_browser_webview2 mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_webview2_tests)
+    mediahub_deploy_qt(mediahub_webview2_tests)
+    add_test(NAME integration.webview2.initialization COMMAND mediahub_webview2_tests)
+    set_tests_properties(integration.webview2.initialization PROPERTIES TIMEOUT 15)
 endif()
