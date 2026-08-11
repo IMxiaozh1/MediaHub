@@ -88,6 +88,9 @@ if(NOT MEDIAHUB_CORE_ONLY)
         gui/browser_page_test.cpp
     )
     set_target_properties(mediahub_browser_gui_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(mediahub_browser_gui_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
     target_link_libraries(mediahub_browser_gui_tests
         PRIVATE mediahub_gui_support Qt5::Test
     )

@@ -179,6 +179,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/browser_event_listener.h
         apps/gui/browser_navigation_policy.cpp
         apps/gui/browser_navigation_policy.h
+        apps/gui/browser_page.cpp
+        apps/gui/browser_page.h
         apps/gui/browser_types.h
         apps/gui/engine_event_bridge.cpp
         apps/gui/engine_event_bridge.h

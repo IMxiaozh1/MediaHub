@@ -150,10 +150,36 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
 
     void emitNavigationCompleted(std::uint64_t generation,
                                  const QString& visibleUrl,
-                                 const QString& title = {}) {
+                                 const QString& title = {}, bool canGoBack = false,
+                                 bool canGoForward = false) {
         if (listener_ != nullptr) {
-            listener_->onNavigationCompleted(generation, visibleUrl, title, false, false);
+            listener_->onNavigationCompleted(generation, visibleUrl, title, canGoBack,
+                                             canGoForward);
         }
+    }
+
+    void emitError(std::uint64_t generation, gui::BrowserErrorKind kind, long errorCode) {
+        if (listener_ != nullptr) {
+            listener_->onBrowserError(generation, kind, errorCode);
+        }
+    }
+
+    [[nodiscard]] int count(FakeBrowserCommandKind kind) const {
+        int result = 0;
+        for (const FakeBrowserCommand& command : commands) {
+            if (command.kind == kind) {
+                ++result;
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] bool hasCommand(FakeBrowserCommandKind kind) const {
+        return count(kind) > 0;
+    }
+
+    [[nodiscard]] const FakeBrowserCommand& lastCommand() const {
+        return commands.back();
     }
 
     std::vector<FakeBrowserCommand> commands;
