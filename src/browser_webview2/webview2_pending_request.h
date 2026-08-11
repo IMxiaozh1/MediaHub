@@ -261,6 +261,57 @@ HRESULT startDownloadTransaction(Active& active, Register&& registerActive,
     return decisionResult;
 }
 
+enum class PendingDownloadCancelAction {
+    AwaitTerminal,
+    ReportCancelled,
+    ReportCancelFailed,
+};
+
+struct PendingDownloadCancelOutcome final {
+    PendingDownloadCancelAction action{
+        PendingDownloadCancelAction::ReportCancelFailed};
+    HRESULT result{E_FAIL};
+};
+
+// 待选路径取消先尝试接入终态订阅；无法观察终态时只在取消失败后保留重试对象。
+template <typename Active, typename Register, typename Store, typename Complete,
+          typename Retain>
+PendingDownloadCancelOutcome cancelPendingDownloadTransaction(
+    Active& active, Register&& registerActive, Store&& storeActive,
+    Complete&& completePending, Retain&& retainForRetry) {
+    const HRESULT registrationResult = registerActive(active);
+    HRESULT setupResult = registrationResult;
+    Active* storedActive = nullptr;
+    if (SUCCEEDED(registrationResult)) {
+        storedActive = storeActive(std::move(active));
+        if (storedActive == nullptr) {
+            setupResult = E_UNEXPECTED;
+            active.resetSubscriptions();
+        }
+    } else {
+        active.resetSubscriptions();
+    }
+
+    Active& cancellationState =
+        storedActive != nullptr ? *storedActive : active;
+    cancellationState.isCancelRequested = true;
+    const HRESULT cancellationResult = completePending();
+    const HRESULT result = firstFailure(setupResult, cancellationResult);
+    if (SUCCEEDED(cancellationResult)) {
+        return {storedActive != nullptr
+                    ? PendingDownloadCancelAction::AwaitTerminal
+                    : PendingDownloadCancelAction::ReportCancelled,
+                result};
+    }
+
+    cancellationState.isCancelRequested = false;
+    if (storedActive == nullptr && !retainForRetry(std::move(active))) {
+        return {PendingDownloadCancelAction::ReportCancelFailed,
+                firstFailure(result, E_UNEXPECTED)};
+    }
+    return {PendingDownloadCancelAction::ReportCancelFailed, result};
+}
+
 // 活动下载的取消失败会恢复可重试状态，并同步通知稳定失败事件。
 template <typename Active, typename Cancel, typename NotifyFailure>
 HRESULT requestActiveDownloadCancellation(Active& active, Cancel&& cancel,

@@ -35,7 +35,7 @@ class BrowserPageTest final : public QObject {
     void validatesDownloadDestinationAndTracksOneTask();
     void rejectsReservedDownloadNamesWithMultipleSuffixes();
     void downloadTerminalStatesIgnoreStaleRequests();
-    void cancelKeepsDownloadActiveUntilBackendTerminalState();
+    void pendingDownloadCancelWaitsForBackendTerminalState();
     void cancelFailureAllowsRetryWithoutEndingDownload();
     void navigationRejectsUnansweredSensitiveRequests();
     void navigationKeepsStartedDownload();
@@ -520,7 +520,7 @@ void BrowserPageTest::downloadTerminalStatesIgnoreStaleRequests() {
     QVERIFY(download->stateText().contains(QStringLiteral("取消")));
 }
 
-void BrowserPageTest::cancelKeepsDownloadActiveUntilBackendTerminalState() {
+void BrowserPageTest::pendingDownloadCancelWaitsForBackendTerminalState() {
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
     auto* download = page.findChild<BrowserDownloadWidget*>(
@@ -529,6 +529,7 @@ void BrowserPageTest::cancelKeepsDownloadActiveUntilBackendTerminalState() {
 
     backend.emitDownloadRequested(90, QStringLiteral("https://files.example"),
                                   QStringLiteral("active.bin"), 300);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ChooseDownloadPath), 0);
     QTest::mouseClick(download->findChild<QPushButton*>(
                           QStringLiteral("browserDownloadCancelButton")),
                       Qt::LeftButton);

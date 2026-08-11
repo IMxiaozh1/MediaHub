@@ -110,12 +110,16 @@ class FakeHandledArgs final {
 class FakeDeferral final {
  public:
     HRESULT Complete() noexcept {
+        if (order != nullptr) {
+            order->push_back(QStringLiteral("deferral"));
+        }
         ++calls;
         return result;
     }
 
     int calls{0};
     HRESULT result{S_OK};
+    std::vector<QString>* order{nullptr};
 };
 
 class FakeCertificatePreparationArgs final {
@@ -195,6 +199,9 @@ class FakeDownloadDecisionArgs final {
     }
 
     HRESULT put_Cancel(const BOOL value) noexcept {
+        if (order != nullptr) {
+            order->push_back(QStringLiteral("args"));
+        }
         ++cancelCalls;
         cancel = value;
         return cancelResult;
@@ -206,17 +213,22 @@ class FakeDownloadDecisionArgs final {
     BOOL cancel{TRUE};
     HRESULT pathResult{S_OK};
     HRESULT cancelResult{S_OK};
+    std::vector<QString>* order{nullptr};
 };
 
 class FakeDownloadOperation final {
  public:
     HRESULT Cancel() noexcept {
+        if (order != nullptr) {
+            order->push_back(QStringLiteral("operation"));
+        }
         ++cancelCalls;
         return result;
     }
 
     int cancelCalls{0};
     HRESULT result{S_OK};
+    std::vector<QString>* order{nullptr};
 };
 
 class FakeDownloadPreparationArgs final {
@@ -268,6 +280,7 @@ class FakeActiveDownload final {
 
     int resetCalls{0};
     bool hasSubscription{false};
+    bool isCancelRequested{false};
 };
 
 class FakeCancelableDownload final {
@@ -467,6 +480,9 @@ class WebView2BrowserTest final : public QObject {
     void securityPromptPreparationCompletesAfterSetterFailure();
     void downloadDecisionRejectsUnsafeDestination();
     void downloadStartFailuresCompleteAndCleanSubscriptions();
+    void pendingDownloadCancellationAwaitsObservedTerminal();
+    void pendingDownloadCancellationFailureRemainsRetryable();
+    void pendingDownloadCancellationFallsBackWithoutSubscriptions();
     void downloadCancellationFailureAllowsRetryAndShutdownRepeats();
     void downloadTerminalSnapshotSurvivesProgressReadFailures();
     void rejectsEmptyAndRelativeProfilePaths();
@@ -1038,6 +1054,246 @@ void WebView2BrowserTest::downloadStartFailuresCompleteAndCleanSubscriptions() {
     const auto destinationRace =
         runFailure(S_OK, true, QStringLiteral("relative-after-dialog.bin"));
     verifyFailure(destinationRace, E_INVALIDARG, true);
+}
+
+void WebView2BrowserTest::pendingDownloadCancellationAwaitsObservedTerminal() {
+    std::vector<QString> order;
+    FakeDownloadDecisionArgs args;
+    FakeDownloadOperation operation;
+    FakeDeferral deferral;
+    args.order = &order;
+    operation.order = &order;
+    deferral.order = &order;
+    FakeActiveDownload candidate;
+    std::optional<FakeActiveDownload> stored;
+    int retainCalls = 0;
+
+    const PendingDownloadCancelOutcome outcome = cancelPendingDownloadTransaction(
+        candidate,
+        [&](FakeActiveDownload& active) {
+            order.push_back(QStringLiteral("register"));
+            active.hasSubscription = true;
+            return S_OK;
+        },
+        [&](FakeActiveDownload&& active) -> FakeActiveDownload* {
+            order.push_back(QStringLiteral("store"));
+            stored.emplace(std::move(active));
+            return &stored.value();
+        },
+        [&] {
+            return completeDownloadCancellation(&args, &operation, &deferral);
+        },
+        [&](FakeActiveDownload&&) {
+            ++retainCalls;
+            return true;
+        });
+
+    QCOMPARE(outcome.action, PendingDownloadCancelAction::AwaitTerminal);
+    QCOMPARE(outcome.result, S_OK);
+    QVERIFY(stored.has_value());
+    QVERIFY(stored->hasSubscription);
+    QVERIFY(stored->isCancelRequested);
+    QCOMPARE(retainCalls, 0);
+    QCOMPARE(args.cancelCalls, 1);
+    QCOMPARE(operation.cancelCalls, 1);
+    QCOMPARE(deferral.calls, 1);
+    QCOMPARE(order.size(), std::size_t{5});
+    QCOMPARE(order[0], QStringLiteral("register"));
+    QCOMPARE(order[1], QStringLiteral("store"));
+    QCOMPARE(order[2], QStringLiteral("args"));
+    QCOMPARE(order[3], QStringLiteral("operation"));
+    QCOMPARE(order[4], QStringLiteral("deferral"));
+
+    FakeDownloadSnapshotOperation terminalOperation;
+    terminalOperation.state = COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED;
+    terminalOperation.interruptReason =
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED;
+    const DownloadSnapshot terminal = readDownloadSnapshot(
+        &terminalOperation, 100, stored->isCancelRequested);
+    QCOMPARE(terminal.state, gui::BrowserDownloadState::Cancelled);
+    QVERIFY(terminal.isTerminal);
+}
+
+void WebView2BrowserTest::pendingDownloadCancellationFailureRemainsRetryable() {
+    const auto verifyFailure = [](const HRESULT argsResult,
+                                  const HRESULT operationResult,
+                                  const HRESULT deferralResult) {
+        FakeDownloadDecisionArgs args;
+        FakeDownloadOperation operation;
+        FakeDeferral deferral;
+        args.cancelResult = argsResult;
+        operation.result = operationResult;
+        deferral.result = deferralResult;
+        FakeActiveDownload candidate;
+        std::optional<FakeActiveDownload> stored;
+        int retainCalls = 0;
+
+        const PendingDownloadCancelOutcome outcome =
+            cancelPendingDownloadTransaction(
+                candidate,
+                [](FakeActiveDownload& active) {
+                    active.hasSubscription = true;
+                    return S_OK;
+                },
+                [&](FakeActiveDownload&& active) -> FakeActiveDownload* {
+                    stored.emplace(std::move(active));
+                    return &stored.value();
+                },
+                [&] {
+                    return completeDownloadCancellation(
+                        &args, &operation, &deferral);
+                },
+                [&](FakeActiveDownload&&) {
+                    ++retainCalls;
+                    return true;
+                });
+
+        QCOMPARE(outcome.action,
+                 PendingDownloadCancelAction::ReportCancelFailed);
+        QVERIFY(FAILED(outcome.result));
+        QVERIFY(stored.has_value());
+        QVERIFY(!stored->isCancelRequested);
+        QCOMPARE(retainCalls, 0);
+        QCOMPARE(args.cancelCalls, 1);
+        QCOMPARE(operation.cancelCalls, 1);
+        QCOMPARE(deferral.calls, 1);
+
+        operation.result = S_OK;
+        int retryFailures = 0;
+        QCOMPARE(requestActiveDownloadCancellation(
+                     stored.value(), [&] { return operation.Cancel(); },
+                     [&] { ++retryFailures; }),
+                 S_OK);
+        QCOMPARE(args.cancelCalls, 1);
+        QCOMPARE(operation.cancelCalls, 2);
+        QCOMPARE(deferral.calls, 1);
+        QCOMPARE(retryFailures, 0);
+        QCOMPARE(cancelActiveDownloadForShutdown(
+                     stored.value(), [&] { return operation.Cancel(); }),
+                 S_OK);
+        QCOMPARE(operation.cancelCalls, 3);
+    };
+
+    verifyFailure(E_FAIL, S_OK, S_OK);
+    verifyFailure(S_OK, E_ABORT, S_OK);
+    verifyFailure(S_OK, S_OK, E_UNEXPECTED);
+}
+
+void WebView2BrowserTest::pendingDownloadCancellationFallsBackWithoutSubscriptions() {
+    struct Probe final {
+        PendingDownloadCancelOutcome outcome;
+        int storeCalls{0};
+        int retainCalls{0};
+        int resetCalls{0};
+        int argsCalls{0};
+        int operationCalls{0};
+        int deferralCalls{0};
+        bool retainedIsRetryable{false};
+        bool retryAndShutdownSucceeded{false};
+    };
+    const auto run = [](const HRESULT registrationResult, const bool canStore,
+                        const HRESULT operationResult) {
+        FakeDownloadDecisionArgs args;
+        FakeDownloadOperation operation;
+        FakeDeferral deferral;
+        operation.result = operationResult;
+        FakeActiveDownload candidate;
+        std::optional<FakeActiveDownload> stored;
+        std::optional<FakeActiveDownload> retained;
+        int storeCalls = 0;
+        int retainCalls = 0;
+
+        const PendingDownloadCancelOutcome outcome =
+            cancelPendingDownloadTransaction(
+                candidate,
+                [registrationResult](FakeActiveDownload& active) {
+                    active.hasSubscription = true;
+                    return registrationResult;
+                },
+                [&](FakeActiveDownload&& active) -> FakeActiveDownload* {
+                    ++storeCalls;
+                    if (!canStore) {
+                        return nullptr;
+                    }
+                    stored.emplace(std::move(active));
+                    return &stored.value();
+                },
+                [&] {
+                    return completeDownloadCancellation(
+                        &args, &operation, &deferral);
+                },
+                [&](FakeActiveDownload&& active) {
+                    ++retainCalls;
+                    retained.emplace(std::move(active));
+                    return true;
+                });
+
+        const bool retainedIsRetryable =
+            retained.has_value() && !retained->hasSubscription &&
+            !retained->isCancelRequested;
+        bool retryAndShutdownSucceeded = false;
+        if (retained.has_value()) {
+            operation.result = S_OK;
+            int failureNotifications = 0;
+            const HRESULT retryResult = requestActiveDownloadCancellation(
+                retained.value(), [&] { return operation.Cancel(); },
+                [&] { ++failureNotifications; });
+            const HRESULT shutdownResult = cancelActiveDownloadForShutdown(
+                retained.value(), [&] { return operation.Cancel(); });
+            retryAndShutdownSucceeded = retryResult == S_OK &&
+                                        shutdownResult == S_OK &&
+                                        failureNotifications == 0;
+        }
+        const FakeActiveDownload& finalCandidate =
+            retained.has_value() ? retained.value() : candidate;
+        return Probe{outcome,
+                     storeCalls,
+                     retainCalls,
+                     finalCandidate.resetCalls,
+                     args.cancelCalls,
+                     operation.cancelCalls,
+                     deferral.calls,
+                     retainedIsRetryable,
+                     retryAndShutdownSucceeded};
+    };
+
+    const Probe registrationCancelled = run(E_FAIL, true, S_OK);
+    QCOMPARE(registrationCancelled.outcome.action,
+             PendingDownloadCancelAction::ReportCancelled);
+    QCOMPARE(registrationCancelled.storeCalls, 0);
+    QCOMPARE(registrationCancelled.retainCalls, 0);
+    QCOMPARE(registrationCancelled.resetCalls, 1);
+
+    const Probe registrationFailed = run(E_FAIL, true, E_ABORT);
+    QCOMPARE(registrationFailed.outcome.action,
+             PendingDownloadCancelAction::ReportCancelFailed);
+    QCOMPARE(registrationFailed.storeCalls, 0);
+    QCOMPARE(registrationFailed.retainCalls, 1);
+    QVERIFY(registrationFailed.retainedIsRetryable);
+    QVERIFY(registrationFailed.retryAndShutdownSucceeded);
+
+    const Probe storageCancelled = run(S_OK, false, S_OK);
+    QCOMPARE(storageCancelled.outcome.action,
+             PendingDownloadCancelAction::ReportCancelled);
+    QCOMPARE(storageCancelled.storeCalls, 1);
+    QCOMPARE(storageCancelled.retainCalls, 0);
+    QCOMPARE(storageCancelled.resetCalls, 1);
+
+    const Probe storageFailed = run(S_OK, false, E_ABORT);
+    QCOMPARE(storageFailed.outcome.action,
+             PendingDownloadCancelAction::ReportCancelFailed);
+    QCOMPARE(storageFailed.storeCalls, 1);
+    QCOMPARE(storageFailed.retainCalls, 1);
+    QVERIFY(storageFailed.retainedIsRetryable);
+    QVERIFY(storageFailed.retryAndShutdownSucceeded);
+
+    for (const Probe* const probe : {&registrationCancelled, &registrationFailed,
+                                     &storageCancelled, &storageFailed}) {
+        QCOMPARE(probe->argsCalls, 1);
+        QCOMPARE(probe->operationCalls,
+                 probe->retainCalls == 0 ? 1 : 3);
+        QCOMPARE(probe->deferralCalls, 1);
+    }
 }
 
 void WebView2BrowserTest::downloadCancellationFailureAllowsRetryAndShutdownRepeats() {

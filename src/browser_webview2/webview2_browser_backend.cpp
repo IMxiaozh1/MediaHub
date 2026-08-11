@@ -643,17 +643,94 @@ class WebView2BrowserBackend::Impl final {
         logOperationFailure("download_start_failed", result);
     }
 
-    // 调用线程：GUI 主线程。待选择路径和已开始下载分别只取消一次。
+    // 调用线程：GUI 主线程。待选路径先接入终态订阅，失败后只重试 operation。
     void cancelDownload(const std::uint64_t requestId) noexcept {
         std::optional<PendingDownload> pending = pendingDownloads_.take(requestId);
         if (pending.has_value()) {
-            logOperationFailure(
-                "download_cancel_failed",
-                completeDownloadCancellation(pending->args.Get(),
-                                             pending->operation.Get(),
-                                             pending->deferral.Get()));
+            const std::uint64_t generation = pending->generation;
+            const std::int64_t totalBytes = pending->totalBytes;
+            ActiveDownload candidate;
+            candidate.operation = pending->operation;
+            candidate.totalBytes = totalBytes;
+            candidate.lifecycleSerial = pending->lifecycleSerial;
+            const PendingDownloadCancelOutcome outcome =
+                cancelPendingDownloadTransaction(
+                    candidate,
+                    [this, requestId](ActiveDownload& active) {
+                        return registerActiveDownload(requestId, active);
+                    },
+                    [this, requestId](ActiveDownload&& active)
+                        -> ActiveDownload* {
+                        auto [stored, didInsert] = activeDownloads_.try_emplace(
+                            requestId, std::move(active));
+                        return didInsert ? &stored->second : nullptr;
+                    },
+                    [&pending] {
+                        return completeDownloadCancellation(
+                            pending->args.Get(), pending->operation.Get(),
+                            pending->deferral.Get());
+                    },
+                    [this, requestId](ActiveDownload&& active) {
+                        return retryDownloads_
+                            .try_emplace(requestId, std::move(active))
+                            .second;
+                    });
+            logOperationFailure("download_cancel_transaction_failed",
+                                outcome.result);
+            if (outcome.action ==
+                PendingDownloadCancelAction::ReportCancelled) {
+                dispatchListener(
+                    generation,
+                    [requestId, totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onDownloadUpdated(
+                            requestId, gui::BrowserDownloadState::Cancelled,
+                            -1, totalBytes);
+                    });
+            } else if (outcome.action ==
+                       PendingDownloadCancelAction::ReportCancelFailed) {
+                dispatchListener(
+                    generation,
+                    [requestId, totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onDownloadUpdated(
+                            requestId, gui::BrowserDownloadState::CancelFailed,
+                            -1, totalBytes);
+                    });
+            }
             return;
         }
+        const auto retryFound = retryDownloads_.find(requestId);
+        if (retryFound != retryDownloads_.end()) {
+            ActiveDownload& active = retryFound->second;
+            const std::uint64_t generation = generation_;
+            const HRESULT result = requestActiveDownloadCancellation(
+                active, [&active] { return active.operation->Cancel(); },
+                [this, generation, requestId, totalBytes = active.totalBytes] {
+                    dispatchListener(
+                        generation,
+                        [requestId, totalBytes](
+                            gui::BrowserEventListener& listener) {
+                            listener.onDownloadUpdated(
+                                requestId,
+                                gui::BrowserDownloadState::CancelFailed, -1,
+                                totalBytes);
+                        });
+                });
+            logOperationFailure("download_cancel_failed", result);
+            if (SUCCEEDED(result)) {
+                const std::int64_t totalBytes = active.totalBytes;
+                dispatchListener(
+                    generation,
+                    [requestId, totalBytes](
+                        gui::BrowserEventListener& listener) {
+                        listener.onDownloadUpdated(
+                            requestId, gui::BrowserDownloadState::Cancelled,
+                            -1, totalBytes);
+                    });
+                retryDownloads_.erase(retryFound);
+            }
+            return;
+        }
+
         const auto found = activeDownloads_.find(requestId);
         if (found == activeDownloads_.end()) {
             return;
@@ -955,6 +1032,14 @@ class WebView2BrowserBackend::Impl final {
                     active, [&active] { return active.operation->Cancel(); }));
         }
         activeDownloads_.clear();
+        for (auto& [requestId, active] : retryDownloads_) {
+            static_cast<void>(requestId);
+            logOperationFailure(
+                "download_shutdown_cancel_failed",
+                cancelActiveDownloadForShutdown(
+                    active, [&active] { return active.operation->Cancel(); }));
+        }
+        retryDownloads_.clear();
     }
 
     // 调用线程：WebView2 Environment 完成回调所在的 GUI STA，禁止操作 Qt 控件。
@@ -2019,6 +2104,7 @@ class WebView2BrowserBackend::Impl final {
     PendingRequestStore<PendingCertificate> pendingCertificates_;
     PendingRequestStore<PendingDownload> pendingDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> activeDownloads_;
+    std::unordered_map<std::uint64_t, ActiveDownload> retryDownloads_;
     std::shared_ptr<int> lifetime_;
     std::uint64_t nextSensitiveRequestId_{1};
     std::uint64_t lifecycleSerial_{0};
