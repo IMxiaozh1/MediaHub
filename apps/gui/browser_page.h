@@ -62,6 +62,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
                                const QString& origin,
                                BrowserPermissionKind kind) override;
     void onExternalProtocolRequested(std::uint64_t requestId,
+                                     const QString& origin,
                                      const QString& target) override;
     void onCertificateErrorRequested(std::uint64_t requestId,
                                      const QString& origin,

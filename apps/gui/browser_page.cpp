@@ -235,8 +235,10 @@ void BrowserPage::onPermissionRequested(const std::uint64_t requestId,
 }
 
 void BrowserPage::onExternalProtocolRequested(std::uint64_t requestId,
+                                              const QString& origin,
                                               const QString& target) {
-    if (isShuttingDown_ || !isAcceptableExternalTarget(target)) {
+    if (isShuttingDown_ || normalizedWebOrigin(origin) != origin ||
+        !isAcceptableExternalTarget(target)) {
         backend_.answerExternalProtocol(requestId, false);
         return;
     }
@@ -252,10 +254,20 @@ void BrowserPage::onExternalProtocolRequested(std::uint64_t requestId,
     externalProtocolDialog_->setModal(false);
     auto* layout = new QVBoxLayout(externalProtocolDialog_);
     auto* explanation = new QLabel(
-        QStringLiteral("网页请求把以下目标交给其他应用。只有确认后才会继续。"),
+        QStringLiteral("确认后将由 Windows 默认应用处理。MediaHub 不识别或选择具体应用。"),
         externalProtocolDialog_);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
+    layout->addWidget(new QLabel(QStringLiteral("请求来源"),
+                                 externalProtocolDialog_));
+    auto* originLabel = new QLabel(origin, externalProtocolDialog_);
+    originLabel->setObjectName(
+        QStringLiteral("browserExternalProtocolOriginLabel"));
+    originLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    originLabel->setWordWrap(true);
+    layout->addWidget(originLabel);
+    layout->addWidget(new QLabel(QStringLiteral("目标协议/目标"),
+                                 externalProtocolDialog_));
     auto* targetLabel = new QLabel(target, externalProtocolDialog_);
     targetLabel->setObjectName(
         QStringLiteral("browserExternalProtocolTargetLabel"));
@@ -394,6 +406,9 @@ void BrowserPage::onDownloadUpdated(const std::uint64_t requestId,
         return;
     }
     downloadWidget_->updateDownload(requestId, state, receivedBytes, totalBytes);
+    if (state == BrowserDownloadState::CancelFailed) {
+        isDownloadCancellationSent_ = false;
+    }
 }
 
 void BrowserPage::onBrowsingDataCleared(std::uint64_t generation) {

@@ -34,8 +34,9 @@ class BrowserEventListener {
     virtual void onPermissionRequested(std::uint64_t requestId,
                                        const QString& origin,
                                        BrowserPermissionKind kind) = 0;
-    // 调用线程：GUI 主线程。目标只在确认界面中展示，不进入日志。
+    // 调用线程：GUI 主线程。来源和目标只在确认界面中展示，不进入日志。
     virtual void onExternalProtocolRequested(std::uint64_t requestId,
+                                             const QString& origin,
                                              const QString& target) = 0;
     // 调用线程：GUI 主线程。证书例外只允许当前会话和对应来源。
     virtual void onCertificateErrorRequested(std::uint64_t requestId,

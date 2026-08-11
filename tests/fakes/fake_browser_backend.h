@@ -172,9 +172,10 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
     }
 
     void emitExternalProtocolRequested(std::uint64_t requestId,
+                                       const QString& origin,
                                        const QString& target) {
         if (listener_ != nullptr) {
-            listener_->onExternalProtocolRequested(requestId, target);
+            listener_->onExternalProtocolRequested(requestId, origin, target);
         }
     }
 
@@ -202,6 +203,12 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
                              std::int64_t totalBytes) {
         if (listener_ != nullptr) {
             listener_->onDownloadUpdated(requestId, state, receivedBytes, totalBytes);
+        }
+    }
+
+    void emitBrowsingDataCleared(std::uint64_t generation) {
+        if (listener_ != nullptr) {
+            listener_->onBrowsingDataCleared(generation);
         }
     }
 

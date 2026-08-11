@@ -107,7 +107,14 @@ void BrowserDownloadWidget::updateDownload(const std::uint64_t requestId,
 
     switch (state) {
     case BrowserDownloadState::InProgress:
-        stateLabel_->setText(QStringLiteral("下载中"));
+        if (!isCancelSent_) {
+            stateLabel_->setText(QStringLiteral("下载中"));
+        }
+        break;
+    case BrowserDownloadState::CancelFailed:
+        stateLabel_->setText(QStringLiteral("取消失败，可重试"));
+        isCancelSent_ = false;
+        cancelButton_->setEnabled(true);
         break;
     case BrowserDownloadState::Completed:
         stateLabel_->setText(QStringLiteral("下载完成"));
@@ -202,8 +209,7 @@ void BrowserDownloadWidget::requestCancel() {
         return;
     }
     isCancelSent_ = true;
-    isTerminal_ = true;
-    stateLabel_->setText(QStringLiteral("下载已取消"));
+    stateLabel_->setText(QStringLiteral("正在取消下载..."));
     chooseButton_->setEnabled(false);
     cancelButton_->setEnabled(false);
     emit cancelRequested(requestId_);
@@ -223,7 +229,7 @@ bool BrowserDownloadWidget::isAcceptableFileName(const QString& fileName) {
     if (fileName.contains(invalidCharacters)) {
         return false;
     }
-    const QString stem = QFileInfo(fileName).completeBaseName().toUpper();
+    const QString stem = fileName.section(QLatin1Char('.'), 0, 0).toUpper();
     static const QRegularExpression reservedName(
         QStringLiteral(R"(^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$)"));
     return !reservedName.match(stem).hasMatch();

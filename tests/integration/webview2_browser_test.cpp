@@ -118,6 +118,52 @@ class FakeDeferral final {
     HRESULT result{S_OK};
 };
 
+class FakeCertificatePreparationArgs final {
+ public:
+    HRESULT put_Action(
+        const COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION value) noexcept {
+        ++actionCalls;
+        action = value;
+        return actionResult;
+    }
+
+    HRESULT GetDeferral(FakeDeferral** const value) noexcept {
+        ++deferralCalls;
+        *value = deferral;
+        return deferralResult;
+    }
+
+    int actionCalls{0};
+    int deferralCalls{0};
+    COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION action{
+        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_DEFAULT};
+    HRESULT actionResult{S_OK};
+    HRESULT deferralResult{S_OK};
+    FakeDeferral* deferral{nullptr};
+};
+
+class FakeExternalPreparationArgs final {
+ public:
+    HRESULT put_Cancel(const BOOL value) noexcept {
+        ++cancelCalls;
+        cancel = value;
+        return cancelResult;
+    }
+
+    HRESULT GetDeferral(FakeDeferral** const value) noexcept {
+        ++deferralCalls;
+        *value = deferral;
+        return deferralResult;
+    }
+
+    int cancelCalls{0};
+    int deferralCalls{0};
+    BOOL cancel{FALSE};
+    HRESULT cancelResult{S_OK};
+    HRESULT deferralResult{S_OK};
+    FakeDeferral* deferral{nullptr};
+};
+
 class FakePermissionDecisionArgs final {
  public:
     HRESULT put_SavesInProfile(const BOOL value) noexcept {
@@ -173,6 +219,46 @@ class FakeDownloadOperation final {
     HRESULT result{S_OK};
 };
 
+class FakeDownloadPreparationArgs final {
+ public:
+    HRESULT put_Cancel(const BOOL value) noexcept {
+        ++cancelCalls;
+        cancel = value;
+        return cancelResult;
+    }
+
+    HRESULT put_Handled(const BOOL value) noexcept {
+        ++handledCalls;
+        handled = value;
+        return handledResult;
+    }
+
+    HRESULT get_DownloadOperation(FakeDownloadOperation** const value) noexcept {
+        ++operationCalls;
+        *value = operation;
+        return operationResult;
+    }
+
+    HRESULT GetDeferral(FakeDeferral** const value) noexcept {
+        ++deferralCalls;
+        *value = deferral;
+        return deferralResult;
+    }
+
+    int cancelCalls{0};
+    int handledCalls{0};
+    int operationCalls{0};
+    int deferralCalls{0};
+    BOOL cancel{FALSE};
+    BOOL handled{FALSE};
+    HRESULT cancelResult{S_OK};
+    HRESULT handledResult{S_OK};
+    HRESULT operationResult{S_OK};
+    HRESULT deferralResult{S_OK};
+    FakeDownloadOperation* operation{nullptr};
+    FakeDeferral* deferral{nullptr};
+};
+
 class FakeActiveDownload final {
  public:
     void resetSubscriptions() noexcept {
@@ -182,6 +268,50 @@ class FakeActiveDownload final {
 
     int resetCalls{0};
     bool hasSubscription{false};
+};
+
+class FakeCancelableDownload final {
+ public:
+    bool isCancelRequested{false};
+};
+
+class FakeDownloadSnapshotOperation final {
+ public:
+    HRESULT get_State(COREWEBVIEW2_DOWNLOAD_STATE* const value) {
+        calls.push_back(QStringLiteral("state"));
+        *value = state;
+        return stateResult;
+    }
+
+    HRESULT get_BytesReceived(INT64* const value) {
+        calls.push_back(QStringLiteral("bytes"));
+        *value = receivedBytes;
+        return bytesResult;
+    }
+
+    HRESULT get_TotalBytesToReceive(INT64* const value) {
+        calls.push_back(QStringLiteral("total"));
+        *value = totalBytes;
+        return totalResult;
+    }
+
+    HRESULT get_InterruptReason(
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON* const value) {
+        calls.push_back(QStringLiteral("reason"));
+        *value = interruptReason;
+        return reasonResult;
+    }
+
+    std::vector<QString> calls;
+    COREWEBVIEW2_DOWNLOAD_STATE state{COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS};
+    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON interruptReason{
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE};
+    INT64 receivedBytes{0};
+    INT64 totalBytes{-1};
+    HRESULT stateResult{S_OK};
+    HRESULT bytesResult{S_OK};
+    HRESULT totalResult{S_OK};
+    HRESULT reasonResult{S_OK};
 };
 
 // 调用线程：GUI 主线程，在有界事件循环中等待明确谓词。
@@ -266,7 +396,8 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
         recordCallbackThread();
     }
 
-    void onExternalProtocolRequested(std::uint64_t, const QString&) override {
+    void onExternalProtocolRequested(std::uint64_t, const QString&,
+                                     const QString&) override {
         recordCallbackThread();
     }
 
@@ -327,12 +458,17 @@ class WebView2BrowserTest final : public QObject {
     void navigationBindsExplicitGenerationsInOrder();
     void navigationStopsBeforeStartingAndIgnoresOldCompletion();
     void navigationUsesCurrentGenerationForHistory();
+    void clearDataWaitsForMatchingInternalBlankNavigation();
     void defaultDenyPoliciesApplyExactArguments();
     void pendingSensitiveDecisionsCompleteExactlyOnce();
     void permissionRejectionCompletesWithoutArgs3();
     void screenCaptureDecisionsAllowOnlyOnce();
+    void downloadPreparationAttemptsEverySafetyAction();
+    void securityPromptPreparationCompletesAfterSetterFailure();
     void downloadDecisionRejectsUnsafeDestination();
     void downloadStartFailuresCompleteAndCleanSubscriptions();
+    void downloadCancellationFailureAllowsRetryAndShutdownRepeats();
+    void downloadTerminalSnapshotSurvivesProgressReadFailures();
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
     void requiresEverySensitiveHandlerBeforeReady();
@@ -467,6 +603,42 @@ void WebView2BrowserTest::navigationUsesCurrentGenerationForHistory() {
     QVERIFY(tracker.complete(402).shouldReport);
 
     QVERIFY(!tracker.complete(401).shouldReport);
+}
+
+void WebView2BrowserTest::clearDataWaitsForMatchingInternalBlankNavigation() {
+    ClearDataNavigationCoordinator coordinator;
+    coordinator.begin(40);
+    QVERIFY(coordinator.dataAndCertificatesCleared(40));
+    QVERIFY(!coordinator.ownsNavigation(700));
+    QCOMPARE(coordinator.complete(700, true).outcome,
+             ClearDataNavigationOutcome::None);
+
+    QVERIFY(!coordinator.start(701, false));
+    QVERIFY(coordinator.start(702, true));
+    QVERIFY(coordinator.ownsNavigation(702));
+    QCOMPARE(coordinator.complete(701, true).outcome,
+             ClearDataNavigationOutcome::None);
+    const ClearDataNavigationCompletion success =
+        coordinator.complete(702, true);
+    QCOMPARE(success.outcome, ClearDataNavigationOutcome::Succeeded);
+    QCOMPARE(success.generation, std::uint64_t{40});
+    QCOMPARE(coordinator.complete(702, true).outcome,
+             ClearDataNavigationOutcome::None);
+
+    coordinator.begin(41);
+    QVERIFY(coordinator.dataAndCertificatesCleared(41));
+    QVERIFY(coordinator.start(703, true));
+    const ClearDataNavigationCompletion failed =
+        coordinator.complete(703, false);
+    QCOMPARE(failed.outcome, ClearDataNavigationOutcome::Failed);
+    QCOMPARE(failed.generation, std::uint64_t{41});
+
+    coordinator.begin(42);
+    QVERIFY(coordinator.dataAndCertificatesCleared(42));
+    const ClearDataNavigationCompletion requestFailed =
+        coordinator.blankRequestFailed(42);
+    QCOMPARE(requestFailed.outcome, ClearDataNavigationOutcome::Failed);
+    QCOMPARE(requestFailed.generation, std::uint64_t{42});
 }
 
 void WebView2BrowserTest::defaultDenyPoliciesApplyExactArguments() {
@@ -657,6 +829,98 @@ void WebView2BrowserTest::screenCaptureDecisionsAllowOnlyOnce() {
     QCOMPARE(rememberRejectedDeferral.calls, 1);
 }
 
+void WebView2BrowserTest::downloadPreparationAttemptsEverySafetyAction() {
+    const auto verifyFailure = [](const HRESULT cancelResult,
+                                  const HRESULT handledResult,
+                                  const HRESULT operationResult,
+                                  const HRESULT deferralResult) {
+        FakeDownloadOperation operation;
+        FakeDeferral deferral;
+        FakeDownloadPreparationArgs args;
+        args.cancelResult = cancelResult;
+        args.handledResult = handledResult;
+        args.operationResult = operationResult;
+        args.deferralResult = deferralResult;
+        args.operation = &operation;
+        args.deferral = &deferral;
+        FakeDownloadOperation* preparedOperation = nullptr;
+        FakeDeferral* preparedDeferral = nullptr;
+
+        const HRESULT preparationResult = prepareDownloadRequest(
+            &args, &preparedOperation, &preparedDeferral);
+        const HRESULT result = firstFailure(
+            preparationResult,
+            completeDownloadCancellation(&args, preparedOperation,
+                                         preparedDeferral));
+
+        QVERIFY(FAILED(result));
+        QCOMPARE(args.cancelCalls, 2);
+        QCOMPARE(args.cancel, TRUE);
+        QCOMPARE(args.handledCalls, 1);
+        QCOMPARE(args.handled, TRUE);
+        QCOMPARE(args.operationCalls, 1);
+        QCOMPARE(args.deferralCalls, 1);
+        QCOMPARE(operation.cancelCalls, 1);
+        QCOMPARE(deferral.calls, 1);
+    };
+
+    verifyFailure(E_FAIL, S_OK, S_OK, S_OK);
+    verifyFailure(S_OK, E_FAIL, S_OK, S_OK);
+    verifyFailure(S_OK, S_OK, E_FAIL, S_OK);
+    verifyFailure(S_OK, S_OK, S_OK, E_FAIL);
+    verifyFailure(E_ACCESSDENIED, E_FAIL, E_UNEXPECTED, E_ABORT);
+}
+
+void WebView2BrowserTest::securityPromptPreparationCompletesAfterSetterFailure() {
+    const auto verifyCertificate = [](const HRESULT actionResult,
+                                      const HRESULT deferralResult,
+                                      const HRESULT expectedResult) {
+        FakeDeferral deferral;
+        FakeCertificatePreparationArgs args;
+        args.actionResult = actionResult;
+        args.deferralResult = deferralResult;
+        args.deferral = &deferral;
+        FakeDeferral* preparedDeferral = nullptr;
+        const HRESULT preparationResult = prepareCertificateRequest(
+            &args, &preparedDeferral);
+        const HRESULT result = firstFailure(
+            preparationResult,
+            completeCertificateDecision(
+                &args, preparedDeferral,
+                gui::BrowserCertificateDecision::ReturnToSafety));
+        QCOMPARE(result, expectedResult);
+        QCOMPARE(args.actionCalls, 2);
+        QCOMPARE(args.deferralCalls, 1);
+        QCOMPARE(deferral.calls, 1);
+    };
+    verifyCertificate(E_ACCESSDENIED, S_OK, E_ACCESSDENIED);
+    verifyCertificate(S_OK, E_ABORT, E_ABORT);
+    verifyCertificate(E_ACCESSDENIED, E_ABORT, E_ACCESSDENIED);
+
+    const auto verifyExternal = [](const HRESULT cancelResult,
+                                   const HRESULT deferralResult,
+                                   const HRESULT expectedResult) {
+        FakeDeferral deferral;
+        FakeExternalPreparationArgs args;
+        args.cancelResult = cancelResult;
+        args.deferralResult = deferralResult;
+        args.deferral = &deferral;
+        FakeDeferral* preparedDeferral = nullptr;
+        const HRESULT preparationResult = prepareExternalProtocolRequest(
+            &args, &preparedDeferral);
+        const HRESULT result = firstFailure(
+            preparationResult,
+            completeExternalProtocolDecision(&args, preparedDeferral, false));
+        QCOMPARE(result, expectedResult);
+        QCOMPARE(args.cancelCalls, 2);
+        QCOMPARE(args.deferralCalls, 1);
+        QCOMPARE(deferral.calls, 1);
+    };
+    verifyExternal(E_FAIL, S_OK, E_FAIL);
+    verifyExternal(S_OK, E_ABORT, E_ABORT);
+    verifyExternal(E_FAIL, E_ABORT, E_FAIL);
+}
+
 void WebView2BrowserTest::downloadDecisionRejectsUnsafeDestination() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -671,6 +935,10 @@ void WebView2BrowserTest::downloadDecisionRejectsUnsafeDestination() {
     QVERIFY(!isSafeDownloadDestination(existingPath));
     QVERIFY(!isSafeDownloadDestination(
         directory.filePath(QStringLiteral("missing/file.bin"))));
+    QVERIFY(!isSafeDownloadDestination(
+        directory.filePath(QStringLiteral("CON.foo.bar"))));
+    QVERIFY(!isSafeDownloadDestination(
+        directory.filePath(QStringLiteral("NUL.anything"))));
 
     const QString newPath = directory.filePath(QStringLiteral("new.bin"));
     QVERIFY(isSafeDownloadDestination(newPath));
@@ -772,6 +1040,71 @@ void WebView2BrowserTest::downloadStartFailuresCompleteAndCleanSubscriptions() {
     verifyFailure(destinationRace, E_INVALIDARG, true);
 }
 
+void WebView2BrowserTest::downloadCancellationFailureAllowsRetryAndShutdownRepeats() {
+    FakeCancelableDownload active;
+    int cancelCalls = 0;
+    int failureNotifications = 0;
+    HRESULT cancelResult = E_FAIL;
+    const auto cancel = [&] {
+        ++cancelCalls;
+        return cancelResult;
+    };
+    const auto notifyFailure = [&] { ++failureNotifications; };
+
+    QCOMPARE(requestActiveDownloadCancellation(active, cancel, notifyFailure), E_FAIL);
+    QCOMPARE(cancelCalls, 1);
+    QCOMPARE(failureNotifications, 1);
+    QVERIFY(!active.isCancelRequested);
+
+    cancelResult = S_OK;
+    QCOMPARE(requestActiveDownloadCancellation(active, cancel, notifyFailure), S_OK);
+    QCOMPARE(cancelCalls, 2);
+    QCOMPARE(failureNotifications, 1);
+    QVERIFY(active.isCancelRequested);
+    QCOMPARE(requestActiveDownloadCancellation(active, cancel, notifyFailure), S_FALSE);
+    QCOMPARE(cancelCalls, 2);
+
+    QCOMPARE(cancelActiveDownloadForShutdown(active, cancel), S_OK);
+    QCOMPARE(cancelCalls, 3);
+    QVERIFY(active.isCancelRequested);
+}
+
+void WebView2BrowserTest::downloadTerminalSnapshotSurvivesProgressReadFailures() {
+    FakeDownloadSnapshotOperation completedOperation;
+    completedOperation.state = COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
+    completedOperation.bytesResult = E_FAIL;
+    completedOperation.totalBytes = 1000;
+    const DownloadSnapshot completed = readDownloadSnapshot(
+        &completedOperation, 900, false);
+    QVERIFY(completed.hasState);
+    QVERIFY(completed.isTerminal);
+    QCOMPARE(completed.state, gui::BrowserDownloadState::Completed);
+    QCOMPARE(completed.receivedBytes, std::int64_t{-1});
+    QCOMPARE(completed.totalBytes, std::int64_t{1000});
+    QCOMPARE(completedOperation.calls.front(), QStringLiteral("state"));
+
+    FakeDownloadSnapshotOperation interruptedOperation;
+    interruptedOperation.state = COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED;
+    interruptedOperation.receivedBytes = 25;
+    interruptedOperation.totalResult = E_FAIL;
+    interruptedOperation.interruptReason =
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED;
+    const DownloadSnapshot interrupted = readDownloadSnapshot(
+        &interruptedOperation, 800, false);
+    QVERIFY(interrupted.hasState);
+    QVERIFY(interrupted.isTerminal);
+    QCOMPARE(interrupted.state, gui::BrowserDownloadState::Cancelled);
+    QCOMPARE(interrupted.receivedBytes, std::int64_t{25});
+    QCOMPARE(interrupted.totalBytes, std::int64_t{800});
+    QCOMPARE(interruptedOperation.calls.front(), QStringLiteral("state"));
+
+    std::unordered_map<std::uint64_t, int> active{{7, 70}};
+    QVERIFY(!eraseTerminalDownloadIfCurrent(active, 7, 11, 12, true));
+    QCOMPARE(active.size(), std::size_t{1});
+    active.clear();
+    QVERIFY(!eraseTerminalDownloadIfCurrent(active, 7, 11, 11, false));
+}
+
 void WebView2BrowserTest::rejectsEmptyAndRelativeProfilePaths() {
     const QStringList invalidProfiles{QString{}, QStringLiteral("relative-profile")};
     for (const QString& profile : invalidProfiles) {
@@ -856,21 +1189,22 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
         {handlerSegment(QStringLiteral("HRESULT registerDownloadStarting()"),
                         QStringLiteral(
                             "HRESULT registerServerCertificateErrorDetected()")),
-         {QStringLiteral("put_Handled(TRUE)"), QStringLiteral("GetDeferral"),
-          QStringLiteral("cancelDownload(args)"),
+         {QStringLiteral("prepareDownloadRequest"),
+          QStringLiteral("completeDownloadCancellation"),
           QStringLiteral("pendingDownloads_.insert"),
           QStringLiteral("onDownloadRequested")}},
         {handlerSegment(
              QStringLiteral("HRESULT registerServerCertificateErrorDetected()"),
              QStringLiteral("HRESULT registerLaunchingExternalUriScheme()")),
-         {QStringLiteral("GetDeferral"),
-          QStringLiteral("cancelCertificateError(args)"),
+         {QStringLiteral("prepareCertificateRequest"),
+          QStringLiteral("completeCertificateDecision"),
           QStringLiteral("pendingCertificates_.insert"),
           QStringLiteral("onCertificateErrorRequested")}},
         {handlerSegment(QStringLiteral("HRESULT registerLaunchingExternalUriScheme()"),
                         QStringLiteral("HRESULT registerNewWindowRequested()")),
-         {QStringLiteral("get_IsUserInitiated"), QStringLiteral("GetDeferral"),
-          QStringLiteral("cancelExternalUri(args)"),
+         {QStringLiteral("get_IsUserInitiated"),
+          QStringLiteral("prepareExternalProtocolRequest"),
+          QStringLiteral("completeExternalProtocolDecision"),
           QStringLiteral("pendingExternalProtocols_.insert"),
           QStringLiteral("onExternalProtocolRequested")}},
         {handlerSegment(QStringLiteral("HRESULT registerNewWindowRequested()"),

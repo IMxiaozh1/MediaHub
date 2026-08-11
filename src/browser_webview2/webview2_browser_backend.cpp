@@ -308,6 +308,7 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。
     void navigate(const QString& normalizedUrl, const std::uint64_t generation) {
+        clearDataNavigation_.reset();
         generation_ = generation;
         navigation_.setCurrentGeneration(generation);
         if (!isReady_ || webView_ == nullptr) {
@@ -455,8 +456,10 @@ class WebView2BrowserBackend::Impl final {
     // 调用线程：GUI 主线程。清除回调只投递稳定成功或错误事件。
     void clearBrowsingData(const std::uint64_t generation) {
         generation_ = generation;
-        navigation_.setCurrentGeneration(generation);
+        navigation_.reset(generation);
+        clearDataNavigation_.begin(generation);
         if (webView_ == nullptr) {
+            clearDataNavigation_.reset();
             reportError(generation, gui::BrowserErrorKind::ClearDataFailed,
                         E_UNEXPECTED, "clear_data_before_ready");
             return;
@@ -477,6 +480,7 @@ class WebView2BrowserBackend::Impl final {
             result = webView_.As(&webView14);
         }
         if (FAILED(result)) {
+            clearDataNavigation_.reset();
             reportError(generation, gui::BrowserErrorKind::ClearDataFailed, result,
                         "clear_data_interface_unavailable");
             return;
@@ -494,6 +498,7 @@ class WebView2BrowserBackend::Impl final {
                         return S_OK;
                     }
                     if (FAILED(status)) {
+                        clearDataNavigation_.reset();
                         reportError(generation, gui::BrowserErrorKind::ClearDataFailed,
                                     status, "clear_data_failed");
                     } else {
@@ -510,24 +515,38 @@ class WebView2BrowserBackend::Impl final {
                                             return S_OK;
                                         }
                                         if (FAILED(certificateStatus)) {
+                                            clearDataNavigation_.reset();
                                             reportError(
                                                 generation,
                                                 gui::BrowserErrorKind::ClearDataFailed,
                                                 certificateStatus,
                                                 "clear_certificate_actions_failed");
                                         } else {
-                                            dispatchListener(
-                                                generation,
-                                                [generation](
-                                                    gui::BrowserEventListener& listener) {
-                                                    listener.onBrowsingDataCleared(
-                                                        generation);
-                                                });
+                                            if (!clearDataNavigation_
+                                                     .dataAndCertificatesCleared(
+                                                         generation)) {
+                                                return S_OK;
+                                            }
+                                            const HRESULT blankResult =
+                                                webView_->Navigate(L"about:blank");
+                                            if (FAILED(blankResult)) {
+                                                static_cast<void>(
+                                                    clearDataNavigation_
+                                                        .blankRequestFailed(
+                                                            generation));
+                                                reportError(
+                                                    generation,
+                                                    gui::BrowserErrorKind::
+                                                        ClearDataFailed,
+                                                    blankResult,
+                                                    "clear_blank_navigation_request_failed");
+                                            }
                                         }
                                         return S_OK;
                                     })
                                     .Get());
                         if (FAILED(clearCertificateResult)) {
+                            clearDataNavigation_.reset();
                             reportError(
                                 generation, gui::BrowserErrorKind::ClearDataFailed,
                                 clearCertificateResult,
@@ -538,6 +557,7 @@ class WebView2BrowserBackend::Impl final {
                 })
                 .Get());
         if (FAILED(result)) {
+            clearDataNavigation_.reset();
             reportError(generation, gui::BrowserErrorKind::ClearDataFailed, result,
                         "clear_data_request_failed");
         }
@@ -635,11 +655,23 @@ class WebView2BrowserBackend::Impl final {
             return;
         }
         const auto found = activeDownloads_.find(requestId);
-        if (found == activeDownloads_.end() || found->second.isCancelRequested) {
+        if (found == activeDownloads_.end()) {
             return;
         }
-        found->second.isCancelRequested = true;
-        logOperationFailure("download_cancel_failed", found->second.operation->Cancel());
+        ActiveDownload& active = found->second;
+        const std::uint64_t generation = generation_;
+        const HRESULT result = requestActiveDownloadCancellation(
+            active, [&active] { return active.operation->Cancel(); },
+            [this, generation, requestId, totalBytes = active.totalBytes] {
+                dispatchListener(
+                    generation,
+                    [requestId, totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onDownloadUpdated(
+                            requestId, gui::BrowserDownloadState::CancelFailed,
+                            -1, totalBytes);
+                    });
+            });
+        logOperationFailure("download_cancel_failed", result);
     }
 
     // 调用线程：GUI 主线程。只有当前存活请求的显式允许会解除 Cancel。
@@ -847,49 +879,21 @@ class WebView2BrowserBackend::Impl final {
             return;
         }
         ActiveDownload& active = found->second;
-        INT64 receivedBytes = 0;
-        INT64 totalBytes = active.totalBytes;
-        COREWEBVIEW2_DOWNLOAD_STATE rawState =
-            COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
-        HRESULT result = active.operation->get_BytesReceived(&receivedBytes);
-        if (SUCCEEDED(result)) {
-            if (FAILED(active.operation->get_TotalBytesToReceive(&totalBytes))) {
-                totalBytes = active.totalBytes;
-            }
-            result = active.operation->get_State(&rawState);
-        }
-        if (FAILED(result)) {
-            logOperationFailure("download_state_read_failed", result);
+        const DownloadSnapshot snapshot = readDownloadSnapshot(
+            active.operation.Get(), active.totalBytes, active.isCancelRequested);
+        if (!snapshot.hasState) {
+            logOperationFailure("download_state_read_failed", snapshot.stateResult);
             return;
-        }
-
-        gui::BrowserDownloadState state = gui::BrowserDownloadState::InProgress;
-        bool isTerminal = false;
-        if (rawState == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED) {
-            state = gui::BrowserDownloadState::Completed;
-            isTerminal = true;
-        } else if (rawState == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED) {
-            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason =
-                COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
-            static_cast<void>(active.operation->get_InterruptReason(&reason));
-            state = active.isCancelRequested ||
-                            reason ==
-                                COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED ||
-                            reason ==
-                                COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN
-                        ? gui::BrowserDownloadState::Cancelled
-                        : gui::BrowserDownloadState::Failed;
-            isTerminal = true;
         }
         const std::uint64_t generation = generation_;
         dispatchListener(
             generation,
-            [requestId, state, receivedBytes,
-             totalBytes](gui::BrowserEventListener& listener) {
-                listener.onDownloadUpdated(requestId, state, receivedBytes,
-                                           totalBytes);
+            [requestId, snapshot](gui::BrowserEventListener& listener) {
+                listener.onDownloadUpdated(
+                    requestId, snapshot.state, snapshot.receivedBytes,
+                    snapshot.totalBytes);
             });
-        if (isTerminal) {
+        if (snapshot.isTerminal) {
             const std::weak_ptr<int> weakLifetime = lifetime_;
             const std::uint64_t lifecycleSerial = lifecycleSerial_;
             QMetaObject::invokeMethod(
@@ -898,9 +902,9 @@ class WebView2BrowserBackend::Impl final {
                     if (weakLifetime.expired()) {
                         return;
                     }
-                    if (lifecycleSerial == lifecycleSerial_) {
-                        activeDownloads_.erase(requestId);
-                    }
+                    static_cast<void>(eraseTerminalDownloadIfCurrent(
+                        activeDownloads_, requestId, lifecycleSerial,
+                        lifecycleSerial_, isShuttingDown_));
                 },
                 Qt::QueuedConnection);
         }
@@ -945,11 +949,10 @@ class WebView2BrowserBackend::Impl final {
         }
         for (auto& [requestId, active] : activeDownloads_) {
             static_cast<void>(requestId);
-            if (!active.isCancelRequested) {
-                active.isCancelRequested = true;
-                logOperationFailure("download_shutdown_cancel_failed",
-                                    active.operation->Cancel());
-            }
+            logOperationFailure(
+                "download_shutdown_cancel_failed",
+                cancelActiveDownloadForShutdown(
+                    active, [&active] { return active.operation->Cancel(); }));
         }
         activeDownloads_.clear();
     }
@@ -1291,34 +1294,45 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2DownloadStartingEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
-                        static_cast<void>(
-                            ::mediahub::browser_webview2::cancelDownload(args));
+                        ComPtr<ICoreWebView2DownloadOperation> operation;
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareDownloadRequest(
+                            args, operation.GetAddressOf(), deferral.GetAddressOf());
+                        static_cast<void>(firstFailure(
+                            status,
+                            completeDownloadCancellation(
+                                args, operation.Get(), deferral.Get())));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        ComPtr<ICoreWebView2DownloadOperation> operation;
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareDownloadRequest(
+                            args, operation.GetAddressOf(), deferral.GetAddressOf());
+                        logOperationFailure(
+                            "download_inactive_reject_failed",
+                            firstFailure(
+                                status,
+                                completeDownloadCancellation(
+                                    args, operation.Get(), deferral.Get())));
                         return S_OK;
                     }
                     if (args == nullptr) {
                         logOperationFailure("download_args_missing", E_POINTER);
                         return S_OK;
                     }
-                    HRESULT status = args->put_Handled(TRUE);
-                    if (SUCCEEDED(status)) {
-                        status = args->put_Cancel(TRUE);
-                    }
                     ComPtr<ICoreWebView2DownloadOperation> operation;
-                    if (SUCCEEDED(status)) {
-                        status = args->get_DownloadOperation(&operation);
-                    }
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    HRESULT status = prepareDownloadRequest(
+                        args, operation.GetAddressOf(), deferral.GetAddressOf());
                     LPWSTR rawSuggestedPath = nullptr;
                     LPWSTR rawUri = nullptr;
-                    if (SUCCEEDED(status)) {
-                        status = args->get_ResultFilePath(&rawSuggestedPath);
-                    }
-                    if (SUCCEEDED(status)) {
-                        status = operation->get_Uri(&rawUri);
-                    }
+                    status = firstFailure(
+                        status, args->get_ResultFilePath(&rawSuggestedPath));
+                    status = firstFailure(
+                        status, operation != nullptr ? operation->get_Uri(&rawUri)
+                                                     : E_POINTER);
                     CoTaskMemString suggestedPath(rawSuggestedPath);
                     CoTaskMemString uri(rawUri);
                     const QString suggestedFileName =
@@ -1328,21 +1342,17 @@ class WebView2BrowserBackend::Impl final {
                             : QString{};
                     const QString origin = normalizedOriginFromUri(uri.get());
                     INT64 rawTotalBytes = -1;
-                    if (SUCCEEDED(status) &&
+                    if (operation == nullptr ||
                         FAILED(operation->get_TotalBytesToReceive(&rawTotalBytes))) {
                         rawTotalBytes = -1;
-                    }
-                    ComPtr<ICoreWebView2Deferral> deferral;
-                    if (SUCCEEDED(status)) {
-                        status = args->GetDeferral(&deferral);
                     }
                     if (FAILED(status) || operation == nullptr || deferral == nullptr ||
                         suggestedFileName.isEmpty() || origin.isEmpty() ||
                         listener_ == nullptr) {
-                        if (operation != nullptr && deferral != nullptr) {
-                            status = completeDownloadCancellation(
-                                args, operation.Get(), deferral.Get());
-                        }
+                        status = firstFailure(
+                            status,
+                            completeDownloadCancellation(
+                                args, operation.Get(), deferral.Get()));
                         logOperationFailure("download_request_rejected",
                                             FAILED(status) ? status : E_INVALIDARG);
                         return S_OK;
@@ -1398,40 +1408,54 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2ServerCertificateErrorDetectedEventArgs* const args)
                     -> HRESULT {
                     if (weakLifetime.expired()) {
-                        static_cast<void>(cancelCertificateError(args));
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareCertificateRequest(
+                            args, deferral.GetAddressOf());
+                        static_cast<void>(firstFailure(
+                            status,
+                            completeCertificateDecision(
+                                args, deferral.Get(),
+                                gui::BrowserCertificateDecision::ReturnToSafety)));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareCertificateRequest(
+                            args, deferral.GetAddressOf());
+                        logOperationFailure(
+                            "certificate_inactive_reject_failed",
+                            firstFailure(
+                                status,
+                                completeCertificateDecision(
+                                    args, deferral.Get(),
+                                    gui::BrowserCertificateDecision::ReturnToSafety)));
                         return S_OK;
                     }
                     if (args == nullptr) {
                         logOperationFailure("certificate_args_missing", E_POINTER);
                         return S_OK;
                     }
-                    HRESULT status = args->put_Action(
-                        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    HRESULT status = prepareCertificateRequest(
+                        args, deferral.GetAddressOf());
                     COREWEBVIEW2_WEB_ERROR_STATUS errorStatus =
                         COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
                     LPWSTR rawRequestUri = nullptr;
-                    if (SUCCEEDED(status)) {
-                        status = args->get_ErrorStatus(&errorStatus);
-                    }
-                    if (SUCCEEDED(status)) {
-                        status = args->get_RequestUri(&rawRequestUri);
-                    }
+                    status = firstFailure(
+                        status, args->get_ErrorStatus(&errorStatus));
+                    status = firstFailure(
+                        status, args->get_RequestUri(&rawRequestUri));
                     CoTaskMemString requestUri(rawRequestUri);
                     const QString origin = normalizedOriginFromUri(requestUri.get());
-                    ComPtr<ICoreWebView2Deferral> deferral;
-                    if (SUCCEEDED(status)) {
-                        status = args->GetDeferral(&deferral);
-                    }
                     if (FAILED(status) || deferral == nullptr || origin.isEmpty() ||
                         listener_ == nullptr) {
                         if (deferral != nullptr) {
-                            status = completeCertificateDecision(
-                                args, deferral.Get(),
-                                gui::BrowserCertificateDecision::ReturnToSafety);
+                            status = firstFailure(
+                                status,
+                                completeCertificateDecision(
+                                    args, deferral.Get(),
+                                    gui::BrowserCertificateDecision::ReturnToSafety));
                         }
                         logOperationFailure("certificate_request_rejected",
                                             FAILED(status) ? status : E_INVALIDARG);
@@ -1490,46 +1514,58 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2LaunchingExternalUriSchemeEventArgs* const args)
                     -> HRESULT {
                     if (weakLifetime.expired()) {
-                        static_cast<void>(cancelExternalUri(args));
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareExternalProtocolRequest(
+                            args, deferral.GetAddressOf());
+                        static_cast<void>(firstFailure(
+                            status,
+                            completeExternalProtocolDecision(
+                                args, deferral.Get(), false)));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareExternalProtocolRequest(
+                            args, deferral.GetAddressOf());
+                        logOperationFailure(
+                            "external_uri_inactive_reject_failed",
+                            firstFailure(
+                                status,
+                                completeExternalProtocolDecision(
+                                    args, deferral.Get(), false)));
                         return S_OK;
                     }
                     if (args == nullptr) {
                         logOperationFailure("external_uri_args_missing", E_POINTER);
                         return S_OK;
                     }
-                    HRESULT status = args->put_Cancel(TRUE);
+                    ComPtr<ICoreWebView2Deferral> deferral;
+                    HRESULT status = prepareExternalProtocolRequest(
+                        args, deferral.GetAddressOf());
                     BOOL isUserInitiated = FALSE;
                     LPWSTR rawUri = nullptr;
                     LPWSTR rawInitiatingOrigin = nullptr;
-                    if (SUCCEEDED(status)) {
-                        status = args->get_IsUserInitiated(&isUserInitiated);
-                    }
-                    if (SUCCEEDED(status)) {
-                        status = args->get_Uri(&rawUri);
-                    }
-                    if (SUCCEEDED(status)) {
-                        status = args->get_InitiatingOrigin(&rawInitiatingOrigin);
-                    }
+                    status = firstFailure(
+                        status, args->get_IsUserInitiated(&isUserInitiated));
+                    status = firstFailure(status, args->get_Uri(&rawUri));
+                    status = firstFailure(
+                        status,
+                        args->get_InitiatingOrigin(&rawInitiatingOrigin));
                     CoTaskMemString uri(rawUri);
                     CoTaskMemString initiatingOrigin(rawInitiatingOrigin);
                     const QString target =
                         uri != nullptr ? QString::fromWCharArray(uri.get()) : QString{};
                     const QString origin =
                         normalizedOriginFromUri(initiatingOrigin.get());
-                    ComPtr<ICoreWebView2Deferral> deferral;
-                    if (SUCCEEDED(status)) {
-                        status = args->GetDeferral(&deferral);
-                    }
                     if (FAILED(status) || deferral == nullptr ||
                         isUserInitiated == FALSE || !isValidExternalTarget(target) ||
                         origin.isEmpty() || listener_ == nullptr) {
                         if (deferral != nullptr) {
-                            status = completeExternalProtocolDecision(
-                                args, deferral.Get(), false);
+                            status = firstFailure(
+                                status,
+                                completeExternalProtocolDecision(
+                                    args, deferral.Get(), false));
                         }
                         logOperationFailure("external_uri_request_rejected",
                                             FAILED(status) ? status : E_INVALIDARG);
@@ -1549,8 +1585,10 @@ class WebView2BrowserBackend::Impl final {
                     }
                     dispatchListener(
                         generation,
-                        [requestId, target](gui::BrowserEventListener& listener) {
-                            listener.onExternalProtocolRequested(requestId, target);
+                        [requestId, origin,
+                         target](gui::BrowserEventListener& listener) {
+                            listener.onExternalProtocolRequested(requestId, origin,
+                                                                 target);
                         });
                     scheduleExternalProtocolTimeout(requestId, lifecycleSerial);
                     return S_OK;
@@ -1617,6 +1655,28 @@ class WebView2BrowserBackend::Impl final {
                     const HRESULT status =
                         args != nullptr ? args->get_NavigationId(&navigationId) : E_POINTER;
                     if (SUCCEEDED(status)) {
+                        LPWSTR rawUri = nullptr;
+                        const HRESULT uriStatus = args->get_Uri(&rawUri);
+                        if (clearDataNavigation_.isBusy() && FAILED(uriStatus)) {
+                            clearDataNavigation_.reset();
+                            reportError(
+                                generation_, gui::BrowserErrorKind::ClearDataFailed,
+                                uriStatus, "clear_blank_navigation_uri_failed");
+                            return S_OK;
+                        }
+                        CoTaskMemString uri(rawUri);
+                        const bool isInternalBlank =
+                            SUCCEEDED(uriStatus) && uri != nullptr &&
+                            QString::fromWCharArray(uri.get()).compare(
+                                QStringLiteral("about:blank"),
+                                Qt::CaseInsensitive) == 0;
+                        if (clearDataNavigation_.start(navigationId,
+                                                       isInternalBlank)) {
+                            return S_OK;
+                        }
+                        if (clearDataNavigation_.isBusy()) {
+                            return S_OK;
+                        }
                         const NavigationStart start = navigation_.start(navigationId);
                         if (start.shouldReport) {
                             dispatchListener(
@@ -1627,7 +1687,14 @@ class WebView2BrowserBackend::Impl final {
                                 });
                         }
                     } else {
-                        logOperationFailure("navigation_id_failed", status);
+                        if (clearDataNavigation_.isBusy()) {
+                            clearDataNavigation_.reset();
+                            reportError(
+                                generation_, gui::BrowserErrorKind::ClearDataFailed,
+                                status, "clear_blank_navigation_id_failed");
+                        } else {
+                            logOperationFailure("navigation_id_failed", status);
+                        }
                     }
                     return S_OK;
                 })
@@ -1660,8 +1727,44 @@ class WebView2BrowserBackend::Impl final {
                     HRESULT result =
                         args != nullptr ? args->get_NavigationId(&navigationId) : E_POINTER;
                     if (FAILED(result)) {
-                        reportError(generation_, gui::BrowserErrorKind::NavigationFailed,
-                                    result, "navigation_id_failed");
+                        if (clearDataNavigation_.isBusy()) {
+                            clearDataNavigation_.reset();
+                            reportError(
+                                generation_, gui::BrowserErrorKind::ClearDataFailed,
+                                result, "clear_blank_navigation_id_failed");
+                        } else {
+                            reportError(
+                                generation_, gui::BrowserErrorKind::NavigationFailed,
+                                result, "navigation_id_failed");
+                        }
+                        return S_OK;
+                    }
+                    if (clearDataNavigation_.isBusy()) {
+                        if (!clearDataNavigation_.ownsNavigation(navigationId)) {
+                            return S_OK;
+                        }
+                        BOOL isSuccess = FALSE;
+                        const HRESULT status = args->get_IsSuccess(&isSuccess);
+                        const ClearDataNavigationCompletion completion =
+                            clearDataNavigation_.complete(
+                                navigationId,
+                                SUCCEEDED(status) && isSuccess != FALSE);
+                        if (completion.outcome ==
+                            ClearDataNavigationOutcome::Succeeded) {
+                            dispatchListener(
+                                completion.generation,
+                                [generation = completion.generation](
+                                    gui::BrowserEventListener& listener) {
+                                    listener.onBrowsingDataCleared(generation);
+                                });
+                        } else if (completion.outcome ==
+                                   ClearDataNavigationOutcome::Failed) {
+                            reportError(
+                                completion.generation,
+                                gui::BrowserErrorKind::ClearDataFailed,
+                                FAILED(status) ? status : E_FAIL,
+                                "clear_blank_navigation_failed");
+                        }
                         return S_OK;
                     }
                     const NavigationCompletion completion =
@@ -1712,7 +1815,7 @@ class WebView2BrowserBackend::Impl final {
             Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
                 [this, weakLifetime, lifecycleSerial](ICoreWebView2*, IUnknown*) -> HRESULT {
                     if (weakLifetime.expired() || isShuttingDown_ ||
-                        navigation_.isNavigating() ||
+                        navigation_.isNavigating() || clearDataNavigation_.isBusy() ||
                         lifecycleSerial != lifecycleSerial_) {
                         return S_OK;
                     }
@@ -1882,6 +1985,7 @@ class WebView2BrowserBackend::Impl final {
         environment_.Reset();
         suspension_.invalidate();
         navigation_.reset(generation_);
+        clearDataNavigation_.reset();
         parentWindow_ = nullptr;
     }
 
@@ -1920,6 +2024,7 @@ class WebView2BrowserBackend::Impl final {
     std::uint64_t lifecycleSerial_{0};
     std::uint64_t generation_{0};
     NavigationTracker navigation_;
+    ClearDataNavigationCoordinator clearDataNavigation_;
     QRect bounds_;
     bool ownsComApartmentReference_{false};
     bool isReady_{false};

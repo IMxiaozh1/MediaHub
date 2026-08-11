@@ -217,4 +217,91 @@ class NavigationTracker final {
     bool isNavigating_{false};
 };
 
+enum class ClearDataNavigationOutcome {
+    None,
+    Succeeded,
+    Failed,
+};
+
+struct ClearDataNavigationCompletion final {
+    ClearDataNavigationOutcome outcome{ClearDataNavigationOutcome::None};
+    std::uint64_t generation{0};
+};
+
+// 清除资料只有在内部空白页的匹配 navigationId 完成后才对外报告成功。
+class ClearDataNavigationCoordinator final {
+ public:
+    void begin(const std::uint64_t generation) noexcept {
+        generation_ = generation;
+        navigationId_.reset();
+        stage_ = Stage::ClearingData;
+    }
+
+    [[nodiscard]] bool dataAndCertificatesCleared(
+        const std::uint64_t generation) noexcept {
+        if (stage_ != Stage::ClearingData || generation != generation_) {
+            return false;
+        }
+        stage_ = Stage::AwaitingBlankStart;
+        return true;
+    }
+
+    [[nodiscard]] bool start(const std::uint64_t navigationId,
+                             const bool isInternalBlank) noexcept {
+        if (stage_ != Stage::AwaitingBlankStart || !isInternalBlank) {
+            return false;
+        }
+        navigationId_ = navigationId;
+        stage_ = Stage::NavigatingBlank;
+        return true;
+    }
+
+    [[nodiscard]] bool ownsNavigation(
+        const std::uint64_t navigationId) const noexcept {
+        return stage_ == Stage::NavigatingBlank && navigationId_.has_value() &&
+               *navigationId_ == navigationId;
+    }
+
+    [[nodiscard]] bool isBusy() const noexcept { return stage_ != Stage::Idle; }
+
+    [[nodiscard]] ClearDataNavigationCompletion complete(
+        const std::uint64_t navigationId, const bool didSucceed) noexcept {
+        if (!ownsNavigation(navigationId)) {
+            return {};
+        }
+        const std::uint64_t generation = generation_;
+        reset();
+        return {didSucceed ? ClearDataNavigationOutcome::Succeeded
+                           : ClearDataNavigationOutcome::Failed,
+                generation};
+    }
+
+    [[nodiscard]] ClearDataNavigationCompletion blankRequestFailed(
+        const std::uint64_t generation) noexcept {
+        if (stage_ != Stage::AwaitingBlankStart || generation != generation_) {
+            return {};
+        }
+        reset();
+        return {ClearDataNavigationOutcome::Failed, generation};
+    }
+
+    void reset() noexcept {
+        generation_ = 0;
+        navigationId_.reset();
+        stage_ = Stage::Idle;
+    }
+
+ private:
+    enum class Stage {
+        Idle,
+        ClearingData,
+        AwaitingBlankStart,
+        NavigatingBlank,
+    };
+
+    Stage stage_{Stage::Idle};
+    std::uint64_t generation_{0};
+    std::optional<std::uint64_t> navigationId_;
+};
+
 }  // namespace mediahub::browser_webview2

@@ -131,6 +131,29 @@ HRESULT completeCertificateDecision(
     return firstFailure(result, deferral->Complete());
 }
 
+// 证书安全决定失败也不能阻止取得 deferral，以便调用方完成默认拒绝。
+template <typename Args, typename Deferral>
+HRESULT prepareCertificateRequest(Args* const args,
+                                  Deferral** const deferral) noexcept {
+    if (args == nullptr || deferral == nullptr) {
+        return E_POINTER;
+    }
+    HRESULT result = args->put_Action(
+        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);
+    return firstFailure(result, args->GetDeferral(deferral));
+}
+
+// 外部协议默认取消失败也继续取得 deferral，避免 Runtime 默认处理请求。
+template <typename Args, typename Deferral>
+HRESULT prepareExternalProtocolRequest(Args* const args,
+                                       Deferral** const deferral) noexcept {
+    if (args == nullptr || deferral == nullptr) {
+        return E_POINTER;
+    }
+    HRESULT result = args->put_Cancel(TRUE);
+    return firstFailure(result, args->GetDeferral(deferral));
+}
+
 inline bool isSafeDownloadDestination(const QString& destination) {
     if (destination.isEmpty() || destination.trimmed() != destination) {
         return false;
@@ -153,7 +176,7 @@ inline bool isSafeDownloadDestination(const QString& destination) {
     if (fileName.contains(invalidCharacters)) {
         return false;
     }
-    const QString stem = QFileInfo(fileName).completeBaseName().toUpper();
+    const QString stem = fileName.section(QLatin1Char('.'), 0, 0).toUpper();
     static const QRegularExpression reservedName(
         QStringLiteral(R"(^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$)"));
     return !reservedName.match(stem).hasMatch();
@@ -162,6 +185,19 @@ inline bool isSafeDownloadDestination(const QString& destination) {
 template <typename Args, typename Operation, typename Deferral>
 HRESULT completeDownloadCancellation(Args* args, Operation* operation,
                                      Deferral* deferral) noexcept;
+
+// 下载接管的四个安全动作彼此独立；保留首个错误，但不得用它短路后续动作。
+template <typename Args, typename Operation, typename Deferral>
+HRESULT prepareDownloadRequest(Args* const args, Operation** const operation,
+                               Deferral** const deferral) noexcept {
+    if (args == nullptr || operation == nullptr || deferral == nullptr) {
+        return E_POINTER;
+    }
+    HRESULT result = args->put_Cancel(TRUE);
+    result = firstFailure(result, args->put_Handled(TRUE));
+    result = firstFailure(result, args->get_DownloadOperation(operation));
+    return firstFailure(result, args->GetDeferral(deferral));
+}
 
 template <typename Args, typename Operation, typename Deferral>
 HRESULT completeDownloadPathDecision(Args* const args, Operation* const operation,
@@ -196,12 +232,11 @@ HRESULT completeDownloadPathDecision(Args* const args, Operation* const operatio
 template <typename Args, typename Operation, typename Deferral>
 HRESULT completeDownloadCancellation(Args* const args, Operation* const operation,
                                      Deferral* const deferral) noexcept {
-    if (args == nullptr || operation == nullptr || deferral == nullptr) {
-        return E_POINTER;
-    }
-    HRESULT result = args->put_Cancel(TRUE);
-    result = firstFailure(result, operation->Cancel());
-    return firstFailure(result, deferral->Complete());
+    HRESULT result = args != nullptr ? args->put_Cancel(TRUE) : E_POINTER;
+    result = firstFailure(
+        result, operation != nullptr ? operation->Cancel() : E_POINTER);
+    return firstFailure(
+        result, deferral != nullptr ? deferral->Complete() : E_POINTER);
 }
 
 // 协调下载从待决定到活动状态；任一失败都会在返回前撤销订阅并完成 deferral。
@@ -224,6 +259,97 @@ HRESULT startDownloadTransaction(Active& active, Register&& registerActive,
         removeActive();
     }
     return decisionResult;
+}
+
+// 活动下载的取消失败会恢复可重试状态，并同步通知稳定失败事件。
+template <typename Active, typename Cancel, typename NotifyFailure>
+HRESULT requestActiveDownloadCancellation(Active& active, Cancel&& cancel,
+                                          NotifyFailure&& notifyFailure) {
+    if (active.isCancelRequested) {
+        return S_FALSE;
+    }
+    active.isCancelRequested = true;
+    const HRESULT result = cancel();
+    if (FAILED(result)) {
+        active.isCancelRequested = false;
+        notifyFailure();
+    }
+    return result;
+}
+
+// 关闭阶段不信任此前的取消请求结果，始终再次向 operation 提交 Cancel。
+template <typename Active, typename Cancel>
+HRESULT cancelActiveDownloadForShutdown(Active& active, Cancel&& cancel) {
+    active.isCancelRequested = true;
+    return cancel();
+}
+
+struct DownloadSnapshot final {
+    gui::BrowserDownloadState state{gui::BrowserDownloadState::InProgress};
+    std::int64_t receivedBytes{-1};
+    std::int64_t totalBytes{-1};
+    HRESULT stateResult{E_FAIL};
+    bool hasState{false};
+    bool isTerminal{false};
+};
+
+// 必须先读取终态；进度读取失败只降级数值，不能阻止终态释放活动任务。
+template <typename Operation>
+DownloadSnapshot readDownloadSnapshot(Operation* const operation,
+                                      const std::int64_t previousTotalBytes,
+                                      const bool isCancelRequested) {
+    DownloadSnapshot snapshot;
+    snapshot.totalBytes = previousTotalBytes;
+    if (operation == nullptr) {
+        snapshot.stateResult = E_POINTER;
+        return snapshot;
+    }
+
+    COREWEBVIEW2_DOWNLOAD_STATE rawState =
+        COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+    snapshot.stateResult = operation->get_State(&rawState);
+    if (FAILED(snapshot.stateResult)) {
+        return snapshot;
+    }
+    snapshot.hasState = true;
+
+    INT64 receivedBytes = -1;
+    if (SUCCEEDED(operation->get_BytesReceived(&receivedBytes))) {
+        snapshot.receivedBytes = static_cast<std::int64_t>(receivedBytes);
+    }
+    INT64 totalBytes = previousTotalBytes;
+    if (SUCCEEDED(operation->get_TotalBytesToReceive(&totalBytes))) {
+        snapshot.totalBytes = static_cast<std::int64_t>(totalBytes);
+    }
+
+    if (rawState == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED) {
+        snapshot.state = gui::BrowserDownloadState::Completed;
+        snapshot.isTerminal = true;
+    } else if (rawState == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED) {
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason =
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
+        static_cast<void>(operation->get_InterruptReason(&reason));
+        snapshot.state =
+            isCancelRequested ||
+                    reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED ||
+                    reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN
+                ? gui::BrowserDownloadState::Cancelled
+                : gui::BrowserDownloadState::Failed;
+        snapshot.isTerminal = true;
+    }
+    return snapshot;
+}
+
+// 排队释放只能删除同一生命周期的任务；shutdown 后的旧回调不得触碰新集合。
+template <typename Store>
+bool eraseTerminalDownloadIfCurrent(Store& store, const std::uint64_t requestId,
+                                    const std::uint64_t expectedLifecycleSerial,
+                                    const std::uint64_t currentLifecycleSerial,
+                                    const bool isShuttingDown) {
+    if (isShuttingDown || expectedLifecycleSerial != currentLifecycleSerial) {
+        return false;
+    }
+    return store.erase(requestId) != 0;
 }
 
 }  // namespace mediahub::browser_webview2

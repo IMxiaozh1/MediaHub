@@ -66,6 +66,7 @@ enum class BrowserCertificateDecision {
 
 enum class BrowserDownloadState {
     InProgress,
+    CancelFailed,
     Completed,
     Failed,
     Cancelled,

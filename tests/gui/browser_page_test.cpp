@@ -26,13 +26,17 @@ class BrowserPageTest final : public QObject {
     void normalizesOnlySupportedTopLevelAddresses();
     void routesNavigationAndIgnoresLateGeneration();
     void requiresConfirmationBeforeClearingBrowsingData();
+    void clearCompletionShowsBlankPageOnlyForCurrentGeneration();
     void routesNavigationToolbarCommands();
     void routesOriginAwarePermissionChoicesAndRejectsUnsafeRequests();
     void screenCaptureAllowsOnlyCurrentRequest();
     void replacedPermissionIgnoresLateUiSignals();
     void confirmsExternalProtocolsAndSessionCertificateExceptions();
     void validatesDownloadDestinationAndTracksOneTask();
+    void rejectsReservedDownloadNamesWithMultipleSuffixes();
     void downloadTerminalStatesIgnoreStaleRequests();
+    void cancelKeepsDownloadActiveUntilBackendTerminalState();
+    void cancelFailureAllowsRetryWithoutEndingDownload();
     void navigationRejectsUnansweredSensitiveRequests();
     void navigationKeepsStartedDownload();
     void detachesListenerAndShutsDownOnDestruction();
@@ -107,7 +111,8 @@ void BrowserPageTest::requiresConfirmationBeforeClearingBrowsingData() {
     backend.emitPermissionRequested(100, QStringLiteral("https://old.example"),
                                     BrowserPermissionKind::Camera);
     backend.emitExternalProtocolRequested(
-        101, QStringLiteral("mailto:user@example.com"));
+        101, QStringLiteral("https://old.example"),
+        QStringLiteral("mailto:user@example.com"));
     backend.emitCertificateErrorRequested(
         102, QStringLiteral("https://old.example"),
         QStringLiteral("服务器证书无效"));
@@ -130,6 +135,44 @@ void BrowserPageTest::requiresConfirmationBeforeClearingBrowsingData() {
     QVERIFY(errorLabel != nullptr);
     QVERIFY(errorLabel->isVisible());
     QVERIFY(errorLabel->text().contains(QStringLiteral("清除")));
+}
+
+void BrowserPageTest::clearCompletionShowsBlankPageOnlyForCurrentGeneration() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://signed-in.example/account"),
+        QStringLiteral("账户"), true, false);
+
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserClearDataButton")),
+        Qt::LeftButton);
+    auto* dialog = page.findChild<QDialog*>(QStringLiteral("browserClearDataDialog"));
+    QTest::mouseClick(
+        dialog->findChild<QPushButton*>(QStringLiteral("browserClearDataConfirmButton")),
+        Qt::LeftButton);
+    auto* addressEdit =
+        page.findChild<QLineEdit*>(QStringLiteral("browserAddressEdit"));
+    auto* titleLabel =
+        page.findChild<QLabel*>(QStringLiteral("browserTitleLabel"));
+    auto* statusLabel =
+        page.findChild<QLabel*>(QStringLiteral("browserStatusLabel"));
+    QCOMPARE(addressEdit->text(),
+             QStringLiteral("https://signed-in.example/account"));
+
+    backend.emitBrowsingDataCleared(1);
+    QCOMPARE(addressEdit->text(),
+             QStringLiteral("https://signed-in.example/account"));
+    QCOMPARE(page.state(), BrowserPageState::ClearingData);
+
+    backend.emitBrowsingDataCleared(2);
+    QCOMPARE(page.state(), BrowserPageState::Ready);
+    QVERIFY(addressEdit->text().isEmpty());
+    QCOMPARE(titleLabel->text(), QStringLiteral("网页"));
+    QVERIFY(statusLabel->text().contains(QStringLiteral("已清除")));
 }
 
 void BrowserPageTest::routesNavigationToolbarCommands() {
@@ -293,11 +336,17 @@ void BrowserPageTest::confirmsExternalProtocolsAndSessionCertificateExceptions()
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
 
-    backend.emitExternalProtocolRequested(20,
-                                          QStringLiteral("mailto:user@example.com"));
+    backend.emitExternalProtocolRequested(
+        20, QStringLiteral("https://origin.example:8443"),
+        QStringLiteral("mailto:user@example.com"));
     auto* protocolDialog =
         page.findChild<QDialog*>(QStringLiteral("browserExternalProtocolDialog"));
     QVERIFY(protocolDialog != nullptr);
+    QCOMPARE(protocolDialog
+                 ->findChild<QLabel*>(
+                     QStringLiteral("browserExternalProtocolOriginLabel"))
+                 ->text(),
+             QStringLiteral("https://origin.example:8443"));
     QVERIFY(protocolDialog->findChild<QLabel*>(
                               QStringLiteral("browserExternalProtocolTargetLabel"))
                 ->text()
@@ -311,8 +360,9 @@ void BrowserPageTest::confirmsExternalProtocolsAndSessionCertificateExceptions()
     protocolDialog->reject();
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerExternalProtocol), 1);
 
-    backend.emitExternalProtocolRequested(21,
-                                          QStringLiteral("mailto:user@example.com"));
+    backend.emitExternalProtocolRequested(
+        21, QStringLiteral("https://origin.example"),
+        QStringLiteral("mailto:user@example.com"));
     protocolDialog =
         page.findChild<QDialog*>(QStringLiteral("browserExternalProtocolDialog"));
     QTest::mouseClick(protocolDialog->findChild<QPushButton*>(
@@ -324,6 +374,13 @@ void BrowserPageTest::confirmsExternalProtocolsAndSessionCertificateExceptions()
                           QStringLiteral("browserExternalProtocolConfirmButton")),
                       Qt::LeftButton);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerExternalProtocol), 2);
+
+    backend.emitExternalProtocolRequested(
+        22, QStringLiteral("https://origin.example/path"),
+        QStringLiteral("mailto:user@example.com"));
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerExternalProtocol), 3);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{22});
+    QVERIFY(!backend.lastCommand().flag);
 
     backend.emitCertificateErrorRequested(
         30, QStringLiteral("https://secure.example:9443"),
@@ -417,6 +474,26 @@ void BrowserPageTest::validatesDownloadDestinationAndTracksOneTask() {
     QCOMPARE(backend.lastCommand().requestId, std::uint64_t{41});
 }
 
+void BrowserPageTest::rejectsReservedDownloadNamesWithMultipleSuffixes() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QStringList reservedNames{QStringLiteral("CON.foo.bar"),
+                                    QStringLiteral("NUL.anything")};
+    std::uint64_t requestId = 120;
+    for (const QString& fileName : reservedNames) {
+        test::FakeBrowserBackend backend;
+        BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+        backend.emitDownloadRequested(requestId, QStringLiteral("https://files.example"),
+                                      fileName, 100);
+        auto* download = page.findChild<BrowserDownloadWidget*>(
+            QStringLiteral("browserDownloadWidget"));
+        download->submitDestination(directory.filePath(fileName));
+        QCOMPARE(backend.count(test::FakeBrowserCommandKind::ChooseDownloadPath), 0);
+        QVERIFY(download->errorText().contains(QStringLiteral("文件名不可接受")));
+        ++requestId;
+    }
+}
+
 void BrowserPageTest::downloadTerminalStatesIgnoreStaleRequests() {
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
@@ -443,6 +520,62 @@ void BrowserPageTest::downloadTerminalStatesIgnoreStaleRequests() {
     QVERIFY(download->stateText().contains(QStringLiteral("取消")));
 }
 
+void BrowserPageTest::cancelKeepsDownloadActiveUntilBackendTerminalState() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    auto* download = page.findChild<BrowserDownloadWidget*>(
+        QStringLiteral("browserDownloadWidget"));
+    QVERIFY(download != nullptr);
+
+    backend.emitDownloadRequested(90, QStringLiteral("https://files.example"),
+                                  QStringLiteral("active.bin"), 300);
+    QTest::mouseClick(download->findChild<QPushButton*>(
+                          QStringLiteral("browserDownloadCancelButton")),
+                      Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 1);
+    QVERIFY(!download->isTerminal());
+    QVERIFY(download->stateText().contains(QStringLiteral("正在取消")));
+
+    backend.emitDownloadRequested(91, QStringLiteral("https://files.example"),
+                                  QStringLiteral("rejected.bin"), 400);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 2);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{91});
+    QCOMPARE(download->requestId(), std::uint64_t{90});
+
+    backend.emitDownloadUpdated(90, BrowserDownloadState::Cancelled, 20, 300);
+    QVERIFY(download->isTerminal());
+    backend.emitDownloadRequested(92, QStringLiteral("https://files.example"),
+                                  QStringLiteral("accepted.bin"), 500);
+    QCOMPARE(download->requestId(), std::uint64_t{92});
+    QVERIFY(!download->isTerminal());
+}
+
+void BrowserPageTest::cancelFailureAllowsRetryWithoutEndingDownload() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    auto* download = page.findChild<BrowserDownloadWidget*>(
+        QStringLiteral("browserDownloadWidget"));
+    auto* cancelButton = download->findChild<QPushButton*>(
+        QStringLiteral("browserDownloadCancelButton"));
+    QVERIFY(download != nullptr);
+    QVERIFY(cancelButton != nullptr);
+
+    backend.emitDownloadRequested(100, QStringLiteral("https://files.example"),
+                                  QStringLiteral("retry.bin"), 600);
+    QTest::mouseClick(cancelButton, Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 1);
+
+    backend.emitDownloadUpdated(100, BrowserDownloadState::CancelFailed, 40, 600);
+    QVERIFY(!download->isTerminal());
+    QVERIFY(download->stateText().contains(QStringLiteral("取消失败，可重试")));
+    QVERIFY(cancelButton->isEnabled());
+
+    QTest::mouseClick(cancelButton, Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 2);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{100});
+    QVERIFY(!download->isTerminal());
+}
+
 void BrowserPageTest::navigationRejectsUnansweredSensitiveRequests() {
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
@@ -452,7 +585,9 @@ void BrowserPageTest::navigationRejectsUnansweredSensitiveRequests() {
 
     backend.emitPermissionRequested(50, QStringLiteral("https://old.example"),
                                     BrowserPermissionKind::Camera);
-    backend.emitExternalProtocolRequested(51, QStringLiteral("mailto:user@example.com"));
+    backend.emitExternalProtocolRequested(
+        51, QStringLiteral("https://old.example"),
+        QStringLiteral("mailto:user@example.com"));
     backend.emitCertificateErrorRequested(
         52, QStringLiteral("https://old.example"),
         QStringLiteral("服务器证书无效"));
