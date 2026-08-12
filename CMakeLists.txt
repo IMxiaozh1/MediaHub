@@ -293,6 +293,11 @@ if(NOT MEDIAHUB_CORE_ONLY)
         if(NOT WIN32)
             message(FATAL_ERROR "MEDIAHUB_PACKAGE_RELEASE currently supports Windows only.")
         endif()
+        if(NOT CMAKE_CONFIGURATION_TYPES
+           AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+            message(FATAL_ERROR
+                "MEDIAHUB_PACKAGE_RELEASE requires CMAKE_BUILD_TYPE=Release.")
+        endif()
 
         get_filename_component(MEDIAHUB_QT_PREFIX_DIR "${MEDIAHUB_QT_BIN_DIR}" DIRECTORY)
         get_filename_component(MEDIAHUB_QT_VERSION_DIR "${MEDIAHUB_QT_PREFIX_DIR}" DIRECTORY)
@@ -318,6 +323,12 @@ if(NOT MEDIAHUB_CORE_ONLY)
             endif()
         endforeach()
 
+        install(CODE [[
+            if(NOT CMAKE_INSTALL_CONFIG_NAME STREQUAL "Release")
+                message(FATAL_ERROR
+                    "MEDIAHUB_PACKAGE_RELEASE can install only the Release configuration.")
+            endif()
+        ]])
         install(TARGETS mediahub_gui RUNTIME DESTINATION .)
         install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui/resources/app_icon_source.png"
             DESTINATION icons

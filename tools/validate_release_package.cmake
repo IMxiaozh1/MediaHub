@@ -57,9 +57,10 @@ file(GLOB_RECURSE mediahubPackageEntries
      RELATIVE "${mediahubPackageDir}"
      "${mediahubPackageDir}/*")
 set(mediahubForbiddenFiles)
-set(mediahubBrowserDataPattern
+string(CONCAT mediahubBrowserDataPattern
     "(^|/)(profile[^/]*|cache([._-][^/]*)?|code cache|gpucache|"
-    "shadercache|cookies?([._-][^/]*)?)($|/)")
+    "shadercache|dawnwebgpucache|dawngraphitecache|grshadercache|"
+    "cookies?([._-][^/]*)?)($|/)")
 foreach(packageEntry IN LISTS mediahubPackageEntries)
     string(TOLOWER "${packageEntry}" packageEntryLower)
     get_filename_component(packageEntryName "${packageEntryLower}" NAME)
