@@ -12,6 +12,7 @@
 #include <limits>
 
 #include "browser_download_widget.h"
+#include "browser_data_store.h"
 #include "main_window.h"
 #include "browser_page.h"
 #include "browser_permission_dialog.h"
@@ -20,6 +21,22 @@
 #include "ui_theme.h"
 
 namespace mediahub::gui {
+namespace {
+
+class MemoryBrowserDataStore final : public BrowserDataStore {
+ public:
+    QVector<BrowserHistoryEntry> loadHistory() override { return history; }
+
+    void saveHistory(const QVector<BrowserHistoryEntry>& value) override {
+        history = value;
+        ++saveCount;
+    }
+
+    QVector<BrowserHistoryEntry> history;
+    int saveCount{0};
+};
+
+}  // namespace
 
 class BrowserPageTest final : public QObject {
     Q_OBJECT
@@ -27,6 +44,9 @@ class BrowserPageTest final : public QObject {
  private slots:
     void normalizesOnlySupportedTopLevelAddresses();
     void routesNavigationAndIgnoresLateGeneration();
+    void keepsAddressEditableAndSelectsOldAddressOnFocus();
+    void reusesCurrentPageAndRecordsSuccessfulNavigation();
+    void persistsAndNormalizesBrowserHistory();
     void requiresConfirmationBeforeClearingBrowsingData();
     void clearCompletionShowsBlankPageOnlyForCurrentGeneration();
     void routesNavigationToolbarCommands();
@@ -95,6 +115,87 @@ void BrowserPageTest::routesNavigationAndIgnoresLateGeneration() {
              QStringLiteral("Welcome"));
     QVERIFY(page.findChild<QToolButton*>(QStringLiteral("browserBackButton"))->isEnabled());
     QVERIFY(!page.findChild<QToolButton*>(QStringLiteral("browserForwardButton"))->isEnabled());
+}
+
+void BrowserPageTest::keepsAddressEditableAndSelectsOldAddressOnFocus() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://example.com/old"), QStringLiteral("Old"));
+
+    auto* const address =
+        page.findChild<QLineEdit*>(QStringLiteral("browserAddressEdit"));
+    QVERIFY(address != nullptr);
+    QVERIFY(!address->isReadOnly());
+    address->clearFocus();
+    QTest::mouseClick(address, Qt::LeftButton);
+    QCOMPARE(address->selectedText(), address->text());
+
+    QTest::keyClicks(address, QStringLiteral("example.org/new"));
+    QCOMPARE(address->text(), QStringLiteral("example.org/new"));
+    QTest::keyClick(address, Qt::Key_Return);
+    QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
+    QCOMPARE(backend.lastCommand().text, QStringLiteral("https://example.org/new"));
+}
+
+void BrowserPageTest::reusesCurrentPageAndRecordsSuccessfulNavigation() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    auto* const address =
+        page.findChild<QLineEdit*>(QStringLiteral("browserAddressEdit"));
+    QVERIFY(address != nullptr);
+    address->setText(QStringLiteral("example.com/one"));
+    QTest::keyClick(address, Qt::Key_Return);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate), 1);
+    backend.emitNavigationCompleted(
+        2, QStringLiteral("https://example.com/one"), QStringLiteral("First"));
+
+    address->setText(QStringLiteral("https://example.com/two"));
+    QTest::keyClick(address, Qt::Key_Return);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate), 2);
+    backend.emitNavigationCompleted(
+        3, QStringLiteral("https://example.com/two"), QStringLiteral("Second"));
+    backend.emitNavigationCompleted(
+        3, QStringLiteral("https://example.com/one"), QStringLiteral("Updated"));
+
+    QCOMPARE(dataStore.saveCount, 3);
+    QCOMPARE(dataStore.history.size(), 2);
+    QCOMPARE(dataStore.history.at(0).url,
+             QStringLiteral("https://example.com/one"));
+    QCOMPARE(dataStore.history.at(0).title, QStringLiteral("Updated"));
+    QVERIFY(dataStore.history.at(0).visitedAtMilliseconds > 0);
+    QCOMPARE(dataStore.history.at(1).url,
+             QStringLiteral("https://example.com/two"));
+}
+
+void BrowserPageTest::persistsAndNormalizesBrowserHistory() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString settingsFile = directory.filePath(QStringLiteral("browser.ini"));
+    QSettingsBrowserDataStore writer(settingsFile);
+    writer.saveHistory({
+        {QStringLiteral("HTTPS://Example.com/path"), QStringLiteral("First"), -1},
+        {QStringLiteral("https://example.com/path"), QStringLiteral("Duplicate"), 2},
+        {QStringLiteral("javascript:alert(1)"), QStringLiteral("Blocked"), 3},
+        {QStringLiteral("https://other.example"), QStringLiteral("Other"), 4},
+    });
+
+    QSettingsBrowserDataStore reader(settingsFile);
+    const QVector<BrowserHistoryEntry> history = reader.loadHistory();
+    QCOMPARE(history.size(), 2);
+    QCOMPARE(history.at(0).url, QStringLiteral("https://example.com/path"));
+    QCOMPARE(history.at(0).title, QStringLiteral("First"));
+    QCOMPARE(history.at(0).visitedAtMilliseconds, qint64{0});
+    QCOMPARE(history.at(1).url, QStringLiteral("https://other.example"));
 }
 
 void BrowserPageTest::requiresConfirmationBeforeClearingBrowsingData() {

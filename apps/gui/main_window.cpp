@@ -569,7 +569,8 @@ void setNativeDarkTitleBar(QWidget* const window, const bool isDark) {
 }  // namespace
 
 MainWindow::MainWindow(BrowserBackend* const browserBackend,
-                       QString browserProfileDirectory, QWidget* const parent)
+                       QString browserProfileDirectory, QWidget* const parent,
+                       BrowserDataStore* const browserDataStore)
     : QMainWindow(parent), windowIconManager_(this) {
   if (browserBackend == nullptr) {
     ownedBrowserBackend_ = std::make_unique<UnavailableBrowserBackend>();
@@ -1179,7 +1180,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
 
   browserPage_ = new BrowserPage(*browserBackend_,
                                  std::move(browserProfileDirectory),
-                                 displayModeContainer);
+                                 displayModeContainer, browserDataStore);
   connect(browserPage_, &BrowserPage::fullScreenChanged, this,
           &MainWindow::handleWebFullScreenChanged);
   displayModeStack_->addWidget(nativePlaybackPage_);

@@ -8,6 +8,7 @@
 
 #include "app_state_store.h"
 #include "browser_profile_directory.h"
+#include "browser_data_store.h"
 #include "engine_event_bridge.h"
 #include "main_window.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
@@ -34,8 +35,10 @@ int main(int argc, char* argv[]) {
               QStandardPaths::writableLocation(
                   QStandardPaths::AppLocalDataLocation));
       mediahub::gui::EngineEventBridge eventBridge;
+      mediahub::gui::QSettingsBrowserDataStore browserDataStore;
       mediahub::gui::MainWindow mainWindow(&browserBackend,
-                                           browserProfileDirectory);
+                                           browserProfileDirectory, nullptr,
+                                           &browserDataStore);
       mediahub::gui::QSettingsAppStateStore appStateStore;
       QObject::connect(&mainWindow, &mediahub::gui::MainWindow::closing,
                        &mainWindow,

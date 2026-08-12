@@ -176,6 +176,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/app_state_store.cpp
         apps/gui/app_state_store.h
         apps/gui/browser_backend.h
+        apps/gui/browser_data_store.cpp
+        apps/gui/browser_data_store.h
         apps/gui/browser_download_widget.cpp
         apps/gui/browser_download_widget.h
         apps/gui/browser_event_listener.h

@@ -40,6 +40,7 @@ class QShortcut;
 namespace mediahub::gui {
 
 class BrowserBackend;
+class BrowserDataStore;
 class BrowserPage;
 class VideoOutputWidget;
 class LyricsView;
@@ -58,7 +59,8 @@ class MainWindow final : public QMainWindow {
   // 调用线程：GUI 主线程。browserBackend 为空时显示 Runtime 缺失提示。
   explicit MainWindow(BrowserBackend* browserBackend = nullptr,
                       QString browserProfileDirectory = {},
-                      QWidget* parent = nullptr);
+                      QWidget* parent = nullptr,
+                      BrowserDataStore* browserDataStore = nullptr);
   // 调用线程：GUI 主线程。先销毁网页页，确保后端覆盖其关闭过程。
   ~MainWindow() override;
 

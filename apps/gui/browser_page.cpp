@@ -1,12 +1,15 @@
 #include "browser_page.h"
 
 #include <QDialog>
+#include <QDateTime>
 #include <QFileInfo>
+#include <QFocusEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QShortcut>
@@ -22,6 +25,7 @@
 #include <utility>
 
 #include "browser_backend.h"
+#include "browser_data_store.h"
 #include "browser_download_widget.h"
 #include "browser_navigation_policy.h"
 #include "browser_permission_dialog.h"
@@ -39,6 +43,30 @@ QToolButton* createToolButton(const QString& objectName, const QString& text,
     button->setAutoRaise(false);
     return button;
 }
+
+// 地址栏的单击语义是准备替换旧地址，键盘仍可正常移动光标和选择文本。
+class BrowserAddressEdit final : public QLineEdit {
+ public:
+    explicit BrowserAddressEdit(QWidget* const parent) : QLineEdit(parent) {}
+
+ protected:
+    void focusInEvent(QFocusEvent* const event) override {
+        QLineEdit::focusInEvent(event);
+        selectAll();
+        selectsOnMouseRelease_ = event->reason() == Qt::MouseFocusReason;
+    }
+
+    void mouseReleaseEvent(QMouseEvent* const event) override {
+        QLineEdit::mouseReleaseEvent(event);
+        if (event->button() == Qt::LeftButton && selectsOnMouseRelease_) {
+            selectAll();
+            selectsOnMouseRelease_ = false;
+        }
+    }
+
+ private:
+    bool selectsOnMouseRelease_{false};
+};
 
 QString normalizedWebOrigin(const QString& origin) {
     const QUrl parsed(origin, QUrl::StrictMode);
@@ -75,9 +103,10 @@ bool isAcceptableExternalTarget(const QString& target) {
 }  // namespace
 
 BrowserPage::BrowserPage(BrowserBackend& backend, QString userDataDirectory,
-                         QWidget* parent)
+                         QWidget* parent, BrowserDataStore* const dataStore)
     : QWidget(parent),
       backend_(backend),
+      dataStore_(dataStore),
       userDataDirectory_(std::move(userDataDirectory)) {
     setObjectName(QStringLiteral("browserPage"));
     buildUi();
@@ -200,6 +229,7 @@ void BrowserPage::onNavigationCompleted(std::uint64_t generation,
     forwardButton_->setEnabled(canGoForward);
     showHost();
     updateControls();
+    recordSuccessfulNavigation(visibleUrl, title);
 }
 
 void BrowserPage::onFullScreenChanged(std::uint64_t generation,
@@ -549,7 +579,7 @@ void BrowserPage::buildUi() {
                                      QStringLiteral("刷新"), toolbar_);
     homeButton_ = createToolButton(QStringLiteral("browserHomeButton"),
                                    QStringLiteral("主页"), toolbar_);
-    addressEdit_ = new QLineEdit(toolbar_);
+    addressEdit_ = new BrowserAddressEdit(toolbar_);
     addressEdit_->setObjectName(QStringLiteral("browserAddressEdit"));
     addressEdit_->setPlaceholderText(QStringLiteral("输入网站地址"));
     addressEdit_->setMinimumWidth(180);
@@ -852,6 +882,28 @@ void BrowserPage::updateBackendBounds() {
     const qreal scale = browserHost_->devicePixelRatioF();
     backend_.setBounds(QRect(0, 0, qRound(browserHost_->width() * scale),
                              qRound(browserHost_->height() * scale)));
+}
+
+void BrowserPage::recordSuccessfulNavigation(const QString& visibleUrl,
+                                             const QString& title) {
+    if (dataStore_ == nullptr) {
+        return;
+    }
+    const BrowserAddress normalized = normalizeBrowserAddress(visibleUrl);
+    if (normalized.kind != BrowserAddressKind::Web) {
+        return;
+    }
+    QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    for (auto iterator = history.begin(); iterator != history.end();) {
+        if (iterator->url == normalized.url) {
+            iterator = history.erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
+    history.prepend(BrowserHistoryEntry{
+        normalized.url, title.trimmed(), QDateTime::currentMSecsSinceEpoch()});
+    dataStore_->saveHistory(history);
 }
 
 QString BrowserPage::errorText(BrowserErrorKind kind) const {

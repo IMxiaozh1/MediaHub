@@ -21,6 +21,7 @@ class QToolButton;
 namespace mediahub::gui {
 
 class BrowserBackend;
+class BrowserDataStore;
 class BrowserDownloadWidget;
 class BrowserPermissionDialog;
 
@@ -31,7 +32,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
  public:
     // 调用线程：GUI 主线程。backend 生命周期必须覆盖本页面。
     BrowserPage(BrowserBackend& backend, QString userDataDirectory,
-                QWidget* parent = nullptr);
+                QWidget* parent = nullptr,
+                BrowserDataStore* dataStore = nullptr);
     // 调用线程：GUI 主线程。析构会先断开监听再关闭后端。
     ~BrowserPage() override;
 
@@ -115,9 +117,12 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     // 调用线程：GUI 主线程。仅在响应式档位变化时刷新网页工具栏样式。
     void updateResponsiveStyle();
     void updateBackendBounds();
+    void recordSuccessfulNavigation(const QString& visibleUrl,
+                                    const QString& title);
     [[nodiscard]] QString errorText(BrowserErrorKind kind) const;
 
     BrowserBackend& backend_;
+    BrowserDataStore* dataStore_{nullptr};
     QString userDataDirectory_;
     std::uint64_t generation_{1};
     BrowserPageState state_{BrowserPageState::Unavailable};
