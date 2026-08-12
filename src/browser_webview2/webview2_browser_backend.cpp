@@ -9,6 +9,7 @@
 #include <wrl.h>
 
 #include <QApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QThread>
@@ -273,6 +274,7 @@ class WebView2BrowserBackend::Impl final {
                         E_INVALIDARG, "invalid_initialization_input");
             return;
         }
+        userDataDirectory_ = QDir::cleanPath(userDataDirectory);
 
         const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(comResult)) {
@@ -1140,6 +1142,9 @@ class WebView2BrowserBackend::Impl final {
             result = webView13->get_Profile(&profile_);
         }
         if (SUCCEEDED(result)) {
+            result = configureDefaultDownloadDirectory();
+        }
+        if (SUCCEEDED(result)) {
             result = configureSettings();
         }
         if (SUCCEEDED(result)) {
@@ -1163,6 +1168,22 @@ class WebView2BrowserBackend::Impl final {
         dispatchListener(generation, [generation](gui::BrowserEventListener& listener) {
             listener.onBrowserReady(generation);
         });
+    }
+
+    // 调用线程：Controller 完成回调所在的 GUI STA；失败时阻止进入 Ready。
+    HRESULT configureDefaultDownloadDirectory() {
+        if (profile_ == nullptr || userDataDirectory_.isEmpty()) {
+            return E_UNEXPECTED;
+        }
+        const QString downloadDirectory =
+            QDir(userDataDirectory_).filePath(QStringLiteral("Downloads"));
+        if (!QDir().mkpath(downloadDirectory)) {
+            return HRESULT_FROM_WIN32(ERROR_CANNOT_MAKE);
+        }
+        const std::wstring nativeDownloadDirectory =
+            QDir::toNativeSeparators(downloadDirectory).toStdWString();
+        return profile_->put_DefaultDownloadFolderPath(
+            nativeDownloadDirectory.c_str());
     }
 
     // 调用线程：Controller 完成回调所在的 GUI STA。
@@ -2202,6 +2223,7 @@ class WebView2BrowserBackend::Impl final {
         navigation_.reset(generation_);
         clearDataNavigation_.reset();
         parentWindow_ = nullptr;
+        userDataDirectory_.clear();
     }
 
     // 调用线程：初始化 COM 的 GUI STA，严格配对当前对象持有的初始化引用。
@@ -2215,6 +2237,7 @@ class WebView2BrowserBackend::Impl final {
     logging::Logger* logger_{nullptr};
     gui::BrowserEventListener* listener_{nullptr};
     HWND parentWindow_{nullptr};
+    QString userDataDirectory_;
     ComPtr<ICoreWebView2Environment> environment_;
     ComPtr<ICoreWebView2Profile> profile_;
     ComPtr<ICoreWebView2Controller> controller_;

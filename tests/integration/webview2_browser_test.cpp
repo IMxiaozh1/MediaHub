@@ -8,6 +8,10 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QWidget>
@@ -21,6 +25,7 @@
 #include "browser_profile_directory.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
 #include "mediahub/logging/logger.h"
+#include "support/local_web_test_server.h"
 #include "webview2_default_deny.h"
 #include "webview2_handles.h"
 #include "webview2_pending_request.h"
@@ -31,6 +36,7 @@ namespace {
 
 constexpr std::uint64_t kGeneration = 7;
 constexpr qint64 kInitializationTimeoutMilliseconds = 10000;
+constexpr qint64 kRuntimeBehaviorTimeoutMilliseconds = 10000;
 
 class FakePermissionArgs final {
  public:
@@ -430,6 +436,61 @@ bool removeTemporaryProfile(const QString& directory,
     return !QDir(cleanDirectory).exists();
 }
 
+QSet<QString>& pendingTemporaryProfiles() {
+    static QSet<QString> profiles;
+    return profiles;
+}
+
+class TemporaryWebView2Profile final {
+ public:
+    TemporaryWebView2Profile()
+        : directory_(QDir(QDir::tempPath())
+                         .filePath(QStringLiteral("mediahub_webview2_tests-XXXXXX"))) {
+        directory_.setAutoRemove(false);
+        if (directory_.isValid()) {
+            pendingTemporaryProfiles().insert(directory_.path());
+        }
+    }
+
+    ~TemporaryWebView2Profile() {
+        if (!isCleaned_ && directory_.isValid()) {
+            static_cast<void>(cleanup());
+        }
+    }
+
+    [[nodiscard]] bool isValid() const noexcept { return directory_.isValid(); }
+    [[nodiscard]] QString path() const { return directory_.path(); }
+
+    // 调用线程：GUI 主线程，后端关闭后有界等待测试 Profile 释放。
+    bool cleanup() {
+        isCleaned_ = removeTemporaryProfile(directory_.path(), 5000);
+        if (isCleaned_) {
+            pendingTemporaryProfiles().remove(directory_.path());
+        }
+        return isCleaned_;
+    }
+
+ private:
+    QTemporaryDir directory_;
+    bool isCleaned_{false};
+};
+
+bool isWebView2RuntimeAvailable() {
+    LPWSTR runtimeVersion = nullptr;
+    const HRESULT status =
+        GetAvailableCoreWebView2BrowserVersionString(nullptr, &runtimeVersion);
+    const bool isAvailable = SUCCEEDED(status) && runtimeVersion != nullptr;
+    CoTaskMemFree(runtimeVersion);
+    return isAvailable;
+}
+
+// 调用线程：GUI 主线程，模拟用户进入网页模式后的可见活动状态。
+void activateBackend(WebView2BrowserBackend& backend) {
+    backend.setBounds(QRect(0, 0, 640, 360));
+    backend.setVisible(true);
+    backend.setSuspended(false);
+}
+
 class RecordingBrowserListener final : public gui::BrowserEventListener {
  public:
     void onBrowserReady(const std::uint64_t generation) override {
@@ -448,18 +509,35 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
         hasError_ = true;
     }
 
-    void onNavigationStarted(std::uint64_t) override { recordCallbackThread(); }
-
-    void onNavigationCompleted(std::uint64_t, const QString&, const QString&, bool,
-                               bool) override {
+    void onNavigationStarted(std::uint64_t) override {
         recordCallbackThread();
+        ++navigationStartedCount_;
     }
 
-    void onFullScreenChanged(std::uint64_t, bool) override { recordCallbackThread(); }
-
-    void onPermissionRequested(std::uint64_t, const QString&,
-                               gui::BrowserPermissionKind) override {
+    void onNavigationCompleted(const std::uint64_t generation,
+                               const QString& visibleUrl, const QString& title,
+                               bool, bool) override {
         recordCallbackThread();
+        generation_ = generation;
+        visibleUrl_ = visibleUrl;
+        title_ = title;
+        ++navigationCompletedCount_;
+    }
+
+    void onFullScreenChanged(std::uint64_t, const bool isFullScreen) override {
+        recordCallbackThread();
+        isFullScreen_ = isFullScreen;
+        ++fullScreenChangedCount_;
+    }
+
+    void onPermissionRequested(const std::uint64_t requestId,
+                               const QString& origin,
+                               const gui::BrowserPermissionKind kind) override {
+        recordCallbackThread();
+        permissionRequestId_ = requestId;
+        permissionOrigin_ = origin;
+        permissionKind_ = kind;
+        ++permissionRequestCount_;
     }
 
     void onExternalProtocolRequested(std::uint64_t, const QString&,
@@ -472,18 +550,38 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
         recordCallbackThread();
     }
 
-    void onDownloadRequested(std::uint64_t, const QString&, const QString&,
-                             std::int64_t) override {
+    void onDownloadRequested(const std::uint64_t requestId,
+                             const QString& origin,
+                             const QString& suggestedFileName,
+                             const std::int64_t totalBytes) override {
         recordCallbackThread();
+        downloadRequestId_ = requestId;
+        downloadOrigin_ = origin;
+        suggestedFileName_ = suggestedFileName;
+        downloadTotalBytes_ = totalBytes;
+        ++downloadRequestCount_;
     }
 
-    void onDownloadUpdated(std::uint64_t, gui::BrowserDownloadState, std::int64_t,
-                           std::int64_t) override {
+    void onDownloadUpdated(const std::uint64_t requestId,
+                           const gui::BrowserDownloadState state,
+                           const std::int64_t receivedBytes,
+                           const std::int64_t totalBytes) override {
         recordCallbackThread();
+        downloadUpdateRequestId_ = requestId;
+        downloadState_ = state;
+        downloadReceivedBytes_ = receivedBytes;
+        downloadTotalBytes_ = totalBytes;
     }
 
-    void onBrowsingDataCleared(std::uint64_t) override { recordCallbackThread(); }
-    void onPopupRejected() override { recordCallbackThread(); }
+    void onBrowsingDataCleared(const std::uint64_t generation) override {
+        recordCallbackThread();
+        clearedGeneration_ = generation;
+        ++browsingDataClearedCount_;
+    }
+    void onPopupRejected() override {
+        recordCallbackThread();
+        ++popupRejectedCount_;
+    }
 
     [[nodiscard]] bool reachedTerminalState() const noexcept {
         return isReady_ || hasError_;
@@ -498,6 +596,63 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
     [[nodiscard]] bool hasError() const noexcept { return hasError_; }
     [[nodiscard]] gui::BrowserErrorKind errorKind() const noexcept { return errorKind_; }
     [[nodiscard]] long errorCode() const noexcept { return errorCode_; }
+    [[nodiscard]] const QString& visibleUrl() const noexcept { return visibleUrl_; }
+    [[nodiscard]] const QString& title() const noexcept { return title_; }
+    [[nodiscard]] int navigationCompletedCount() const noexcept {
+        return navigationCompletedCount_;
+    }
+    [[nodiscard]] int navigationStartedCount() const noexcept {
+        return navigationStartedCount_;
+    }
+    [[nodiscard]] std::uint64_t permissionRequestId() const noexcept {
+        return permissionRequestId_;
+    }
+    [[nodiscard]] const QString& permissionOrigin() const noexcept {
+        return permissionOrigin_;
+    }
+    [[nodiscard]] gui::BrowserPermissionKind permissionKind() const noexcept {
+        return permissionKind_;
+    }
+    [[nodiscard]] int permissionRequestCount() const noexcept {
+        return permissionRequestCount_;
+    }
+    [[nodiscard]] std::uint64_t downloadRequestId() const noexcept {
+        return downloadRequestId_;
+    }
+    [[nodiscard]] const QString& downloadOrigin() const noexcept {
+        return downloadOrigin_;
+    }
+    [[nodiscard]] const QString& suggestedFileName() const noexcept {
+        return suggestedFileName_;
+    }
+    [[nodiscard]] int downloadRequestCount() const noexcept {
+        return downloadRequestCount_;
+    }
+    [[nodiscard]] std::uint64_t downloadUpdateRequestId() const noexcept {
+        return downloadUpdateRequestId_;
+    }
+    [[nodiscard]] gui::BrowserDownloadState downloadState() const noexcept {
+        return downloadState_;
+    }
+    [[nodiscard]] std::int64_t downloadReceivedBytes() const noexcept {
+        return downloadReceivedBytes_;
+    }
+    [[nodiscard]] std::int64_t downloadTotalBytes() const noexcept {
+        return downloadTotalBytes_;
+    }
+    [[nodiscard]] std::uint64_t clearedGeneration() const noexcept {
+        return clearedGeneration_;
+    }
+    [[nodiscard]] int browsingDataClearedCount() const noexcept {
+        return browsingDataClearedCount_;
+    }
+    [[nodiscard]] bool isFullScreen() const noexcept { return isFullScreen_; }
+    [[nodiscard]] int fullScreenChangedCount() const noexcept {
+        return fullScreenChangedCount_;
+    }
+    [[nodiscard]] int popupRejectedCount() const noexcept {
+        return popupRejectedCount_;
+    }
 
  private:
     void recordCallbackThread() {
@@ -512,12 +667,34 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
     std::uint64_t generation_{0};
     gui::BrowserErrorKind errorKind_{gui::BrowserErrorKind::InitializationFailed};
     long errorCode_{0};
+    QString visibleUrl_;
+    QString title_;
+    int navigationStartedCount_{0};
+    int navigationCompletedCount_{0};
+    std::uint64_t permissionRequestId_{0};
+    QString permissionOrigin_;
+    gui::BrowserPermissionKind permissionKind_{gui::BrowserPermissionKind::Other};
+    int permissionRequestCount_{0};
+    std::uint64_t downloadRequestId_{0};
+    QString downloadOrigin_;
+    QString suggestedFileName_;
+    std::uint64_t downloadUpdateRequestId_{0};
+    gui::BrowserDownloadState downloadState_{gui::BrowserDownloadState::InProgress};
+    std::int64_t downloadReceivedBytes_{0};
+    std::int64_t downloadTotalBytes_{-1};
+    int downloadRequestCount_{0};
+    std::uint64_t clearedGeneration_{0};
+    int browsingDataClearedCount_{0};
+    bool isFullScreen_{false};
+    int fullScreenChangedCount_{0};
+    int popupRejectedCount_{0};
 };
 
 class WebView2BrowserTest final : public QObject {
     Q_OBJECT
 
  private slots:
+    void cleanupTestCase();
     void suspensionCoordinatesPendingResume();
     void suspensionHandlesFailureAndStaleCompletion();
     void suspensionIgnoresCompletionAfterInvalidation();
@@ -548,8 +725,31 @@ class WebView2BrowserTest final : public QObject {
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
     void requiresEverySensitiveHandlerBeforeReady();
+    void servesControlledPagesOverIpv4Loopback();
+    void persistsAndClearsOnlyTemporaryProfileData();
+    void followsControlledLoopbackRedirect();
+    void popupSharesTheTemporaryProfile();
+    void deniesControlledMicrophonePermission();
+    void downloadsOnlyToTheChosenTemporaryPath();
+    void cancelsPendingControlledDownload();
+    void loadsControlledUploadMediaAndFullScreenPages();
     void reportsRuntimeStatusWithoutBlockingGuiThread();
 };
+
+void WebView2BrowserTest::cleanupTestCase() {
+    int failedCleanupCount = 0;
+    const QSet<QString> profiles = pendingTemporaryProfiles();
+    for (const QString& profile : profiles) {
+        if (removeTemporaryProfile(profile, 10000)) {
+            pendingTemporaryProfiles().remove(profile);
+        } else {
+            ++failedCleanupCount;
+        }
+    }
+    QVERIFY2(failedCleanupCount == 0,
+             qPrintable(QStringLiteral("未能清理 %1 个测试 Profile")
+                            .arg(failedCleanupCount)));
+}
 
 void WebView2BrowserTest::suspensionCoordinatesPendingResume() {
     SuspensionCoordinator coordinator(false);
@@ -1902,6 +2102,12 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     QVERIFY(source.contains(
         QStringLiteral("COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_PROFILE")));
     QVERIFY(source.contains(QStringLiteral("ClearServerCertificateErrorActions")));
+    QVERIFY(source.contains(QStringLiteral("configureDefaultDownloadDirectory")));
+    QVERIFY(source.contains(QStringLiteral("put_DefaultDownloadFolderPath")));
+    const int downloadDirectoryGate = finishController.indexOf(
+        QStringLiteral("result = configureDefaultDownloadDirectory();"));
+    QVERIFY(downloadDirectoryGate >= 0);
+    QVERIFY(readyAssignment > downloadDirectoryGate);
     const QStringList requiredResetMarkers{
         QStringLiteral("permissionRequested_.reset"),
         QStringLiteral("screenCaptureStarting_.reset"),
@@ -1924,6 +2130,383 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
         QVERIFY2(reset >= 0, qPrintable(marker));
         QVERIFY2(reset < controllerClose, qPrintable(marker));
     }
+}
+
+void WebView2BrowserTest::servesControlledPagesOverIpv4Loopback() {
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QCOMPARE(server.serverAddress(), QHostAddress::LocalHost);
+
+    QNetworkAccessManager networkManager;
+    QNetworkRequest finalRequest(server.url(QStringLiteral("/navigation/final")));
+    finalRequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                              QNetworkRequest::ManualRedirectPolicy);
+    QNetworkReply* const finalReply = networkManager.get(finalRequest);
+    QVERIFY(waitUntil([finalReply] { return finalReply->isFinished(); }, 5000));
+    QCOMPARE(finalReply->error(), QNetworkReply::NoError);
+    QCOMPARE(finalReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+             200);
+    QVERIFY(finalReply->readAll().contains("<title>redirected</title>"));
+    finalReply->deleteLater();
+
+    QNetworkRequest redirectRequest(server.url(QStringLiteral("/redirect")));
+    redirectRequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                                 QNetworkRequest::ManualRedirectPolicy);
+    QNetworkReply* const redirectReply = networkManager.get(redirectRequest);
+    QVERIFY(waitUntil([redirectReply] { return redirectReply->isFinished(); }, 5000));
+    QCOMPARE(redirectReply->error(), QNetworkReply::NoError);
+    QCOMPARE(redirectReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+             302);
+    QCOMPARE(redirectReply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl(),
+             QUrl(QStringLiteral("/navigation/final")));
+    redirectReply->deleteLater();
+}
+
+void WebView2BrowserTest::persistsAndClearsOnlyTemporaryProfileData() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实 Profile 集成测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QCOMPARE(server.serverAddress(), QHostAddress::LocalHost);
+    QCOMPARE(server.url(QStringLiteral("/storage/set")).host(),
+             QStringLiteral("127.0.0.1"));
+
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+
+    WebView2BrowserBackend firstBackend;
+    RecordingBrowserListener firstListener;
+    firstBackend.setEventListener(&firstListener);
+    activateBackend(firstBackend);
+    firstBackend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 100);
+    QVERIFY(waitUntil([&firstListener] { return firstListener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(firstListener.isReady());
+    firstBackend.navigate(server.url(QStringLiteral("/storage/set")).toString(), 101);
+    const bool isStored = waitUntil(
+        [&firstListener] { return firstListener.title() == QStringLiteral("stored"); },
+        kRuntimeBehaviorTimeoutMilliseconds);
+    QVERIFY2(isStored,
+             qPrintable(QStringLiteral("title=%1 request-count=%2 error=%3")
+                            .arg(firstListener.title())
+                            .arg(server.requestCount(QStringLiteral("/storage/set")))
+                            .arg(firstListener.hasError())));
+    firstBackend.setEventListener(nullptr);
+    firstBackend.shutdown();
+
+    WebView2BrowserBackend secondBackend;
+    RecordingBrowserListener secondListener;
+    secondBackend.setEventListener(&secondListener);
+    activateBackend(secondBackend);
+    secondBackend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 200);
+    QVERIFY(waitUntil([&secondListener] { return secondListener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(secondListener.isReady());
+    secondBackend.navigate(server.url(QStringLiteral("/storage/read")).toString(), 201);
+    const bool wasPersisted = waitUntil(
+        [&secondListener] {
+            return secondListener.title() ==
+                   QStringLiteral("cookie=1;local=1;indexed=1");
+        },
+        kRuntimeBehaviorTimeoutMilliseconds);
+    QVERIFY2(wasPersisted,
+             qPrintable(QStringLiteral(
+                            "title=%1 read-count=%2 completed=%3 error=%4")
+                            .arg(secondListener.title())
+                            .arg(server.requestCount(QStringLiteral("/storage/read")))
+                            .arg(secondListener.navigationCompletedCount())
+                            .arg(secondListener.hasError())));
+
+    secondBackend.clearBrowsingData(202);
+    QVERIFY(waitUntil(
+        [&secondListener] {
+            return secondListener.browsingDataClearedCount() == 1 &&
+                   secondListener.clearedGeneration() == 202;
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    secondBackend.navigate(server.url(QStringLiteral("/storage/read")).toString(), 203);
+    QVERIFY(waitUntil(
+        [&secondListener] { return secondListener.title() == QStringLiteral("empty"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+
+    secondBackend.setEventListener(nullptr);
+    secondBackend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
+void WebView2BrowserTest::followsControlledLoopbackRedirect() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实重定向测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 300);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+    backend.navigate(server.url(QStringLiteral("/redirect")).toString(), 301);
+    const bool didRedirect = waitUntil(
+        [&listener] { return listener.title() == QStringLiteral("redirected"); },
+        kRuntimeBehaviorTimeoutMilliseconds);
+    QVERIFY2(didRedirect,
+             qPrintable(QStringLiteral(
+                            "title=%1 started=%2 completed=%3 redirect=%4 final=%5 "
+                            "error=%6")
+                            .arg(listener.title())
+                            .arg(listener.navigationStartedCount())
+                            .arg(listener.navigationCompletedCount())
+                            .arg(server.requestCount(QStringLiteral("/redirect")))
+                            .arg(server.requestCount(
+                                QStringLiteral("/navigation/final")))
+                            .arg(listener.hasError())));
+    QCOMPARE(QUrl(listener.visibleUrl()).path(), QStringLiteral("/navigation/final"));
+    QCOMPARE(server.requestCount(QStringLiteral("/redirect")), 1);
+    QCOMPARE(server.requestCount(QStringLiteral("/navigation/final")), 1);
+
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
+void WebView2BrowserTest::popupSharesTheTemporaryProfile() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实弹窗测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 400);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+    backend.navigate(server.url(QStringLiteral("/popup")).toString(), 401);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.title() == QStringLiteral("popup-shared"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    QVERIFY(server.requestCount(QStringLiteral("/child")) >= 1);
+    QVERIFY(server.requestCount(QStringLiteral("/signal/child-ready")) >= 1);
+    QCOMPARE(listener.popupRejectedCount(), 0);
+
+    backend.closePopups();
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
+void WebView2BrowserTest::deniesControlledMicrophonePermission() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实权限测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 500);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+    backend.navigate(server.url(QStringLiteral("/permission")).toString(), 501);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.permissionRequestCount() == 1; },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    QCOMPARE(listener.permissionOrigin(), server.origin());
+    QCOMPARE(listener.permissionKind(), gui::BrowserPermissionKind::Microphone);
+    backend.answerPermission(listener.permissionRequestId(),
+                             gui::BrowserPermissionDecision::Deny);
+    QVERIFY(waitUntil(
+        [&listener] {
+            return listener.title() == QStringLiteral("permission=denied");
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
+void WebView2BrowserTest::downloadsOnlyToTheChosenTemporaryPath() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实下载测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+    QTemporaryDir downloadDirectory;
+    QVERIFY(downloadDirectory.isValid());
+    const QString destination =
+        downloadDirectory.filePath(QStringLiteral("sample.txt"));
+    QVERIFY(!QFileInfo::exists(destination));
+
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 600);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+    backend.navigate(server.url(QStringLiteral("/download")).toString(), 601);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.downloadRequestCount() == 1; },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    QCOMPARE(listener.downloadOrigin(), server.origin());
+    QCOMPARE(listener.suggestedFileName(), QStringLiteral("sample.txt"));
+    backend.chooseDownloadPath(listener.downloadRequestId(), destination);
+    QVERIFY(waitUntil(
+        [&listener] {
+            return listener.downloadUpdateRequestId() ==
+                       listener.downloadRequestId() &&
+                   listener.downloadState() == gui::BrowserDownloadState::Completed;
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+
+    QFile downloadedFile(destination);
+    QVERIFY(downloadedFile.open(QIODevice::ReadOnly));
+    QCOMPARE(downloadedFile.readAll(), QByteArrayLiteral("MediaHub WebView2 test\n"));
+    QVERIFY(listener.downloadReceivedBytes() > 0);
+    QCOMPARE(listener.downloadReceivedBytes(), listener.downloadTotalBytes());
+
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
+void WebView2BrowserTest::cancelsPendingControlledDownload() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实下载取消测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 700);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+    const QDir isolatedDownloadDirectory(
+        QDir(profile.path()).filePath(QStringLiteral("Downloads")));
+    QVERIFY(isolatedDownloadDirectory.exists());
+    QVERIFY(isolatedDownloadDirectory.isEmpty());
+    backend.navigate(server.url(QStringLiteral("/download")).toString(), 701);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.downloadRequestCount() == 1; },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    backend.cancelDownload(listener.downloadRequestId());
+    QVERIFY(waitUntil(
+        [&listener] {
+            return listener.downloadUpdateRequestId() ==
+                       listener.downloadRequestId() &&
+                   listener.downloadState() == gui::BrowserDownloadState::Cancelled;
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    QVERIFY(waitUntil(
+        [&isolatedDownloadDirectory] {
+            return isolatedDownloadDirectory.isEmpty();
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
+void WebView2BrowserTest::loadsControlledUploadMediaAndFullScreenPages() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实受控页面测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 800);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+    backend.navigate(server.url(QStringLiteral("/upload")).toString(), 801);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.title() == QStringLiteral("upload-ready"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    backend.navigate(server.url(QStringLiteral("/media")).toString(), 802);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.title() == QStringLiteral("media-ready"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    backend.navigate(server.url(QStringLiteral("/fullscreen")).toString(), 803);
+    QVERIFY(waitUntil(
+        [&listener] {
+            return listener.title() == QStringLiteral("fullscreen-ready");
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    backend.navigate(server.url(QStringLiteral("/external")).toString(), 804);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.title() == QStringLiteral("external-ready"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    QCOMPARE(listener.fullScreenChangedCount(), 0);
+    QVERIFY(!listener.isFullScreen());
+
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
 }
 
 void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {

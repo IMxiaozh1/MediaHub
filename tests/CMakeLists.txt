@@ -115,15 +115,19 @@ if(NOT MEDIAHUB_CORE_ONLY)
 
     add_executable(mediahub_webview2_tests
         integration/webview2_browser_test.cpp
+        support/local_web_test_server.cpp
+        support/local_web_test_server.h
     )
     set_target_properties(mediahub_webview2_tests PROPERTIES AUTOMOC ON)
     target_include_directories(mediahub_webview2_tests PRIVATE
         "${PROJECT_SOURCE_DIR}/src/browser_webview2"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(mediahub_webview2_tests
         PRIVATE
             mediahub_browser_webview2
             MediaHub::WebView2
+            Qt5::Network
             Qt5::Test
     )
     target_compile_definitions(mediahub_webview2_tests PRIVATE
@@ -132,5 +136,5 @@ if(NOT MEDIAHUB_CORE_ONLY)
     mediahub_enable_warnings(mediahub_webview2_tests)
     mediahub_deploy_qt(mediahub_webview2_tests)
     add_test(NAME integration.webview2.initialization COMMAND mediahub_webview2_tests)
-    set_tests_properties(integration.webview2.initialization PROPERTIES TIMEOUT 15)
+    set_tests_properties(integration.webview2.initialization PROPERTIES TIMEOUT 90)
 endif()
