@@ -1,15 +1,63 @@
-if(NOT DEFINED MEDIAHUB_PACKAGE_DIR AND DEFINED PACKAGE_ROOT)
-    set(MEDIAHUB_PACKAGE_DIR "${PACKAGE_ROOT}")
+cmake_minimum_required(VERSION 3.20)
+
+set(mediahubPrimaryPackageDir "")
+if(DEFINED MEDIAHUB_PACKAGE_DIR AND NOT MEDIAHUB_PACKAGE_DIR STREQUAL "")
+    cmake_path(ABSOLUTE_PATH MEDIAHUB_PACKAGE_DIR NORMALIZE
+               OUTPUT_VARIABLE mediahubPrimaryPackageDir)
 endif()
 
-if(NOT DEFINED MEDIAHUB_PACKAGE_DIR)
-    message(FATAL_ERROR "Set MEDIAHUB_PACKAGE_DIR to the Release package directory.")
+set(mediahubAliasPackageDir "")
+if(DEFINED PACKAGE_ROOT AND NOT PACKAGE_ROOT STREQUAL "")
+    cmake_path(ABSOLUTE_PATH PACKAGE_ROOT NORMALIZE
+               OUTPUT_VARIABLE mediahubAliasPackageDir)
 endif()
 
-cmake_path(ABSOLUTE_PATH MEDIAHUB_PACKAGE_DIR NORMALIZE
-           OUTPUT_VARIABLE mediahubPackageDir)
+if(mediahubPrimaryPackageDir STREQUAL "" AND mediahubAliasPackageDir STREQUAL "")
+    message(FATAL_ERROR
+        "Set MEDIAHUB_PACKAGE_DIR or PACKAGE_ROOT to the Release package directory.")
+endif()
+
+if(NOT mediahubPrimaryPackageDir STREQUAL ""
+   AND NOT mediahubAliasPackageDir STREQUAL "")
+    set(mediahubPrimaryPackageDirForCompare "${mediahubPrimaryPackageDir}")
+    set(mediahubAliasPackageDirForCompare "${mediahubAliasPackageDir}")
+    if(WIN32)
+        string(TOLOWER "${mediahubPrimaryPackageDirForCompare}"
+               mediahubPrimaryPackageDirForCompare)
+        string(TOLOWER "${mediahubAliasPackageDirForCompare}"
+               mediahubAliasPackageDirForCompare)
+    endif()
+    if(NOT mediahubPrimaryPackageDirForCompare STREQUAL
+       mediahubAliasPackageDirForCompare)
+        message(FATAL_ERROR
+            "MEDIAHUB_PACKAGE_DIR and PACKAGE_ROOT identify different directories.")
+    endif()
+endif()
+
+if(NOT mediahubPrimaryPackageDir STREQUAL "")
+    set(mediahubPackageDir "${mediahubPrimaryPackageDir}")
+else()
+    set(mediahubPackageDir "${mediahubAliasPackageDir}")
+endif()
+
 if(NOT IS_DIRECTORY "${mediahubPackageDir}")
     message(FATAL_ERROR "Release package directory does not exist: ${mediahubPackageDir}")
+endif()
+
+file(GLOB_RECURSE mediahubPackageEntries
+     LIST_DIRECTORIES TRUE
+     RELATIVE "${mediahubPackageDir}"
+     "${mediahubPackageDir}/*")
+set(mediahubLinkEntries)
+foreach(packageEntry IN LISTS mediahubPackageEntries)
+    if(IS_SYMLINK "${mediahubPackageDir}/${packageEntry}")
+        list(APPEND mediahubLinkEntries "${packageEntry}")
+    endif()
+endforeach()
+if(mediahubLinkEntries)
+    list(JOIN mediahubLinkEntries "\n  " mediahubLinkSummary)
+    message(FATAL_ERROR
+        "Release package contains links:\n  ${mediahubLinkSummary}")
 endif()
 
 set(mediahubRequiredFiles
@@ -38,8 +86,12 @@ set(mediahubRequiredFiles
     licenses/THIRD-PARTY-NOTICES.md
 )
 foreach(requiredFile IN LISTS mediahubRequiredFiles)
-    if(NOT EXISTS "${mediahubPackageDir}/${requiredFile}")
-        message(FATAL_ERROR "Release package is missing ${requiredFile}.")
+    set(requiredPath "${mediahubPackageDir}/${requiredFile}")
+    if(NOT EXISTS "${requiredPath}"
+       OR IS_DIRECTORY "${requiredPath}"
+       OR IS_SYMLINK "${requiredPath}")
+        message(FATAL_ERROR
+            "Release package requires a regular file at ${requiredFile}.")
     endif()
 endforeach()
 
@@ -52,10 +104,6 @@ if(mediahubVlcPluginCount LESS 300)
         "expected at least 300.")
 endif()
 
-file(GLOB_RECURSE mediahubPackageEntries
-     LIST_DIRECTORIES TRUE
-     RELATIVE "${mediahubPackageDir}"
-     "${mediahubPackageDir}/*")
 set(mediahubForbiddenFiles)
 string(CONCAT mediahubBrowserDataPattern
     "(^|/)(profile[^/]*|cache([._-][^/]*)?|code cache|gpucache|"
@@ -73,8 +121,8 @@ foreach(packageEntry IN LISTS mediahubPackageEntries)
        OR packageEntryName STREQUAL "cmakecache.txt"
        OR packageEntryName STREQUAL "build.ninja"
        OR packageEntryName MATCHES "^vc_redist.*\\.exe$"
-       OR (packageEntryName MATCHES "\\.exe$"
-           AND NOT packageEntryName STREQUAL "mediahub.exe")
+       OR (packageEntryLower MATCHES "\\.exe$"
+           AND NOT packageEntryLower STREQUAL "mediahub.exe")
        OR packageEntryName MATCHES "test.*\\.(exe|txt)$"
        OR packageEntryName MATCHES ".*test.*\\.(exe|txt)$")
         list(APPEND mediahubForbiddenFiles "${packageEntry}")
@@ -83,10 +131,10 @@ endforeach()
 if(mediahubForbiddenFiles)
     list(JOIN mediahubForbiddenFiles "\n  " mediahubForbiddenSummary)
     message(FATAL_ERROR
-        "Release package contains browser data, a dynamic WebView2 Loader, "
+        "Release package contains links, browser data, a dynamic WebView2 Loader, "
         "or build/test/Debug files:\n  ${mediahubForbiddenSummary}")
 endif()
 
 message(STATUS "MediaHub Release package validated: "
-               "${mediahubVlcPluginCount} VLC plugins, no browser data or "
+               "${mediahubVlcPluginCount} VLC plugins, no links, browser data, or "
                "build/test/Debug files.")
