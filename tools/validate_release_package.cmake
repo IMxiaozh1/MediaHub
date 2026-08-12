@@ -1,3 +1,7 @@
+if(NOT DEFINED MEDIAHUB_PACKAGE_DIR AND DEFINED PACKAGE_ROOT)
+    set(MEDIAHUB_PACKAGE_DIR "${PACKAGE_ROOT}")
+endif()
+
 if(NOT DEFINED MEDIAHUB_PACKAGE_DIR)
     message(FATAL_ERROR "Set MEDIAHUB_PACKAGE_DIR to the Release package directory.")
 endif()
@@ -29,6 +33,8 @@ set(mediahubRequiredFiles
     licenses/Qt-LGPL-3.0.txt
     licenses/Qt-GPL-3.0.txt
     licenses/VLC-COPYING.txt
+    licenses/WebView2-LICENSE.txt
+    licenses/WebView2-NOTICE.txt
     licenses/THIRD-PARTY-NOTICES.md
 )
 foreach(requiredFile IN LISTS mediahubRequiredFiles)
@@ -46,21 +52,40 @@ if(mediahubVlcPluginCount LESS 300)
         "expected at least 300.")
 endif()
 
-file(GLOB_RECURSE mediahubForbiddenFiles LIST_DIRECTORIES FALSE
-     "${mediahubPackageDir}/*.lib"
-     "${mediahubPackageDir}/*.obj"
-     "${mediahubPackageDir}/*.pdb"
-     "${mediahubPackageDir}/*d.dll"
-     "${mediahubPackageDir}/CMakeCache.txt"
-     "${mediahubPackageDir}/build.ninja"
-     "${mediahubPackageDir}/vc_redist*.exe"
-     "${mediahubPackageDir}/*test*.exe"
-     "${mediahubPackageDir}/*test*.txt")
+file(GLOB_RECURSE mediahubPackageEntries
+     LIST_DIRECTORIES TRUE
+     RELATIVE "${mediahubPackageDir}"
+     "${mediahubPackageDir}/*")
+set(mediahubForbiddenFiles)
+set(mediahubBrowserDataPattern
+    "(^|/)(profile[^/]*|cache([._-][^/]*)?|code cache|gpucache|"
+    "shadercache|cookies?([._-][^/]*)?)($|/)")
+foreach(packageEntry IN LISTS mediahubPackageEntries)
+    string(TOLOWER "${packageEntry}" packageEntryLower)
+    get_filename_component(packageEntryName "${packageEntryLower}" NAME)
+
+    if(packageEntryLower MATCHES "${mediahubBrowserDataPattern}"
+       OR packageEntryLower MATCHES "(^|/)webview2loader\\.dll$"
+       OR packageEntryLower MATCHES "(^|/)(x86|arm64)/.*webview2loader"
+       OR packageEntryName MATCHES "\\.(lib|obj|pdb)$"
+       OR packageEntryName MATCHES "d\\.dll$"
+       OR packageEntryName STREQUAL "cmakecache.txt"
+       OR packageEntryName STREQUAL "build.ninja"
+       OR packageEntryName MATCHES "^vc_redist.*\\.exe$"
+       OR (packageEntryName MATCHES "\\.exe$"
+           AND NOT packageEntryName STREQUAL "mediahub.exe")
+       OR packageEntryName MATCHES "test.*\\.(exe|txt)$"
+       OR packageEntryName MATCHES ".*test.*\\.(exe|txt)$")
+        list(APPEND mediahubForbiddenFiles "${packageEntry}")
+    endif()
+endforeach()
 if(mediahubForbiddenFiles)
     list(JOIN mediahubForbiddenFiles "\n  " mediahubForbiddenSummary)
     message(FATAL_ERROR
-        "Release package contains build, test, or Debug files:\n  ${mediahubForbiddenSummary}")
+        "Release package contains browser data, a dynamic WebView2 Loader, "
+        "or build/test/Debug files:\n  ${mediahubForbiddenSummary}")
 endif()
 
 message(STATUS "MediaHub Release package validated: "
-               "${mediahubVlcPluginCount} VLC plugins, no build/test/Debug files.")
+               "${mediahubVlcPluginCount} VLC plugins, no browser data or "
+               "build/test/Debug files.")

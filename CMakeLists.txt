@@ -310,6 +310,13 @@ if(NOT MEDIAHUB_CORE_ONLY)
             message(FATAL_ERROR
                 "Release packaging requires ${MEDIAHUB_VLC_ROOT}/COPYING.txt from the VLC archive.")
         endif()
+        foreach(webView2LegalFile IN ITEMS LICENSE.txt NOTICE.txt)
+            if(NOT EXISTS "${MEDIAHUB_WEBVIEW2_ROOT}/${webView2LegalFile}")
+                message(FATAL_ERROR
+                    "Release packaging requires "
+                    "${MEDIAHUB_WEBVIEW2_ROOT}/${webView2LegalFile}.")
+            endif()
+        endforeach()
 
         install(TARGETS mediahub_gui RUNTIME DESTINATION .)
         install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui/resources/app_icon_source.png"
@@ -334,6 +341,16 @@ if(NOT MEDIAHUB_CORE_ONLY)
             "${MEDIAHUB_VLC_ROOT}/COPYING.txt"
             DESTINATION licenses
             RENAME VLC-COPYING.txt
+        )
+        install(FILES
+            "${MEDIAHUB_WEBVIEW2_ROOT}/LICENSE.txt"
+            DESTINATION licenses
+            RENAME WebView2-LICENSE.txt
+        )
+        install(FILES
+            "${MEDIAHUB_WEBVIEW2_ROOT}/NOTICE.txt"
+            DESTINATION licenses
+            RENAME WebView2-NOTICE.txt
         )
         install(FILES
             "${CMAKE_CURRENT_SOURCE_DIR}/licenses/THIRD-PARTY-NOTICES.md"

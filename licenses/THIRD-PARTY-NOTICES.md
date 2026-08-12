@@ -11,16 +11,17 @@ This Release package dynamically links to the following third-party software:
   binary distribution.
 
 The source tree also includes Microsoft WebView2 SDK 1.0.4129.50 as the fixed
-build input for the v0.6 browser integration. Its unmodified x64 native SDK
-files and legal materials are stored under `Third_Party/webview2/`. The SDK
-license is at `Third_Party/webview2/LICENSE.txt`, and the accompanying notices
-are at `Third_Party/webview2/NOTICE.txt`.
+build input for the v0.6 browser integration. MediaHub statically links the x64
+WebView2 Loader from that SDK; no `WebView2Loader.dll` is bundled. The SDK
+license and accompanying notices are included in this package.
 
 The corresponding license texts are included in this directory:
 
 - `Qt-LGPL-3.0.txt`
 - `Qt-GPL-3.0.txt`
 - `VLC-COPYING.txt`
+- `WebView2-LICENSE.txt`
+- `WebView2-NOTICE.txt`
 
 The Microsoft Visual C++ 2015-2022 Redistributable (x64) is a runtime
 prerequisite. Its installer is not bundled in this package.
