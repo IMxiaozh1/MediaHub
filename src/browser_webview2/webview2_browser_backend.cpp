@@ -28,6 +28,7 @@
 #include "browser_event_listener.h"
 #include "mediahub/logging/logger.h"
 #include "webview2_default_deny.h"
+#include "webview2_accelerator.h"
 #include "webview2_handles.h"
 #include "webview2_pending_request.h"
 #include "webview2_popup_window.h"
@@ -1244,6 +1245,9 @@ class WebView2BrowserBackend::Impl final {
         if (SUCCEEDED(result)) {
             result = registerFullScreenChanged();
         }
+        if (SUCCEEDED(result)) {
+            result = registerAcceleratorKeyPressed();
+        }
         return result;
     }
 
@@ -2082,6 +2086,7 @@ class WebView2BrowserBackend::Impl final {
                     const HRESULT status =
                         webView_->get_ContainsFullScreenElement(&isFullScreen);
                     if (SUCCEEDED(status)) {
+                        isWebFullScreen_ = isFullScreen != FALSE;
                         const std::uint64_t generation = generation_;
                         dispatchListener(
                             generation,
@@ -2101,6 +2106,63 @@ class WebView2BrowserBackend::Impl final {
             fullScreenChanged_.bind(token, [source](const EventRegistrationToken value) {
                 return source->remove_ContainsFullScreenElementChanged(value);
             });
+        }
+        return result;
+    }
+
+    // 调用线程：Controller 的 GUI STA；原生子窗口按键只投递稳定动作。
+    HRESULT registerAcceleratorKeyPressed() {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        const HRESULT result = controller_->add_AcceleratorKeyPressed(
+            Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2Controller*,
+                    ICoreWebView2AcceleratorKeyPressedEventArgs* const args)
+                    -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_ || args == nullptr) {
+                        return S_OK;
+                    }
+                    const bool isControlDown =
+                        (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                    const bool isAltDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                    const bool isShiftDown =
+                        (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    const bool isWindowsDown =
+                        (GetKeyState(VK_LWIN) & 0x8000) != 0 ||
+                        (GetKeyState(VK_RWIN) & 0x8000) != 0;
+                    const AcceleratorDispatch dispatch =
+                        handleAcceleratorKey(*args, isControlDown, isAltDown,
+                                             isShiftDown, isWindowsDown,
+                                             isWebFullScreen_);
+                    if (FAILED(dispatch.status)) {
+                        logOperationFailure("accelerator_handling_failed",
+                                            dispatch.status);
+                        return S_OK;
+                    }
+                    if (!dispatch.accelerator.has_value()) {
+                        return S_OK;
+                    }
+                    const std::uint64_t generation = generation_;
+                    dispatchListener(
+                        generation,
+                        [generation, accelerator = *dispatch.accelerator](
+                            gui::BrowserEventListener& listener) {
+                            listener.onAcceleratorRequested(generation,
+                                                            accelerator);
+                        });
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2Controller> source = controller_;
+            acceleratorKeyPressed_.bind(
+                token, [source](const EventRegistrationToken value) {
+                    return source->remove_AcceleratorKeyPressed(value);
+                });
         }
         return result;
     }
@@ -2203,6 +2265,7 @@ class WebView2BrowserBackend::Impl final {
         closePopups();
         cancelPendingSensitiveRequests();
         newWindowRequested_.reset();
+        acceleratorKeyPressed_.reset();
         launchingExternalUriScheme_.reset();
         serverCertificateErrorDetected_.reset();
         downloadStarting_.reset();
@@ -2222,6 +2285,7 @@ class WebView2BrowserBackend::Impl final {
         suspension_.invalidate();
         navigation_.reset(generation_);
         clearDataNavigation_.reset();
+        isWebFullScreen_ = false;
         parentWindow_ = nullptr;
         userDataDirectory_.clear();
     }
@@ -2252,6 +2316,7 @@ class WebView2BrowserBackend::Impl final {
     EventRegistration serverCertificateErrorDetected_;
     EventRegistration launchingExternalUriScheme_;
     EventRegistration newWindowRequested_;
+    EventRegistration acceleratorKeyPressed_;
     PendingRequestStore<PendingPermission> pendingPermissions_;
     PendingRequestStore<PendingScreenCapture> pendingScreenCaptures_;
     PendingRequestStore<PendingExternalProtocol> pendingExternalProtocols_;
@@ -2273,6 +2338,7 @@ class WebView2BrowserBackend::Impl final {
     bool isReady_{false};
     bool isVisible_{false};
     bool isAudioMutedDesired_{true};
+    bool isWebFullScreen_{false};
     SuspensionCoordinator suspension_;
     bool isShuttingDown_{true};
 };

@@ -30,6 +30,9 @@ class BrowserEventListener {
     // 调用线程：GUI 主线程。通知网页全屏状态变化。
     virtual void onFullScreenChanged(std::uint64_t generation,
                                      bool isFullScreen) = 0;
+    // 调用线程：GUI 主线程。原生网页子窗口按键只携带稳定动作和当前代次。
+    virtual void onAcceleratorRequested(std::uint64_t generation,
+                                        BrowserAccelerator accelerator) = 0;
     // 调用线程：GUI 主线程。来源必须是无查询参数的规范化站点来源。
     virtual void onPermissionRequested(std::uint64_t requestId,
                                        const QString& origin,

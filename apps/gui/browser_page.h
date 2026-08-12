@@ -60,6 +60,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
                                bool canGoForward) override;
     void onFullScreenChanged(std::uint64_t generation,
                              bool isFullScreen) override;
+    void onAcceleratorRequested(std::uint64_t generation,
+                                BrowserAccelerator accelerator) override;
     void onPermissionRequested(std::uint64_t requestId,
                                const QString& origin,
                                BrowserPermissionKind kind) override;

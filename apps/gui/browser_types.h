@@ -43,6 +43,15 @@ enum class BrowserPageState {
     ShuttingDown,
 };
 
+// WebView2 原生子窗口只向 GUI 投递稳定快捷键语义，不暴露 Windows 消息或虚拟键值。
+enum class BrowserAccelerator {
+    FocusAddress,
+    Back,
+    Forward,
+    Reload,
+    ExitFullScreen,
+};
+
 enum class BrowserPermissionKind {
     Camera,
     Microphone,

@@ -226,6 +226,37 @@ void BrowserPage::onFullScreenChanged(std::uint64_t generation,
     emit fullScreenChanged(isFullScreen);
 }
 
+void BrowserPage::onAcceleratorRequested(
+    const std::uint64_t generation, const BrowserAccelerator accelerator) {
+    if (generation != generation_ || isShuttingDown_) {
+        return;
+    }
+    switch (accelerator) {
+        case BrowserAccelerator::FocusAddress:
+            addressEdit_->setFocus();
+            addressEdit_->selectAll();
+            break;
+        case BrowserAccelerator::Back:
+            if (backButton_->isEnabled()) {
+                backend_.goBack();
+            }
+            break;
+        case BrowserAccelerator::Forward:
+            if (forwardButton_->isEnabled()) {
+                backend_.goForward();
+            }
+            break;
+        case BrowserAccelerator::Reload:
+            if (reloadButton_->isEnabled()) {
+                backend_.reloadOrStop();
+            }
+            break;
+        case BrowserAccelerator::ExitFullScreen:
+            exitWebFullScreen();
+            break;
+    }
+}
+
 void BrowserPage::onPermissionRequested(const std::uint64_t requestId,
                                         const QString& origin,
                                         const BrowserPermissionKind kind) {

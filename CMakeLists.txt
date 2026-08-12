@@ -239,6 +239,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     add_library(mediahub_browser_webview2 STATIC
         include/mediahub/browser_webview2/webview2_browser_backend.h
         src/browser_webview2/webview2_browser_backend.cpp
+        src/browser_webview2/webview2_accelerator.h
         src/browser_webview2/webview2_default_deny.h
         src/browser_webview2/webview2_handles.h
         src/browser_webview2/webview2_pending_request.h

@@ -163,6 +163,13 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         }
     }
 
+    void emitAcceleratorRequested(std::uint64_t generation,
+                                  gui::BrowserAccelerator accelerator) {
+        if (listener_ != nullptr) {
+            listener_->onAcceleratorRequested(generation, accelerator);
+        }
+    }
+
     void emitError(std::uint64_t generation, gui::BrowserErrorKind kind, long errorCode) {
         if (listener_ != nullptr) {
             listener_->onBrowserError(generation, kind, errorCode);

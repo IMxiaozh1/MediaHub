@@ -730,7 +730,7 @@ const QString& mainWindowStyleSheet() {
       QLineEdit#browserAddressEdit[responsiveSize="compact"],
       QPushButton#browserGoButton[responsiveSize="compact"],
       QPushButton#browserClearDataButton[responsiveSize="compact"],
-      QToolButton[responsiveSize="compact"] {
+      QFrame#browserToolbar QToolButton[responsiveSize="compact"] {
           font-size: 12px;
       }
       QLineEdit#browserAddressEdit[responsiveSize="normal"] {

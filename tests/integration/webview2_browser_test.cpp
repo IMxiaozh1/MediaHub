@@ -27,6 +27,7 @@
 #include "mediahub/logging/logger.h"
 #include "support/local_web_test_server.h"
 #include "webview2_default_deny.h"
+#include "webview2_accelerator.h"
 #include "webview2_handles.h"
 #include "webview2_pending_request.h"
 #include "webview2_state.h"
@@ -112,6 +113,47 @@ class FakeHandledArgs final {
     int calls{0};
     BOOL handled{FALSE};
     HRESULT result{S_OK};
+};
+
+class FakeAcceleratorArgs final {
+ public:
+    HRESULT get_KeyEventKind(COREWEBVIEW2_KEY_EVENT_KIND* const value) noexcept {
+        ++kindCalls;
+        *value = kind;
+        return kindResult;
+    }
+
+    HRESULT get_VirtualKey(UINT* const value) noexcept {
+        ++keyCalls;
+        *value = virtualKey;
+        return keyResult;
+    }
+
+    HRESULT get_PhysicalKeyStatus(
+        COREWEBVIEW2_PHYSICAL_KEY_STATUS* const value) noexcept {
+        ++physicalCalls;
+        *value = physicalStatus;
+        return physicalResult;
+    }
+
+    HRESULT put_Handled(const BOOL value) noexcept {
+        ++handledCalls;
+        handled = value;
+        return handledResult;
+    }
+
+    COREWEBVIEW2_KEY_EVENT_KIND kind{COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN};
+    UINT virtualKey{0};
+    COREWEBVIEW2_PHYSICAL_KEY_STATUS physicalStatus{};
+    HRESULT kindResult{S_OK};
+    HRESULT keyResult{S_OK};
+    HRESULT physicalResult{S_OK};
+    HRESULT handledResult{S_OK};
+    int kindCalls{0};
+    int keyCalls{0};
+    int physicalCalls{0};
+    int handledCalls{0};
+    BOOL handled{FALSE};
 };
 
 class FakeClosableController final {
@@ -530,6 +572,11 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
         ++fullScreenChangedCount_;
     }
 
+    void onAcceleratorRequested(std::uint64_t,
+                                gui::BrowserAccelerator) override {
+        recordCallbackThread();
+    }
+
     void onPermissionRequested(const std::uint64_t requestId,
                                const QString& origin,
                                const gui::BrowserPermissionKind kind) override {
@@ -725,6 +772,9 @@ class WebView2BrowserTest final : public QObject {
     void rejectsEmptyAndRelativeProfilePaths();
     void profileDirectoryRequiresAbsoluteApplicationData();
     void requiresEverySensitiveHandlerBeforeReady();
+    void mapsAndHandlesControllerAccelerators();
+    void acceleratorFailuresDoNotConsumeWebInput();
+    void registersAcceleratorBeforeReadyAndRevokesBeforeClose();
     void servesControlledPagesOverIpv4Loopback();
     void persistsAndClearsOnlyTemporaryProfileData();
     void followsControlledLoopbackRedirect();
@@ -1903,6 +1953,141 @@ void WebView2BrowserTest::profileDirectoryRequiresAbsoluteApplicationData() {
     QVERIFY(QFileInfo(profile).isAbsolute());
     QVERIFY(QDir::fromNativeSeparators(profile).endsWith(
         QStringLiteral("/WebView2/Profile-v1")));
+}
+
+void WebView2BrowserTest::mapsAndHandlesControllerAccelerators() {
+    struct Case {
+        UINT virtualKey;
+        bool isControlDown;
+        bool isAltDown;
+        gui::BrowserAccelerator accelerator;
+    };
+    const QList<Case> cases{
+        {static_cast<UINT>('L'), true, false,
+         gui::BrowserAccelerator::FocusAddress},
+        {VK_LEFT, false, true, gui::BrowserAccelerator::Back},
+        {VK_RIGHT, false, true, gui::BrowserAccelerator::Forward},
+        {static_cast<UINT>('R'), true, false,
+         gui::BrowserAccelerator::Reload},
+        {VK_F5, false, false, gui::BrowserAccelerator::Reload},
+        {VK_ESCAPE, false, false, gui::BrowserAccelerator::ExitFullScreen},
+    };
+    for (const Case& item : cases) {
+        FakeAcceleratorArgs args;
+        args.virtualKey = item.virtualKey;
+        if (item.isAltDown) {
+            args.kind = COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN;
+        }
+        const AcceleratorDispatch result = handleAcceleratorKey(
+            args, item.isControlDown, item.isAltDown, false, false,
+            item.accelerator == gui::BrowserAccelerator::ExitFullScreen);
+        QVERIFY(result.accelerator.has_value());
+        QCOMPARE(*result.accelerator, item.accelerator);
+        QCOMPARE(args.handledCalls, 1);
+        QCOMPARE(args.handled, TRUE);
+        QVERIFY(SUCCEEDED(result.status));
+    }
+
+    FakeAcceleratorArgs repeat;
+    repeat.virtualKey = VK_F5;
+    repeat.physicalStatus.WasKeyDown = TRUE;
+    const AcceleratorDispatch repeatResult =
+        handleAcceleratorKey(repeat, false, false, false, false, false);
+    QVERIFY(!repeatResult.accelerator.has_value());
+    QCOMPARE(repeat.handledCalls, 0);
+
+    FakeAcceleratorArgs keyUp;
+    keyUp.kind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP;
+    keyUp.virtualKey = VK_F5;
+    const AcceleratorDispatch keyUpResult =
+        handleAcceleratorKey(keyUp, false, false, false, false, false);
+    QVERIFY(!keyUpResult.accelerator.has_value());
+    QCOMPARE(keyUp.handledCalls, 0);
+}
+
+void WebView2BrowserTest::acceleratorFailuresDoNotConsumeWebInput() {
+    FakeAcceleratorArgs unknown;
+    unknown.virtualKey = static_cast<UINT>('X');
+    const AcceleratorDispatch unknownResult =
+        handleAcceleratorKey(unknown, true, false, false, false, false);
+    QVERIFY(!unknownResult.accelerator.has_value());
+    QCOMPARE(unknown.handledCalls, 0);
+
+    FakeAcceleratorArgs getterFailure;
+    getterFailure.virtualKey = static_cast<UINT>('L');
+    getterFailure.keyResult = E_FAIL;
+    const AcceleratorDispatch getterResult =
+        handleAcceleratorKey(getterFailure, true, false, false, false, false);
+    QVERIFY(!getterResult.accelerator.has_value());
+    QVERIFY(FAILED(getterResult.status));
+    QCOMPARE(getterFailure.handledCalls, 0);
+
+    FakeAcceleratorArgs setterFailure;
+    setterFailure.virtualKey = VK_F5;
+    setterFailure.handledResult = E_ACCESSDENIED;
+    const AcceleratorDispatch setterResult =
+        handleAcceleratorKey(setterFailure, false, false, false, false, false);
+    QVERIFY(!setterResult.accelerator.has_value());
+    QVERIFY(FAILED(setterResult.status));
+    QCOMPARE(setterFailure.handledCalls, 2);
+
+    FakeAcceleratorArgs escapeOutsideFullScreen;
+    escapeOutsideFullScreen.virtualKey = VK_ESCAPE;
+    const AcceleratorDispatch escapeResult = handleAcceleratorKey(
+        escapeOutsideFullScreen, false, false, false, false, false);
+    QVERIFY(!escapeResult.accelerator.has_value());
+    QCOMPARE(escapeOutsideFullScreen.handledCalls, 0);
+
+    FakeAcceleratorArgs shiftedReload;
+    shiftedReload.virtualKey = VK_F5;
+    const AcceleratorDispatch shiftedResult = handleAcceleratorKey(
+        shiftedReload, false, false, true, false, false);
+    QVERIFY(!shiftedResult.accelerator.has_value());
+    QCOMPARE(shiftedReload.handledCalls, 0);
+}
+
+void WebView2BrowserTest::registersAcceleratorBeforeReadyAndRevokesBeforeClose() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const int finishStart = source.indexOf(QStringLiteral("void finishController("));
+    const int finishEnd = source.indexOf(
+        QStringLiteral("HRESULT configureDefaultDownloadDirectory()"), finishStart);
+    const QString finish = source.mid(finishStart, finishEnd - finishStart);
+    const int registerEvents =
+        finish.indexOf(QStringLiteral("result = registerEvents();"));
+    const int ready = finish.indexOf(QStringLiteral("isReady_ = true;"));
+    QVERIFY(registerEvents >= 0);
+    QVERIFY(ready > registerEvents);
+    QVERIFY(source.contains(
+        QStringLiteral("result = registerAcceleratorKeyPressed();")));
+    const int handlerStart = source.indexOf(
+        QStringLiteral("HRESULT registerAcceleratorKeyPressed()"));
+    const int handlerEnd = source.indexOf(
+        QStringLiteral("void emitNavigationSnapshot"), handlerStart);
+    const QString handler = source.mid(handlerStart, handlerEnd - handlerStart);
+    QVERIFY(handler.contains(QStringLiteral("add_AcceleratorKeyPressed")));
+    QVERIFY(handler.contains(QStringLiteral("handleAcceleratorKey")));
+    QVERIFY(handler.contains(QStringLiteral("onAcceleratorRequested")));
+    QVERIFY(handler.contains(QStringLiteral("remove_AcceleratorKeyPressed")));
+    QFile policyFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_accelerator.h"));
+    QVERIFY(policyFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString policy = QString::fromUtf8(policyFile.readAll());
+    QVERIFY(policy.contains(QStringLiteral("put_Handled(TRUE)")));
+    QVERIFY(policy.contains(QStringLiteral("put_Handled(FALSE)")));
+
+    const int releaseStart = source.indexOf(
+        QStringLiteral("void releaseBrowserResources() noexcept"));
+    const int releaseEnd = source.indexOf(
+        QStringLiteral("void releaseComApartment() noexcept"), releaseStart);
+    const QString release = source.mid(releaseStart, releaseEnd - releaseStart);
+    const int revoke = release.indexOf(
+        QStringLiteral("acceleratorKeyPressed_.reset();"));
+    const int close = release.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(revoke >= 0);
+    QVERIFY(close > revoke);
 }
 
 void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {

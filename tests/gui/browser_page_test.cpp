@@ -49,6 +49,7 @@ class BrowserPageTest final : public QObject {
     void appliesResponsiveSizeAcrossToolbarBreakpoints();
     void routesBrowserHistoryShortcuts();
     void routesWebShortcutsWithoutNativeConflicts();
+    void routesNativeAcceleratorsThroughCurrentGeneration();
 };
 
 void BrowserPageTest::normalizesOnlySupportedTopLevelAddresses() {
@@ -781,6 +782,7 @@ void BrowserPageTest::appliesResponsiveSizeAcrossToolbarBreakpoints() {
         int addressFontPixels;
     };
     const QList<Breakpoint> breakpoints{
+        {QSize(800, 600), QStringLiteral("compact"), 12},
         {QSize(960, 640), QStringLiteral("normal"), 13},
         {QSize(1200, 800), QStringLiteral("large"), 15},
         {QSize(1600, 1000), QStringLiteral("extraLarge"), 17},
@@ -845,6 +847,39 @@ void BrowserPageTest::routesWebShortcutsWithoutNativeConflicts() {
     QTest::keyClick(address, Qt::Key_R, Qt::ControlModifier);
     QTest::keyClick(address, Qt::Key_F5);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::ReloadOrStop), 2);
+}
+
+void BrowserPageTest::routesNativeAcceleratorsThroughCurrentGeneration() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(1, QStringLiteral("https://example.com"),
+                                    QStringLiteral("Example"), true, true);
+
+    auto *const address = page.findChild<QLineEdit *>(
+        QStringLiteral("browserAddressEdit"));
+    QVERIFY(address != nullptr);
+    address->setText(QStringLiteral("https://example.com/path"));
+    address->setCursorPosition(0);
+    backend.emitAcceleratorRequested(2, BrowserAccelerator::FocusAddress);
+    QVERIFY(address->selectedText().isEmpty());
+    backend.emitAcceleratorRequested(1, BrowserAccelerator::FocusAddress);
+    QCOMPARE(address->selectedText(), address->text());
+
+    backend.emitAcceleratorRequested(1, BrowserAccelerator::Back);
+    backend.emitAcceleratorRequested(1, BrowserAccelerator::Forward);
+    backend.emitAcceleratorRequested(1, BrowserAccelerator::Reload);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::GoBack), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::GoForward), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ReloadOrStop), 1);
+
+    backend.emitAcceleratorRequested(1, BrowserAccelerator::ExitFullScreen);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ExitFullScreen), 0);
+    page.onFullScreenChanged(1, true);
+    backend.emitAcceleratorRequested(1, BrowserAccelerator::ExitFullScreen);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ExitFullScreen), 1);
 }
 
 }  // namespace mediahub::gui
