@@ -630,6 +630,70 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
         ++popupRejectedCount_;
     }
 
+    bool onNewTabRequested(const std::uint64_t newWindowRequestId,
+                           const QString& url) override {
+        recordCallbackThread();
+        requestedTabUrl_ = url;
+        if (backend_ == nullptr) {
+            return false;
+        }
+        const bool didCreate = backend_->createTab(
+            parentWindowHandle_, 2, url, tabGeneration_, newWindowRequestId);
+        if (didCreate) {
+            backend_->activateTab(2);
+            ++newTabRequestCount_;
+        }
+        return didCreate;
+    }
+
+    void onTabReady(const std::uint64_t tabId,
+                    const std::uint64_t generation) override {
+        recordCallbackThread();
+        if (tabId == 1) {
+            onBrowserReady(generation);
+            return;
+        }
+        readyTabId_ = tabId;
+        tabGeneration_ = generation;
+        isTabReady_ = true;
+    }
+
+    void onTabNavigationStarted(const std::uint64_t tabId,
+                                const std::uint64_t generation) override {
+        recordCallbackThread();
+        if (tabId == 1) {
+            onNavigationStarted(generation);
+            return;
+        }
+        startedTabId_ = tabId;
+        tabGeneration_ = generation;
+        ++tabNavigationStartedCount_;
+    }
+
+    void onTabNavigationCompleted(const std::uint64_t tabId,
+                                  const std::uint64_t generation,
+                                  const QString& visibleUrl,
+                                  const QString& title, bool, bool) override {
+        recordCallbackThread();
+        if (tabId == 1) {
+            onNavigationCompleted(generation, visibleUrl, title, false, false);
+            return;
+        }
+        completedTabId_ = tabId;
+        tabGeneration_ = generation;
+        tabVisibleUrl_ = visibleUrl;
+        tabTitle_ = title;
+        ++tabNavigationCompletedCount_;
+    }
+
+    void configureTabCreation(WebView2BrowserBackend* const backend,
+                              void* const parentWindowHandle,
+                              const std::uint64_t generation) noexcept {
+        backend_ = backend;
+        parentWindowHandle_ = parentWindowHandle;
+        tabGeneration_ = generation;
+    }
+
     [[nodiscard]] bool reachedTerminalState() const noexcept {
         return isReady_ || hasError_;
     }
@@ -700,6 +764,17 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
     [[nodiscard]] int popupRejectedCount() const noexcept {
         return popupRejectedCount_;
     }
+    [[nodiscard]] bool isTabReady() const noexcept { return isTabReady_; }
+    [[nodiscard]] std::uint64_t readyTabId() const noexcept {
+        return readyTabId_;
+    }
+    [[nodiscard]] const QString& tabTitle() const noexcept { return tabTitle_; }
+    [[nodiscard]] int tabNavigationCompletedCount() const noexcept {
+        return tabNavigationCompletedCount_;
+    }
+    [[nodiscard]] int newTabRequestCount() const noexcept {
+        return newTabRequestCount_;
+    }
 
  private:
     void recordCallbackThread() {
@@ -735,6 +810,19 @@ class RecordingBrowserListener final : public gui::BrowserEventListener {
     bool isFullScreen_{false};
     int fullScreenChangedCount_{0};
     int popupRejectedCount_{0};
+    WebView2BrowserBackend* backend_{nullptr};
+    void* parentWindowHandle_{nullptr};
+    std::uint64_t tabGeneration_{0};
+    std::uint64_t readyTabId_{0};
+    std::uint64_t startedTabId_{0};
+    std::uint64_t completedTabId_{0};
+    QString requestedTabUrl_;
+    QString tabVisibleUrl_;
+    QString tabTitle_;
+    int tabNavigationStartedCount_{0};
+    int tabNavigationCompletedCount_{0};
+    int newTabRequestCount_{0};
+    bool isTabReady_{false};
 };
 
 class WebView2BrowserTest final : public QObject {
@@ -745,15 +833,13 @@ class WebView2BrowserTest final : public QObject {
     void suspensionCoordinatesPendingResume();
     void suspensionHandlesFailureAndStaleCompletion();
     void suspensionIgnoresCompletionAfterInvalidation();
-    void popupCoordinatorLimitsThreeWindowsAndRejectsShutdown();
     void popupRequestCompletesEverySafetyActionExactlyOnce();
-    void popupFailureReclamationHasSingleOwner();
     void navigationBindsExplicitGenerationsInOrder();
+    void secondaryTabBindsNavigationIdsToGenerations();
     void navigationStopsBeforeStartingAndIgnoresOldCompletion();
     void navigationUsesCurrentGenerationForHistory();
     void clearDataWaitsForMatchingInternalBlankNavigation();
     void defaultDenyPoliciesApplyExactArguments();
-    void popupSafetyFailuresCloseBeforeReturning();
     void pendingSensitiveDecisionsCompleteExactlyOnce();
     void permissionRejectionCompletesWithoutArgs3();
     void screenCaptureDecisionsAllowOnlyOnce();
@@ -775,9 +861,13 @@ class WebView2BrowserTest final : public QObject {
     void mapsAndHandlesControllerAccelerators();
     void acceleratorFailuresDoNotConsumeWebInput();
     void registersAcceleratorBeforeReadyAndRevokesBeforeClose();
+    void secondaryTabsUseCompleteProfileClearSequence();
+    void rejectsSensitiveRequestsFromInactiveTabs();
     void servesControlledPagesOverIpv4Loopback();
     void persistsAndClearsOnlyTemporaryProfileData();
+    void clearsSharedProfileFromSecondaryTab();
     void followsControlledLoopbackRedirect();
+    void createsSharedProfileTabAndClosesIt();
     void popupSharesTheTemporaryProfile();
     void deniesControlledMicrophonePermission();
     void downloadsOnlyToTheChosenTemporaryPath();
@@ -874,25 +964,6 @@ void WebView2BrowserTest::suspensionIgnoresCompletionAfterInvalidation() {
     QVERIFY(coordinator.mustMute());
 }
 
-void WebView2BrowserTest::popupCoordinatorLimitsThreeWindowsAndRejectsShutdown() {
-    PopupCoordinator coordinator;
-
-    QVERIFY(coordinator.tryReserve());
-    QVERIFY(coordinator.tryReserve());
-    QVERIFY(coordinator.tryReserve());
-    QVERIFY(!coordinator.tryReserve());
-    QCOMPARE(coordinator.activeCount(), std::size_t{3});
-
-    coordinator.release();
-    QVERIFY(coordinator.tryReserve());
-    coordinator.beginShutdown();
-    QVERIFY(!coordinator.tryReserve());
-    QCOMPARE(coordinator.activeCount(), std::size_t{0});
-
-    coordinator.reset();
-    QVERIFY(coordinator.tryReserve());
-}
-
 void WebView2BrowserTest::popupRequestCompletesEverySafetyActionExactlyOnce() {
     std::vector<QString> order;
     FakeDeferral deferral;
@@ -922,69 +993,6 @@ void WebView2BrowserTest::popupRequestCompletesEverySafetyActionExactlyOnce() {
                                    QStringLiteral("deferral")}));
 }
 
-void WebView2BrowserTest::popupFailureReclamationHasSingleOwner() {
-    constexpr std::uintptr_t kReusedAddress = 0x1234;
-    std::uintptr_t activeAddress = kReusedAddress;
-    int activeCount = 1;
-    int releaseCount = 0;
-    std::vector<std::function<void()>> queuedReclaims;
-
-    bool syncNotifiesOwner = true;
-    int syncCloseCalls = 0;
-    closeAfterPopupFailure(
-        PopupFailureTiming::SynchronousCreate,
-        [&syncNotifiesOwner, &syncCloseCalls](const bool notifyOwner) {
-            ++syncCloseCalls;
-            syncNotifiesOwner = notifyOwner;
-        });
-    QCOMPARE(syncCloseCalls, 1);
-    QVERIFY(!syncNotifiesOwner);
-
-    activeAddress = 0;
-    --activeCount;
-    ++releaseCount;
-    activeAddress = kReusedAddress;
-    ++activeCount;
-    QCOMPARE(queuedReclaims.size(), std::size_t{0});
-    QCOMPARE(activeAddress, kReusedAddress);
-    QCOMPARE(activeCount, 1);
-
-    bool asyncNotifiesOwner = false;
-    int asyncCloseCalls = 0;
-    closeAfterPopupFailure(
-        PopupFailureTiming::AsynchronousCompletion,
-        [&asyncNotifiesOwner, &asyncCloseCalls](const bool notifyOwner) {
-            ++asyncCloseCalls;
-            asyncNotifiesOwner = notifyOwner;
-        });
-    QCOMPARE(asyncCloseCalls, 1);
-    QVERIFY(asyncNotifiesOwner);
-    queuedReclaims.push_back([&activeAddress, &activeCount, &releaseCount] {
-        if (activeAddress == kReusedAddress) {
-            activeAddress = 0;
-            --activeCount;
-            ++releaseCount;
-        }
-    });
-
-    auto reclaim = std::move(queuedReclaims.front());
-    queuedReclaims.erase(queuedReclaims.begin());
-    reclaim();
-    QCOMPARE(activeAddress, std::uintptr_t{0});
-    QCOMPARE(activeCount, 0);
-    QCOMPARE(releaseCount, 2);
-    QCOMPARE(queuedReclaims.size(), std::size_t{0});
-
-    QFile popupSourceFile(QStringLiteral(
-        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
-    QVERIFY(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QString popupSource = QString::fromUtf8(popupSourceFile.readAll());
-    QVERIFY(popupSource.contains(QStringLiteral(
-        "closeAfterPopupFailure(PopupFailureTiming::SynchronousCreate")));
-    QVERIFY(popupSource.contains(QStringLiteral(
-        "closeAfterPopupFailure(PopupFailureTiming::AsynchronousCompletion")));
-}
-
 void WebView2BrowserTest::navigationBindsExplicitGenerationsInOrder() {
     NavigationTracker tracker(1);
     tracker.acceptNavigate(11);
@@ -1010,6 +1018,22 @@ void WebView2BrowserTest::navigationBindsExplicitGenerationsInOrder() {
     QVERIFY(activeCompletion.shouldReport);
     QCOMPARE(activeCompletion.generation, std::uint64_t{12});
     QVERIFY(!tracker.isNavigating());
+}
+
+void WebView2BrowserTest::secondaryTabBindsNavigationIdsToGenerations() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+
+    QVERIFY(source.contains(QStringLiteral("navigation_.reset(generation)")));
+    QVERIFY(source.contains(QStringLiteral("navigation_.acceptNavigate(generation)")));
+    QVERIFY(source.contains(QStringLiteral("navigation_.start(navigationId)")));
+    QVERIFY(source.contains(QStringLiteral("navigation_.complete(navigationId)")));
+    QVERIFY(source.contains(QStringLiteral(
+        "SnapshotKind::NavigationCompleted")));
+    QVERIFY(source.contains(QStringLiteral("SnapshotKind::NavigationStopped")));
 }
 
 void WebView2BrowserTest::navigationStopsBeforeStartingAndIgnoresOldCompletion() {
@@ -1112,61 +1136,6 @@ void WebView2BrowserTest::defaultDenyPoliciesApplyExactArguments() {
     QVERIFY(cancelCertificateError<FakeCertificateArgs>(nullptr) == E_POINTER);
     QVERIFY(cancelExternalUri<FakeCancelArgs>(nullptr) == E_POINTER);
     QVERIFY(rejectNewWindow<FakeHandledArgs>(nullptr) == E_POINTER);
-}
-
-void WebView2BrowserTest::popupSafetyFailuresCloseBeforeReturning() {
-    FakePermissionArgs permission;
-    permission.result = E_ACCESSDENIED;
-    QCOMPARE(denyPermission(&permission), E_ACCESSDENIED);
-
-    FakeDownloadArgs screenCapture;
-    screenCapture.cancelResult = E_ACCESSDENIED;
-    QCOMPARE(cancelScreenCapture(&screenCapture), E_ACCESSDENIED);
-    QCOMPARE(screenCapture.cancelCalls, 1);
-    QCOMPARE(screenCapture.handledCalls, 1);
-
-    FakeDownloadArgs download;
-    download.cancelResult = E_ACCESSDENIED;
-    QCOMPARE(cancelDownload(&download), E_ACCESSDENIED);
-    QCOMPARE(download.cancelCalls, 1);
-    QCOMPARE(download.handledCalls, 1);
-
-    FakeCertificateArgs certificate;
-    certificate.result = E_ACCESSDENIED;
-    QCOMPARE(cancelCertificateError(&certificate), E_ACCESSDENIED);
-
-    FakeCancelArgs externalUri;
-    externalUri.result = E_ACCESSDENIED;
-    QCOMPARE(cancelExternalUri(&externalUri), E_ACCESSDENIED);
-
-    int closeCalls = 0;
-    QCOMPARE(completePopupSafetyDecision(S_OK, [&closeCalls] { ++closeCalls; }),
-             S_OK);
-    QCOMPARE(closeCalls, 0);
-
-    QCOMPARE(completePopupSafetyDecision(E_ACCESSDENIED,
-                                         [&closeCalls] { ++closeCalls; }),
-             S_OK);
-    QCOMPARE(closeCalls, 1);
-
-    QFile popupSourceFile(QStringLiteral(
-        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
-    QVERIFY(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QString popupSource = QString::fromUtf8(popupSourceFile.readAll());
-    const QStringList handlerMarkers{
-        QStringLiteral("handleSafetyDecision(denyPermission(args))"),
-        QStringLiteral("handleSafetyDecision(cancelScreenCapture(args))"),
-        QStringLiteral("handleSafetyDecision(cancelDownload(args))"),
-        QStringLiteral("handleSafetyDecision(cancelCertificateError(args))"),
-        QStringLiteral("handleSafetyDecision(cancelExternalUri(args))"),
-    };
-    for (const QString& marker : handlerMarkers) {
-        QVERIFY2(popupSource.contains(marker), qPrintable(marker));
-    }
-    QVERIFY(popupSource.contains(QStringLiteral(
-        "safetyResult, [this] { closeInternal(true); }")));
-    QVERIFY(!popupSource.contains(QStringLiteral("PostMessageW(")));
-    QVERIFY(!popupSource.contains(QStringLiteral("kSafetyFailureCloseMessage")));
 }
 
 void WebView2BrowserTest::pendingSensitiveDecisionsCompleteExactlyOnce() {
@@ -1883,14 +1852,14 @@ void WebView2BrowserTest::controllerCompletionAdoptsOnlyCurrentSuccess() {
 
     QFile mainSourceFile(QStringLiteral(
         MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
-    QFile popupSourceFile(QStringLiteral(
-        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
     QVERIFY(mainSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
-    QVERIFY(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    QVERIFY(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text));
     const QString marker =
         QStringLiteral("ControllerAdoptionTransaction<ICoreWebView2Controller>");
     QVERIFY(QString::fromUtf8(mainSourceFile.readAll()).contains(marker));
-    QVERIFY(QString::fromUtf8(popupSourceFile.readAll()).contains(marker));
+    QVERIFY(QString::fromUtf8(tabSourceFile.readAll()).contains(marker));
 }
 
 void WebView2BrowserTest::shutdownFullScreenExitRemainsReachableAndOrdered() {
@@ -1917,14 +1886,12 @@ void WebView2BrowserTest::shutdownFullScreenExitRemainsReachableAndOrdered() {
 
     const int fullScreenExit = release.indexOf(
         QStringLiteral("requestExitFullScreenForShutdown()"));
-    const int popupClose = release.indexOf(QStringLiteral("closePopups()"));
     const int firstTokenReset = release.indexOf(
         QStringLiteral("newWindowRequested_.reset"));
     const int controllerClose = release.indexOf(
         QStringLiteral("controller_->Close()"));
     QVERIFY(fullScreenExit >= 0);
-    QVERIFY(popupClose > fullScreenExit);
-    QVERIFY(firstTokenReset > popupClose);
+    QVERIFY(firstTokenReset > fullScreenExit);
     QVERIFY(controllerClose > firstTokenReset);
 }
 
@@ -1936,7 +1903,8 @@ void WebView2BrowserTest::rejectsEmptyAndRelativeProfilePaths() {
         backend.setEventListener(&listener);
         backend.initialize(nullptr, profile, kGeneration);
 
-        QVERIFY(listener.hasError());
+        QVERIFY(!listener.hasError());
+        QVERIFY(waitUntil([&listener] { return listener.hasError(); }, 1000));
         QCOMPARE(listener.generation(), kGeneration);
         QCOMPARE(listener.errorKind(), gui::BrowserErrorKind::ProfileUnavailable);
         QCOMPARE(listener.errorCode(), static_cast<long>(E_INVALIDARG));
@@ -2096,33 +2064,47 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
              qPrintable(sourceFile.errorString()));
     const QString source = QString::fromUtf8(sourceFile.readAll());
-    QFile popupSourceFile(QStringLiteral(
-        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_popup_window.cpp"));
-    QVERIFY2(popupSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
-             qPrintable(popupSourceFile.errorString()));
-    const QString popupSource = QString::fromUtf8(popupSourceFile.readAll());
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabSourceFile.errorString()));
+    const QString tabSource = QString::fromUtf8(tabSourceFile.readAll());
 
-    const int popupCreateStart = popupSource.indexOf(
-        QStringLiteral("HRESULT WebView2PopupWindow::createFor("));
-    const int popupCreateEnd = popupSource.indexOf(
-        QStringLiteral("void WebView2PopupWindow::close()"));
+    const int popupCreateStart = tabSource.indexOf(
+        QStringLiteral("HRESULT WebView2TabController::create("));
+    const int popupCreateEnd = tabSource.indexOf(
+        QStringLiteral("HRESULT WebView2TabController::createController()"));
     QVERIFY(popupCreateStart >= 0);
     QVERIFY(popupCreateEnd > popupCreateStart);
-    const QString popupCreate = popupSource.mid(
+    const QString popupCreate = tabSource.mid(
         popupCreateStart, popupCreateEnd - popupCreateStart);
-    const int preparePopup =
-        popupCreate.indexOf(QStringLiteral("preparePopupRequest"));
     const int storePopupDeferral =
-        popupCreate.indexOf(QStringLiteral("pendingDeferral_ = deferral"));
-    const int rejectFailedPreparation =
-        popupCreate.indexOf(QStringLiteral("if (FAILED(result)"));
-    QVERIFY(preparePopup >= 0);
-    QVERIFY(storePopupDeferral > preparePopup);
-    QVERIFY(rejectFailedPreparation > storePopupDeferral);
+        popupCreate.indexOf(QStringLiteral("pendingDeferral_ = pendingDeferral"));
+    QVERIFY(storePopupDeferral >= 0);
     QVERIFY(popupCreate.contains(QStringLiteral("completePendingRequest(false)")));
-    QVERIFY(popupSource.contains(
+    QVERIFY(tabSource.contains(
         QStringLiteral("CreateCoreWebView2ControllerWithOptions")));
-    QVERIFY(popupSource.contains(QStringLiteral("options->put_ProfileName")));
+    QVERIFY(tabSource.contains(QStringLiteral("options->put_ProfileName")));
+    const QStringList tabSensitiveCallbacks{
+        QStringLiteral("permissionCallback_"),
+        QStringLiteral("screenCaptureCallback_"),
+        QStringLiteral("downloadCallback_"),
+        QStringLiteral("certificateCallback_"),
+        QStringLiteral("externalProtocolCallback_"),
+    };
+    for (const QString& callback : tabSensitiveCallbacks) {
+        QVERIFY2(tabSource.contains(callback), qPrintable(callback));
+    }
+    const QStringList sharedSensitiveHandlers{
+        QStringLiteral("handlePermissionRequest(tabId, tabGeneration, args)"),
+        QStringLiteral("handleScreenCaptureRequest(tabId, tabGeneration, args)"),
+        QStringLiteral("handleDownloadRequest(tabId, tabGeneration, args)"),
+        QStringLiteral("handleCertificateRequest(tabId, tabGeneration, args)"),
+        QStringLiteral("handleExternalProtocolRequest(tabId, tabGeneration"),
+    };
+    for (const QString& handler : sharedSensitiveHandlers) {
+        QVERIFY2(source.contains(handler), qPrintable(handler));
+    }
 
     const int registerEventsStart = source.indexOf(QStringLiteral("HRESULT registerEvents()"));
     const int registerEventsEnd =
@@ -2241,11 +2223,28 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
                        QStringLiteral("HRESULT registerNavigationStarting()"));
     QVERIFY(newWindowHandler.contains(
         QStringLiteral("handleNewWindowRequest(args)")));
-    QVERIFY(source.contains(QStringLiteral("popupCoordinator_.tryReserve()")));
-    QVERIFY(source.contains(QStringLiteral("std::make_unique<WebView2PopupWindow>")));
-    QVERIFY(source.contains(QStringLiteral("listener.onPopupRejected()")));
     QVERIFY(source.contains(
-        QStringLiteral("return FAILED(result) ? result : S_OK;")));
+        QStringLiteral("listener.onNewTabRequested(requestId, url)")));
+    QVERIFY(source.contains(QStringLiteral("listener.onTabDocumentStateChanged")));
+    QVERIFY(source.contains(QStringLiteral("preparePopupRequest(args")));
+    QVERIFY(source.contains(QStringLiteral("pendingNewWindows_.insert")));
+    QVERIFY(source.contains(QStringLiteral("pendingNewWindows_.take(requestId)")));
+    QVERIFY(source.contains(QStringLiteral("pendingNewWindows_.takeAll()")));
+    QVERIFY(!source.contains(QStringLiteral("pendingNewWindowArgs_")));
+    const int dispatchStart = source.indexOf(
+        QStringLiteral("void dispatchListener("));
+    const int dispatchEnd = source.indexOf(
+        QStringLiteral("void reportError("), dispatchStart);
+    QVERIFY(dispatchStart >= 0);
+    QVERIFY(dispatchEnd > dispatchStart);
+    const QString dispatchers =
+        source.mid(dispatchStart, dispatchEnd - dispatchStart);
+    QCOMPARE(dispatchers.count(QStringLiteral("Qt::QueuedConnection")), 2);
+    QVERIFY(!dispatchers.contains(QStringLiteral("QThread::currentThread")));
+    QVERIFY(source.contains(QStringLiteral("std::make_unique<WebView2TabController>")));
+    QVERIFY(!source.contains(QStringLiteral("std::make_unique<WebView2PopupWindow>")));
+    QVERIFY(source.contains(QStringLiteral("listener.onPopupRejected()")));
+    QVERIFY(source.contains(QStringLiteral("return rejectNewWindow(args);")));
 
     const QStringList requiredBindMarkers{
         QStringLiteral("permissionRequested_.bind"),
@@ -2304,17 +2303,125 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     const int controllerClose =
         releaseResources.indexOf(QStringLiteral("controller_->Close()"));
     QVERIFY(controllerClose >= 0);
-    const int popupClose =
-        releaseResources.indexOf(QStringLiteral("closePopups()"));
     const int firstTokenReset = releaseResources.indexOf(
         QStringLiteral("newWindowRequested_.reset"));
-    QVERIFY(popupClose >= 0);
-    QVERIFY(firstTokenReset > popupClose);
+    QVERIFY(firstTokenReset >= 0);
     for (const QString& marker : requiredResetMarkers) {
         const int reset = releaseResources.indexOf(marker);
         QVERIFY2(reset >= 0, qPrintable(marker));
         QVERIFY2(reset < controllerClose, qPrintable(marker));
     }
+}
+
+void WebView2BrowserTest::secondaryTabsUseCompleteProfileClearSequence() {
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabSourceFile.errorString()));
+    const QString tabSource = QString::fromUtf8(tabSourceFile.readAll());
+    const int eventsStart = tabSource.indexOf(QStringLiteral(
+        "HRESULT WebView2TabController::registerEvents()"));
+    const int eventsEnd = tabSource.indexOf(QStringLiteral(
+        "void WebView2TabController::emitNavigationSnapshot("), eventsStart);
+    QVERIFY(eventsStart >= 0);
+    QVERIFY(eventsEnd > eventsStart);
+    const QString events = tabSource.mid(eventsStart, eventsEnd - eventsStart);
+    QVERIFY(events.count(QStringLiteral("completeClearData(E_POINTER)")) >= 2);
+    QVERIFY(events.contains(QStringLiteral("if (FAILED(uriStatus))")));
+    QVERIFY(events.contains(QStringLiteral("completeClearData(uriStatus)")));
+
+    const int clearStart = tabSource.indexOf(QStringLiteral(
+        "void WebView2TabController::clearBrowsingData("));
+    const int clearEnd = tabSource.indexOf(QStringLiteral(
+        "void WebView2TabController::completeClearData("), clearStart);
+    QVERIFY(clearStart >= 0);
+    QVERIFY(clearEnd > clearStart);
+    const QString clear = tabSource.mid(clearStart, clearEnd - clearStart);
+    const int allProfile = clear.indexOf(QStringLiteral(
+        "COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_PROFILE"));
+    const int certificates = clear.indexOf(
+        QStringLiteral("ClearServerCertificateErrorActions"));
+    const int blank = clear.indexOf(QStringLiteral("Navigate(L\"about:blank\")"));
+    QVERIFY(allProfile >= 0);
+    QVERIFY(certificates > allProfile);
+    QVERIFY(blank > certificates);
+    QVERIFY(clear.contains(QStringLiteral("dataAndCertificatesCleared")));
+    QVERIFY(clear.contains(QStringLiteral("blankRequestFailed")));
+    QVERIFY(clear.contains(
+        QStringLiteral("isClearedBlankSnapshotSuppressed_ = true")));
+
+    const int completionStart = tabSource.indexOf(QStringLiteral(
+        "ICoreWebView2NavigationCompletedEventArgs* args"));
+    const int completionEnd = tabSource.indexOf(
+        QStringLiteral("DocumentTitleChanged"), completionStart);
+    QVERIFY(completionStart >= 0);
+    QVERIFY(completionEnd > completionStart);
+    const QString completion =
+        tabSource.mid(completionStart, completionEnd - completionStart);
+    QVERIFY(completion.contains(QStringLiteral("ownsNavigation")));
+    QVERIFY(completion.contains(QStringLiteral("ClearDataNavigationOutcome::Succeeded")));
+    QVERIFY(completion.contains(QStringLiteral("completeClearData")));
+    QVERIFY(tabSource.contains(
+        QStringLiteral("!isClearedBlankSnapshotSuppressed_")));
+}
+
+void WebView2BrowserTest::rejectsSensitiveRequestsFromInactiveTabs() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const QStringList handlers{
+        QStringLiteral("HRESULT handlePermissionRequest("),
+        QStringLiteral("HRESULT handleScreenCaptureRequest("),
+        QStringLiteral("HRESULT handleDownloadRequest("),
+        QStringLiteral("HRESULT handleCertificateRequest("),
+        QStringLiteral("HRESULT handleExternalProtocolRequest("),
+    };
+    for (const QString& handler : handlers) {
+        const int start = source.indexOf(handler);
+        QVERIFY2(start >= 0, qPrintable(handler));
+        const int end = source.indexOf(QStringLiteral("\n    HRESULT "), start + 1);
+        const QString segment =
+            source.mid(start, end > start ? end - start : source.size() - start);
+        const bool hasInactiveRejection =
+            segment.contains(QStringLiteral("tabId != activeTabId_"));
+        const bool hasActiveOnlyGate =
+            segment.contains(QStringLiteral("tabId == activeTabId_"));
+        QVERIFY2(hasInactiveRejection || hasActiveOnlyGate,
+                 qPrintable(handler));
+    }
+
+    const QStringList mainHandlers{
+        QStringLiteral("HRESULT registerPermissionRequested()"),
+        QStringLiteral("HRESULT registerScreenCaptureStarting()"),
+        QStringLiteral("HRESULT registerDownloadStarting()"),
+        QStringLiteral("HRESULT registerServerCertificateErrorDetected()"),
+        QStringLiteral("HRESULT registerLaunchingExternalUriScheme()"),
+        QStringLiteral("HRESULT registerFullScreenChanged()"),
+        QStringLiteral("HRESULT registerAcceleratorKeyPressed()"),
+    };
+    for (const QString& handler : mainHandlers) {
+        const int start = source.indexOf(handler);
+        QVERIFY2(start >= 0, qPrintable(handler));
+        const int end = source.indexOf(QStringLiteral("\n    HRESULT "), start + 1);
+        const QString segment =
+            source.mid(start, end > start ? end - start : source.size() - start);
+        QVERIFY2(segment.contains(QStringLiteral("activeTabId_ != 1")),
+                 qPrintable(handler));
+    }
+
+    const int navigationStart = source.indexOf(
+        QStringLiteral("HRESULT registerNavigationStarting()"));
+    const int navigationEnd = source.indexOf(
+        QStringLiteral("HRESULT registerNavigationCompleted()"),
+        navigationStart + 1);
+    QVERIFY(navigationStart >= 0);
+    QVERIFY(navigationEnd > navigationStart);
+    const QString navigationHandler =
+        source.mid(navigationStart, navigationEnd - navigationStart);
+    QVERIFY2(!navigationHandler.contains(QStringLiteral("activeTabId_ != 1")),
+             "后台主标签的普通导航必须继续更新独立状态");
 }
 
 void WebView2BrowserTest::servesControlledPagesOverIpv4Loopback() {
@@ -2426,6 +2533,69 @@ void WebView2BrowserTest::persistsAndClearsOnlyTemporaryProfileData() {
     QVERIFY(profile.cleanup());
 }
 
+void WebView2BrowserTest::clearsSharedProfileFromSecondaryTab() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实次级标签清除测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    void* const parentWindowHandle = reinterpret_cast<void*>(window.winId());
+    backend.initialize(parentWindowHandle, profile.path(), 220);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+
+    backend.navigate(server.url(QStringLiteral("/storage/set")).toString(), 221);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.title() == QStringLiteral("stored"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    QVERIFY(backend.createTab(
+        parentWindowHandle, 2,
+        server.url(QStringLiteral("/storage/read")).toString(), 222));
+    backend.activateTab(2);
+    const bool didShareProfile = waitUntil(
+        [&listener] {
+            return listener.isTabReady() &&
+                   listener.tabTitle() ==
+                       QStringLiteral("cookie=1;local=1;indexed=1");
+        },
+        kRuntimeBehaviorTimeoutMilliseconds);
+    QVERIFY2(didShareProfile,
+             qPrintable(QStringLiteral("tab-title=%1 ready=%2 error=%3")
+                            .arg(listener.tabTitle())
+                            .arg(listener.isTabReady())
+                            .arg(listener.hasError())));
+
+    backend.clearBrowsingData(223);
+    QVERIFY(waitUntil(
+        [&listener] {
+            return listener.browsingDataClearedCount() == 1 &&
+                   listener.clearedGeneration() == 223;
+        },
+        kRuntimeBehaviorTimeoutMilliseconds));
+    backend.navigate(server.url(QStringLiteral("/storage/read")).toString(), 224);
+    QVERIFY(waitUntil(
+        [&listener] { return listener.tabTitle() == QStringLiteral("empty"); },
+        kRuntimeBehaviorTimeoutMilliseconds));
+
+    backend.closeTab(2);
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
 void WebView2BrowserTest::followsControlledLoopbackRedirect() {
     if (!isWebView2RuntimeAvailable()) {
         QSKIP("本机没有 WebView2 Runtime，无法执行真实重定向测试");
@@ -2471,6 +2641,66 @@ void WebView2BrowserTest::followsControlledLoopbackRedirect() {
     QVERIFY(profile.cleanup());
 }
 
+void WebView2BrowserTest::createsSharedProfileTabAndClosesIt() {
+    if (!isWebView2RuntimeAvailable()) {
+        QSKIP("本机没有 WebView2 Runtime，无法执行真实标签集成测试");
+    }
+
+    LocalWebTestServer server;
+    QVERIFY(server.start());
+    QWidget window;
+    window.resize(640, 360);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window, 5000));
+    TemporaryWebView2Profile profile;
+    QVERIFY(profile.isValid());
+
+    WebView2BrowserBackend backend;
+    RecordingBrowserListener listener;
+    backend.setEventListener(&listener);
+    activateBackend(backend);
+    void* const parentWindowHandle = reinterpret_cast<void*>(window.winId());
+    backend.initialize(parentWindowHandle, profile.path(), 350);
+    QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
+                      kInitializationTimeoutMilliseconds));
+    QVERIFY(listener.isReady());
+
+    listener.configureTabCreation(&backend, parentWindowHandle, 351);
+    backend.navigate(server.url(QStringLiteral("/popup")).toString(), 351);
+    const bool didLoadTab = waitUntil(
+        [&listener] {
+            return listener.newTabRequestCount() == 1 &&
+                   listener.isTabReady() &&
+                   listener.tabTitle() == QStringLiteral("child-ready");
+        },
+        kRuntimeBehaviorTimeoutMilliseconds);
+    QVERIFY2(didLoadTab,
+             qPrintable(QStringLiteral(
+                            "requests=%1 ready=%2 tab-completed=%3 child=%4 "
+                            "signal=%5 rejected=%6 main-error=%7")
+                            .arg(listener.newTabRequestCount())
+                            .arg(listener.isTabReady())
+                            .arg(listener.tabNavigationCompletedCount())
+                            .arg(server.requestCount(QStringLiteral("/child")))
+                            .arg(server.requestCount(
+                                QStringLiteral("/signal/child-ready")))
+                            .arg(listener.popupRejectedCount())
+                            .arg(listener.hasError())));
+    QCOMPARE(listener.readyTabId(), std::uint64_t{2});
+    QCOMPARE(listener.popupRejectedCount(), 0);
+    QCOMPARE(server.requestCount(QStringLiteral("/child")), 1);
+    QCOMPARE(server.requestCount(QStringLiteral("/signal/child-ready")), 1);
+
+    backend.activateTab(1);
+    backend.activateTab(2);
+    QVERIFY(listener.tabNavigationCompletedCount() > 0);
+    backend.closeTab(2);
+    backend.activateTab(1);
+    backend.setEventListener(nullptr);
+    backend.shutdown();
+    QVERIFY(profile.cleanup());
+}
+
 void WebView2BrowserTest::popupSharesTheTemporaryProfile() {
     if (!isWebView2RuntimeAvailable()) {
         QSKIP("本机没有 WebView2 Runtime，无法执行真实弹窗测试");
@@ -2488,19 +2718,22 @@ void WebView2BrowserTest::popupSharesTheTemporaryProfile() {
     RecordingBrowserListener listener;
     backend.setEventListener(&listener);
     activateBackend(backend);
-    backend.initialize(reinterpret_cast<void*>(window.winId()), profile.path(), 400);
+    void* const parentWindowHandle = reinterpret_cast<void*>(window.winId());
+    backend.initialize(parentWindowHandle, profile.path(), 400);
     QVERIFY(waitUntil([&listener] { return listener.reachedTerminalState(); },
                       kInitializationTimeoutMilliseconds));
     QVERIFY(listener.isReady());
+    listener.configureTabCreation(&backend, parentWindowHandle, 402);
     backend.navigate(server.url(QStringLiteral("/popup")).toString(), 401);
     QVERIFY(waitUntil(
         [&listener] { return listener.title() == QStringLiteral("popup-shared"); },
         kRuntimeBehaviorTimeoutMilliseconds));
     QVERIFY(server.requestCount(QStringLiteral("/child")) >= 1);
     QVERIFY(server.requestCount(QStringLiteral("/signal/child-ready")) >= 1);
+    QCOMPARE(listener.newTabRequestCount(), 1);
     QCOMPARE(listener.popupRejectedCount(), 0);
 
-    backend.closePopups();
+    backend.closeTab(2);
     backend.setEventListener(nullptr);
     backend.shutdown();
     QVERIFY(profile.cleanup());

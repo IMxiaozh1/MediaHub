@@ -27,6 +27,24 @@ class BrowserEventListener {
                                        const QString& title,
                                        bool canGoBack,
                                        bool canGoForward) = 0;
+    // 调用线程：GUI 主线程。页面标题等展示信息变化不代表发生了一次新访问。
+    virtual void onDocumentStateChanged(std::uint64_t generation,
+                                        const QString& visibleUrl,
+                                        const QString& title,
+                                        bool canGoBack,
+                                        bool canGoForward) {
+        onNavigationCompleted(generation, visibleUrl, title, canGoBack,
+                              canGoForward);
+    }
+    // 调用线程：GUI 主线程。用户停止导航后恢复现有页面，但不产生成功访问记录。
+    virtual void onNavigationStopped(std::uint64_t generation,
+                                     const QString& visibleUrl,
+                                     const QString& title,
+                                     bool canGoBack,
+                                     bool canGoForward) {
+        onNavigationCompleted(generation, visibleUrl, title, canGoBack,
+                              canGoForward);
+    }
     // 调用线程：GUI 主线程。通知网页全屏状态变化。
     virtual void onFullScreenChanged(std::uint64_t generation,
                                      bool isFullScreen) = 0;
@@ -59,6 +77,61 @@ class BrowserEventListener {
     virtual void onBrowsingDataCleared(std::uint64_t generation) = 0;
     // 调用线程：GUI 主线程。通知弹窗因数量或关闭状态被拒绝。
     virtual void onPopupRejected() = 0;
+
+    // 调用线程：GUI 主线程。返回 true 表示宿主已把新窗口请求转换为网页选项卡；
+    // 返回 false 时后端拒绝该请求，不创建原生窗口。
+    virtual bool onNewTabRequested(std::uint64_t newWindowRequestId,
+                                   const QString& url) {
+        Q_UNUSED(newWindowRequestId);
+        Q_UNUSED(url);
+        return false;
+    }
+
+    // 调用线程：GUI 主线程。标签事件的默认实现兼容首个网页标签。
+    virtual void onTabReady(std::uint64_t tabId, std::uint64_t generation) {
+        Q_UNUSED(tabId);
+        onBrowserReady(generation);
+    }
+    virtual void onTabNavigationStarted(std::uint64_t tabId,
+                                        std::uint64_t generation) {
+        Q_UNUSED(tabId);
+        onNavigationStarted(generation);
+    }
+    virtual void onTabNavigationCompleted(std::uint64_t tabId,
+                                          std::uint64_t generation,
+                                          const QString& visibleUrl,
+                                          const QString& title,
+                                          bool canGoBack,
+                                          bool canGoForward) {
+        Q_UNUSED(tabId);
+        onNavigationCompleted(generation, visibleUrl, title, canGoBack,
+                              canGoForward);
+    }
+    virtual void onTabDocumentStateChanged(std::uint64_t tabId,
+                                           std::uint64_t generation,
+                                           const QString& visibleUrl,
+                                           const QString& title,
+                                           bool canGoBack,
+                                           bool canGoForward) {
+        onTabNavigationCompleted(tabId, generation, visibleUrl, title,
+                                 canGoBack, canGoForward);
+    }
+    virtual void onTabNavigationStopped(std::uint64_t tabId,
+                                        std::uint64_t generation,
+                                        const QString& visibleUrl,
+                                        const QString& title,
+                                        bool canGoBack,
+                                        bool canGoForward) {
+        Q_UNUSED(tabId);
+        onNavigationStopped(generation, visibleUrl, title, canGoBack,
+                            canGoForward);
+    }
+    virtual void onTabError(std::uint64_t tabId, std::uint64_t generation,
+                            BrowserErrorKind kind, long errorCode) {
+        Q_UNUSED(tabId);
+        onBrowserError(generation, kind, errorCode);
+    }
+    virtual void onTabCloseRequested(std::uint64_t tabId) { Q_UNUSED(tabId); }
 };
 
 }  // namespace mediahub::gui

@@ -12,7 +12,6 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QMetaObject>
-#include <QThread>
 #include <QTimer>
 #include <QUrl>
 
@@ -23,7 +22,6 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 #include "browser_event_listener.h"
 #include "mediahub/logging/logger.h"
@@ -31,8 +29,8 @@
 #include "webview2_accelerator.h"
 #include "webview2_handles.h"
 #include "webview2_pending_request.h"
-#include "webview2_popup_window.h"
 #include "webview2_state.h"
+#include "webview2_tab_controller.h"
 
 namespace mediahub::browser_webview2 {
 namespace {
@@ -178,6 +176,18 @@ HRESULT rejectScreenCaptureRequest(
 }  // namespace
 
 class WebView2BrowserBackend::Impl final {
+    enum class SnapshotKind {
+        NavigationCompleted,
+        NavigationStopped,
+        DocumentStateChanged,
+    };
+
+    struct PendingNewWindow final {
+        ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        std::uint64_t lifecycleSerial{0};
+    };
+
     struct PendingPermission final {
         ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args;
         ComPtr<ICoreWebView2Deferral> deferral;
@@ -258,7 +268,6 @@ class WebView2BrowserBackend::Impl final {
 
         isShuttingDown_ = false;
         isReady_ = false;
-        popupCoordinator_.reset();
         generation_ = generation;
         navigation_.reset(generation);
         lifetime_ = std::make_shared<int>(0);
@@ -319,6 +328,14 @@ class WebView2BrowserBackend::Impl final {
     // 调用线程：GUI 主线程。
     void navigate(const QString& normalizedUrl, const std::uint64_t generation) {
         clearDataNavigation_.reset();
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) {
+                found->second->navigate(normalizedUrl, generation);
+                return;
+            }
+        }
+        isClearedBlankSnapshotSuppressed_ = false;
         generation_ = generation;
         navigation_.setCurrentGeneration(generation);
         if (!isReady_ || webView_ == nullptr) {
@@ -336,8 +353,229 @@ class WebView2BrowserBackend::Impl final {
         }
     }
 
+    // 调用线程：GUI 主线程。同一 Environment/Profile 为标签创建独立 Controller。
+    [[nodiscard]] bool createTab(void* const parentWindowHandle,
+                                 const std::uint64_t tabId,
+                                 const QString& initialUrl,
+                                 const std::uint64_t generation,
+                                 const std::uint64_t newWindowRequestId) {
+        if (isShuttingDown_ || !isReady_ || tabId <= 1 ||
+            tabControllers_.find(tabId) != tabControllers_.end()) {
+            return false;
+        }
+        std::optional<PendingNewWindow> pendingNewWindow;
+        if (newWindowRequestId != 0) {
+            pendingNewWindow = pendingNewWindows_.take(newWindowRequestId);
+            if (!pendingNewWindow.has_value() ||
+                pendingNewWindow->lifecycleSerial != lifecycleSerial_) {
+                if (pendingNewWindow.has_value()) {
+                    static_cast<void>(completePopupRequest(
+                        pendingNewWindow->args.Get(),
+                        pendingNewWindow->deferral.Get(),
+                        static_cast<ICoreWebView2*>(nullptr)));
+                }
+                return false;
+            }
+        }
+        const HWND parent = reinterpret_cast<HWND>(parentWindowHandle);
+        auto tab = std::make_unique<WebView2TabController>(
+            environment_, profile_, parent, tabId,
+            [this](const std::uint64_t readyTabId,
+                   const std::uint64_t readyGeneration) {
+                dispatchTabListener(
+                    [readyTabId, readyGeneration](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabReady(readyTabId, readyGeneration);
+                    });
+            },
+            [this](const std::uint64_t startedTabId,
+                   const std::uint64_t startedGeneration) {
+                dispatchTabListener(
+                    [startedTabId, startedGeneration](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabNavigationStarted(startedTabId,
+                                                        startedGeneration);
+                    });
+            },
+            [this](const std::uint64_t completedTabId,
+                   const std::uint64_t completedGeneration,
+                   const QString& url, const QString& title,
+                   const bool canGoBack, const bool canGoForward) {
+                dispatchTabListener(
+                    [completedTabId, completedGeneration, url, title,
+                     canGoBack, canGoForward](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabNavigationCompleted(
+                            completedTabId, completedGeneration, url, title,
+                            canGoBack, canGoForward);
+                    });
+            },
+            [this](const std::uint64_t changedTabId,
+                   const std::uint64_t changedGeneration,
+                   const QString& url, const QString& title,
+                   const bool canGoBack, const bool canGoForward) {
+                dispatchTabListener(
+                    [changedTabId, changedGeneration, url, title,
+                     canGoBack, canGoForward](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabDocumentStateChanged(
+                            changedTabId, changedGeneration, url, title,
+                            canGoBack, canGoForward);
+                    });
+            },
+            [this](const std::uint64_t stoppedTabId,
+                   const std::uint64_t stoppedGeneration,
+                   const QString& url, const QString& title,
+                   const bool canGoBack, const bool canGoForward) {
+                dispatchTabListener(
+                    [stoppedTabId, stoppedGeneration, url, title,
+                     canGoBack, canGoForward](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabNavigationStopped(
+                            stoppedTabId, stoppedGeneration, url, title,
+                            canGoBack, canGoForward);
+                    });
+            },
+            [this](const std::uint64_t errorTabId,
+                   const std::uint64_t errorGeneration,
+                   const gui::BrowserErrorKind kind,
+                   const HRESULT result) {
+                logOperationFailure("tab_operation_failed", result);
+                dispatchTabListener(
+                    [errorTabId, errorGeneration, kind, result](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabError(errorTabId, errorGeneration, kind,
+                                            static_cast<long>(result));
+                    });
+            },
+            [this](ICoreWebView2NewWindowRequestedEventArgs* args) {
+                return handleNewWindowRequest(args);
+            },
+            [this](const std::uint64_t closedTabId) {
+                dispatchTabListener(
+                    [closedTabId](gui::BrowserEventListener& listener) {
+                        listener.onTabCloseRequested(closedTabId);
+                    });
+            },
+            [this](const std::uint64_t fullScreenTabId,
+                   const std::uint64_t fullScreenGeneration,
+                   const bool isFullScreen) {
+                if (fullScreenTabId == activeTabId_) {
+                    dispatchTabListener(
+                        [fullScreenGeneration, isFullScreen](
+                            gui::BrowserEventListener& listener) {
+                            listener.onFullScreenChanged(fullScreenGeneration,
+                                                         isFullScreen);
+                        });
+                }
+            },
+            [this](const std::uint64_t acceleratorTabId,
+                   const std::uint64_t acceleratorGeneration,
+                   const gui::BrowserAccelerator accelerator) {
+                if (acceleratorTabId == activeTabId_) {
+                    dispatchTabListener(
+                        [acceleratorGeneration, accelerator](
+                            gui::BrowserEventListener& listener) {
+                            listener.onAcceleratorRequested(
+                                acceleratorGeneration, accelerator);
+                    });
+                }
+            },
+            [this](const std::uint64_t tabId,
+                   const std::uint64_t tabGeneration,
+                   ICoreWebView2PermissionRequestedEventArgs* args) {
+                return handlePermissionRequest(tabId, tabGeneration, args);
+            },
+            [this](const std::uint64_t tabId,
+                   const std::uint64_t tabGeneration,
+                   ICoreWebView2ScreenCaptureStartingEventArgs* args) {
+                return handleScreenCaptureRequest(tabId, tabGeneration, args);
+            },
+            [this](const std::uint64_t tabId,
+                   const std::uint64_t tabGeneration,
+                   ICoreWebView2DownloadStartingEventArgs* args) {
+                return handleDownloadRequest(tabId, tabGeneration, args);
+            },
+            [this](const std::uint64_t tabId,
+                   const std::uint64_t tabGeneration,
+                   ICoreWebView2ServerCertificateErrorDetectedEventArgs* args) {
+                return handleCertificateRequest(tabId, tabGeneration, args);
+            },
+            [this](const std::uint64_t tabId,
+                   const std::uint64_t tabGeneration,
+                   ICoreWebView2LaunchingExternalUriSchemeEventArgs* args) {
+                return handleExternalProtocolRequest(tabId, tabGeneration,
+                                                     args);
+            });
+        tab->setBounds(bounds_);
+        tab->setVisible(isVisible_ && activeTabId_ == tabId);
+        tab->setAudioMuted(isAudioMutedDesired_ || activeTabId_ != tabId);
+        const HRESULT result = tab->create(
+            initialUrl, generation,
+            pendingNewWindow.has_value() ? pendingNewWindow->args.Get() : nullptr,
+            pendingNewWindow.has_value() ? pendingNewWindow->deferral.Get()
+                                         : nullptr);
+        if (FAILED(result)) {
+            logOperationFailure("tab_creation_failed", result);
+            return false;
+        }
+        tabControllers_.emplace(tabId, std::move(tab));
+        return true;
+    }
+
+    void closeTab(const std::uint64_t tabId) noexcept {
+        if (tabId == 1) {
+            if (controller_ == nullptr) {
+                return;
+            }
+            newWindowRequested_.reset();
+            acceleratorKeyPressed_.reset();
+            launchingExternalUriScheme_.reset();
+            serverCertificateErrorDetected_.reset();
+            downloadStarting_.reset();
+            screenCaptureStarting_.reset();
+            permissionRequested_.reset();
+            fullScreenChanged_.reset();
+            documentTitleChanged_.reset();
+            navigationCompleted_.reset();
+            navigationStarting_.reset();
+            static_cast<void>(controller_->Close());
+            webView_.Reset();
+            controller_.Reset();
+            navigation_.reset(generation_);
+            return;
+        }
+        const auto found = tabControllers_.find(tabId);
+        if (found != tabControllers_.end()) {
+            found->second->close();
+            tabControllers_.erase(found);
+        }
+    }
+
+    void activateTab(const std::uint64_t tabId) noexcept {
+        if (tabId != 1 && tabControllers_.find(tabId) == tabControllers_.end()) {
+            return;
+        }
+        activeTabId_ = tabId;
+        if (controller_ != nullptr) {
+            static_cast<void>(
+                controller_->put_IsVisible(isVisible_ && tabId == 1 ? TRUE : FALSE));
+        }
+        applyEffectiveAudioMute();
+        for (auto& [candidateId, controller] : tabControllers_) {
+            const bool isActive = candidateId == tabId;
+            controller->setVisible(isVisible_ && isActive);
+            controller->setAudioMuted(isAudioMutedDesired_ || !isActive);
+        }
+    }
+
     // 调用线程：GUI 主线程。
     void goBack() noexcept {
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) found->second->goBack();
+            return;
+        }
         if (webView_ != nullptr) {
             logOperationFailure("go_back_failed", webView_->GoBack());
         }
@@ -345,6 +583,11 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。
     void goForward() noexcept {
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) found->second->goForward();
+            return;
+        }
         if (webView_ != nullptr) {
             logOperationFailure("go_forward_failed", webView_->GoForward());
         }
@@ -352,6 +595,11 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。
     void reloadOrStop() noexcept {
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) found->second->reloadOrStop();
+            return;
+        }
         if (webView_ == nullptr) {
             return;
         }
@@ -371,6 +619,10 @@ class WebView2BrowserBackend::Impl final {
             const RECT bounds = toNativeRect(bounds_);
             logOperationFailure("set_bounds_failed", controller_->put_Bounds(bounds));
         }
+        for (auto& [tabId, tab] : tabControllers_) {
+            Q_UNUSED(tabId);
+            tab->setBounds(bounds_);
+        }
     }
 
     // 调用线程：GUI 主线程。
@@ -378,7 +630,11 @@ class WebView2BrowserBackend::Impl final {
         isVisible_ = isVisible;
         if (controller_ != nullptr) {
             logOperationFailure("set_visibility_failed",
-                                controller_->put_IsVisible(isVisible ? TRUE : FALSE));
+                                controller_->put_IsVisible(
+                                    isVisible && activeTabId_ == 1 ? TRUE : FALSE));
+        }
+        for (auto& [tabId, tab] : tabControllers_) {
+            tab->setVisible(isVisible && tabId == activeTabId_);
         }
     }
 
@@ -386,6 +642,9 @@ class WebView2BrowserBackend::Impl final {
     void setAudioMuted(const bool isMuted) noexcept {
         isAudioMutedDesired_ = isMuted;
         applyEffectiveAudioMute();
+        for (auto& [tabId, tab] : tabControllers_) {
+            tab->setAudioMuted(isMuted || tabId != activeTabId_);
+        }
     }
 
     // 调用线程：GUI 主线程；挂起期间强制静音，只有确认恢复成功后才解除。
@@ -396,7 +655,8 @@ class WebView2BrowserBackend::Impl final {
         ComPtr<ICoreWebView2_8> webView8;
         HRESULT result = webView_.As(&webView8);
         if (SUCCEEDED(result)) {
-            const bool isMuted = isAudioMutedDesired_ || suspension_.mustMute();
+            const bool isMuted = isAudioMutedDesired_ || suspension_.mustMute() ||
+                                 activeTabId_ != 1;
             result = webView8->put_IsMuted(isMuted ? TRUE : FALSE);
         }
         logOperationFailure("set_audio_muted_failed", result);
@@ -466,6 +726,29 @@ class WebView2BrowserBackend::Impl final {
     // 调用线程：GUI 主线程。清除回调只投递稳定成功或错误事件。
     void clearBrowsingData(const std::uint64_t generation) {
         generation_ = generation;
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found == tabControllers_.end()) {
+                reportError(generation, gui::BrowserErrorKind::ClearDataFailed,
+                            E_UNEXPECTED, "clear_data_active_tab_missing");
+                return;
+            }
+            found->second->clearBrowsingData(
+                generation, [this, generation](const HRESULT status) {
+                    if (FAILED(status)) {
+                        reportError(generation,
+                                    gui::BrowserErrorKind::ClearDataFailed,
+                                    status, "tab_clear_data_failed");
+                        return;
+                    }
+                    dispatchListener(
+                        generation,
+                        [generation](gui::BrowserEventListener& listener) {
+                            listener.onBrowsingDataCleared(generation);
+                        });
+                });
+            return;
+        }
         navigation_.reset(generation);
         clearDataNavigation_.begin(generation);
         if (webView_ == nullptr) {
@@ -537,6 +820,8 @@ class WebView2BrowserBackend::Impl final {
                                                          generation)) {
                                                 return S_OK;
                                             }
+                                            isClearedBlankSnapshotSuppressed_ =
+                                                true;
                                             const HRESULT blankResult =
                                                 webView_->Navigate(L"about:blank");
                                             if (FAILED(blankResult)) {
@@ -579,7 +864,7 @@ class WebView2BrowserBackend::Impl final {
         std::optional<PendingPermission> pending = pendingPermissions_.take(requestId);
         if (pending.has_value()) {
             if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
-                pending->generation != generation_ ||
+                !isCurrentTabGeneration(pending->generation) ||
                 pending->kind == gui::BrowserPermissionKind::Other) {
                 decision = gui::BrowserPermissionDecision::Deny;
             }
@@ -597,7 +882,7 @@ class WebView2BrowserBackend::Impl final {
         }
         if (isShuttingDown_ ||
             screenCapture->lifecycleSerial != lifecycleSerial_ ||
-            screenCapture->generation != generation_ ||
+            !isCurrentTabGeneration(screenCapture->generation) ||
             decision != gui::BrowserPermissionDecision::AllowOnce) {
             decision = gui::BrowserPermissionDecision::Deny;
         }
@@ -615,7 +900,7 @@ class WebView2BrowserBackend::Impl final {
             return;
         }
         if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
-            pending->generation != generation_ ||
+            !isCurrentTabGeneration(pending->generation) ||
             !isSafeDownloadDestination(destination)) {
             logOperationFailure(
                 "download_destination_rejected",
@@ -770,7 +1055,7 @@ class WebView2BrowserBackend::Impl final {
             return;
         }
         if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
-            pending->generation != generation_) {
+            !isCurrentTabGeneration(pending->generation)) {
             isAllowed = false;
         }
         logOperationFailure(
@@ -789,7 +1074,7 @@ class WebView2BrowserBackend::Impl final {
             return;
         }
         if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
-            pending->generation != generation_ ||
+            !isCurrentTabGeneration(pending->generation) ||
             pending->origin.isEmpty()) {
             decision = gui::BrowserCertificateDecision::ReturnToSafety;
         }
@@ -801,6 +1086,11 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。只请求当前文档退出标准 Fullscreen API。
     void exitFullScreen() noexcept {
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) found->second->exitFullScreen();
+            return;
+        }
         if (isShuttingDown_ || !isReady_ || webView_ == nullptr) {
             return;
         }
@@ -836,15 +1126,6 @@ class WebView2BrowserBackend::Impl final {
         logOperationFailure("fullscreen_shutdown_exit_request_failed", result);
     }
 
-    // 调用线程：GUI 主线程。不等待浏览器子进程。
-    void closePopups() noexcept {
-        popupCoordinator_.beginShutdown();
-        for (const auto& popup : popupWindows_) {
-            popup->close();
-        }
-        popupWindows_.clear();
-    }
-
     // 调用线程：GUI 主线程。只释放本适配器持有的 COM 对象，不等待子进程。
     void shutdown() noexcept {
         lifecycleGate_.beginShutdown();
@@ -878,6 +1159,19 @@ class WebView2BrowserBackend::Impl final {
             nextSensitiveRequestId_ = 1;
         }
         return result == 0 ? nextSensitiveRequestId_++ : result;
+    }
+
+    // 调用线程：GUI STA。敏感请求只接受仍属于存活标签的代次。
+    [[nodiscard]] bool isCurrentTabGeneration(
+        const std::uint64_t generation) const noexcept {
+        if (generation == generation_) {
+            return true;
+        }
+        return std::any_of(
+            tabControllers_.begin(), tabControllers_.end(),
+            [generation](const auto& entry) {
+                return entry.second->generation() == generation;
+            });
     }
 
     // 回调线程：GUI 主线程；超时只拒绝仍属于同一生命周期的权限请求。
@@ -1043,6 +1337,12 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：创建 COM 对象的 GUI STA；关闭时逐项拒绝并完成全部 deferral。
     void cancelPendingSensitiveRequests() noexcept {
+        for (PendingNewWindow& pending : pendingNewWindows_.takeAll()) {
+            logOperationFailure(
+                "popup_shutdown_reject_failed",
+                completePopupRequest(pending.args.Get(), pending.deferral.Get(),
+                                     static_cast<ICoreWebView2*>(nullptr)));
+        }
         for (PendingPermission& pending : pendingPermissions_.takeAll()) {
             logOperationFailure(
                 "permission_shutdown_reject_failed",
@@ -1166,8 +1466,8 @@ class WebView2BrowserBackend::Impl final {
                             controller_->put_IsVisible(isVisible_ ? TRUE : FALSE));
         isReady_ = true;
         executeSuspensionStep(suspension_.controllerReady());
-        dispatchListener(generation, [generation](gui::BrowserEventListener& listener) {
-            listener.onBrowserReady(generation);
+        dispatchTabListener([generation](gui::BrowserEventListener& listener) {
+            listener.onTabReady(1, generation);
         });
     }
 
@@ -1209,10 +1509,10 @@ class WebView2BrowserBackend::Impl final {
         if (FAILED(result)) {
             return result;
         }
-        if (FAILED(result = settings4->put_IsPasswordAutosaveEnabled(FALSE))) {
+        if (FAILED(result = settings4->put_IsPasswordAutosaveEnabled(TRUE))) {
             return result;
         }
-        return settings4->put_IsGeneralAutofillEnabled(FALSE);
+        return settings4->put_IsGeneralAutofillEnabled(TRUE);
     }
 
     // 调用线程：创建 WebView2 的 GUI STA；任一安全事件注册失败都阻止进入 ready。
@@ -1251,6 +1551,275 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：次级标签 WebView2 事件所在 GUI STA；与首标签共享宿主确认存储。
+    HRESULT handlePermissionRequest(
+        const std::uint64_t tabId, const std::uint64_t generation,
+        ICoreWebView2PermissionRequestedEventArgs* const args) {
+        if (isShuttingDown_ || tabId != activeTabId_ ||
+            tabControllers_.find(tabId) == tabControllers_.end() ||
+            args == nullptr) {
+            static_cast<void>(rejectPermissionRequest(args));
+            return S_OK;
+        }
+        HRESULT status = args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+        ComPtr<ICoreWebView2PermissionRequestedEventArgs> baseArgs(args);
+        ComPtr<ICoreWebView2Deferral> deferral;
+        status = firstFailure(status, baseArgs->GetDeferral(&deferral));
+        ComPtr<ICoreWebView2PermissionRequestedEventArgs2> args2;
+        ComPtr<ICoreWebView2PermissionRequestedEventArgs3> args3;
+        const HRESULT args2Status = baseArgs.As(&args2);
+        status = firstFailure(status, args2Status);
+        if (SUCCEEDED(args2Status)) {
+            status = firstFailure(status, args2->put_Handled(TRUE));
+        }
+        status = firstFailure(status, baseArgs.As(&args3));
+        COREWEBVIEW2_PERMISSION_KIND rawKind =
+            COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+        LPWSTR rawUri = nullptr;
+        status = firstFailure(status, args->get_PermissionKind(&rawKind));
+        status = firstFailure(status, args->get_Uri(&rawUri));
+        CoTaskMemString uri(rawUri);
+        const auto kind = supportedPermissionKind(rawKind);
+        const QString origin = normalizedOriginFromUri(uri.get());
+        if (FAILED(status) || deferral == nullptr || !kind.has_value() ||
+            origin.isEmpty() || listener_ == nullptr) {
+            logOperationFailure(
+                "tab_permission_request_rejected",
+                firstFailure(status, completePermissionRejection(
+                                         baseArgs.Get(), args3.Get(),
+                                         deferral.Get())));
+            return S_OK;
+        }
+        const std::uint64_t requestId = nextSensitiveRequestId();
+        PendingPermission pending{args3, deferral, origin, *kind,
+                                  lifecycleSerial_, generation};
+        if (!pendingPermissions_.insert(requestId, std::move(pending))) {
+            logOperationFailure(
+                "tab_permission_store_failed",
+                completePermissionDecision(args3.Get(), deferral.Get(),
+                                           gui::BrowserPermissionDecision::Deny));
+            return S_OK;
+        }
+        dispatchTabListener(
+            [requestId, origin, kind = *kind](gui::BrowserEventListener& listener) {
+                listener.onPermissionRequested(requestId, origin, kind);
+            });
+        schedulePermissionTimeout(requestId, lifecycleSerial_);
+        return S_OK;
+    }
+
+    // 调用线程：次级标签 WebView2 事件所在 GUI STA；默认取消并等待宿主确认。
+    HRESULT handleScreenCaptureRequest(
+        const std::uint64_t tabId, const std::uint64_t generation,
+        ICoreWebView2ScreenCaptureStartingEventArgs* const args) {
+        if (isShuttingDown_ || tabId != activeTabId_ ||
+            tabControllers_.find(tabId) == tabControllers_.end() ||
+            args == nullptr) {
+            static_cast<void>(rejectScreenCaptureRequest(args));
+            return S_OK;
+        }
+        HRESULT status = args->put_Cancel(TRUE);
+        status = firstFailure(status, args->put_Handled(TRUE));
+        ComPtr<ICoreWebView2FrameInfo> frameInfo;
+        status = firstFailure(status,
+                              args->get_OriginalSourceFrameInfo(&frameInfo));
+        LPWSTR rawSource = nullptr;
+        status = firstFailure(
+            status, frameInfo != nullptr ? frameInfo->get_Source(&rawSource)
+                                         : E_POINTER);
+        CoTaskMemString source(rawSource);
+        const QString origin = normalizedOriginFromUri(source.get());
+        ComPtr<ICoreWebView2Deferral> deferral;
+        status = firstFailure(status, args->GetDeferral(&deferral));
+        if (FAILED(status) || deferral == nullptr || origin.isEmpty() ||
+            listener_ == nullptr) {
+            logOperationFailure(
+                "tab_screen_capture_request_rejected",
+                firstFailure(status, completeScreenCaptureDecision(
+                                         args, deferral.Get(),
+                                         gui::BrowserPermissionDecision::Deny)));
+            return S_OK;
+        }
+        const std::uint64_t requestId = nextSensitiveRequestId();
+        PendingScreenCapture pending{args, deferral, origin, lifecycleSerial_,
+                                     generation};
+        if (!pendingScreenCaptures_.insert(requestId, std::move(pending))) {
+            static_cast<void>(completeScreenCaptureDecision(
+                args, deferral.Get(), gui::BrowserPermissionDecision::Deny));
+            return S_OK;
+        }
+        dispatchTabListener(
+            [requestId, origin](gui::BrowserEventListener& listener) {
+                listener.onPermissionRequested(
+                    requestId, origin,
+                    gui::BrowserPermissionKind::ScreenCapture);
+            });
+        schedulePermissionTimeout(requestId, lifecycleSerial_);
+        return S_OK;
+    }
+
+    // 调用线程：次级标签 WebView2 事件所在 GUI STA；下载仍使用统一路径确认。
+    HRESULT handleDownloadRequest(
+        const std::uint64_t tabId, const std::uint64_t generation,
+        ICoreWebView2DownloadStartingEventArgs* const args) {
+        if (args == nullptr) {
+            return S_OK;
+        }
+        ComPtr<ICoreWebView2DownloadOperation> operation;
+        ComPtr<ICoreWebView2Deferral> deferral;
+        HRESULT status = prepareDownloadRequest(
+            args, operation.GetAddressOf(), deferral.GetAddressOf());
+        if (isShuttingDown_ || tabId != activeTabId_ ||
+            tabControllers_.find(tabId) == tabControllers_.end()) {
+            static_cast<void>(firstFailure(
+                status, completeDownloadCancellation(args, operation.Get(),
+                                                     deferral.Get())));
+            return S_OK;
+        }
+        LPWSTR rawSuggestedPath = nullptr;
+        LPWSTR rawUri = nullptr;
+        status = firstFailure(status, args->get_ResultFilePath(&rawSuggestedPath));
+        status = firstFailure(
+            status, operation != nullptr ? operation->get_Uri(&rawUri) : E_POINTER);
+        CoTaskMemString suggestedPath(rawSuggestedPath);
+        CoTaskMemString uri(rawUri);
+        const QString suggestedFileName =
+            suggestedPath != nullptr
+                ? QFileInfo(QString::fromWCharArray(suggestedPath.get())).fileName()
+                : QString{};
+        const QString origin = normalizedOriginFromUri(uri.get());
+        INT64 totalBytes = -1;
+        if (operation == nullptr ||
+            FAILED(operation->get_TotalBytesToReceive(&totalBytes))) {
+            totalBytes = -1;
+        }
+        if (FAILED(status) || operation == nullptr || deferral == nullptr ||
+            suggestedFileName.isEmpty() || origin.isEmpty() || listener_ == nullptr) {
+            logOperationFailure(
+                "tab_download_request_rejected",
+                firstFailure(status, completeDownloadCancellation(
+                                         args, operation.Get(), deferral.Get())));
+            return S_OK;
+        }
+        const std::uint64_t requestId = nextSensitiveRequestId();
+        PendingDownload pending{args, operation, deferral,
+                                static_cast<std::int64_t>(totalBytes),
+                                lifecycleSerial_, generation};
+        if (!pendingDownloads_.insert(requestId, std::move(pending))) {
+            static_cast<void>(completeDownloadCancellation(
+                args, operation.Get(), deferral.Get()));
+            return S_OK;
+        }
+        dispatchTabListener(
+            [requestId, origin, suggestedFileName,
+             totalBytes = static_cast<std::int64_t>(totalBytes)](
+                gui::BrowserEventListener& listener) {
+                listener.onDownloadRequested(requestId, origin,
+                                             suggestedFileName, totalBytes);
+            });
+        scheduleDownloadTimeout(requestId, lifecycleSerial_);
+        return S_OK;
+    }
+
+    // 调用线程：次级标签 WebView2 事件所在 GUI STA；证书例外仍仅限当前会话。
+    HRESULT handleCertificateRequest(
+        const std::uint64_t tabId, const std::uint64_t generation,
+        ICoreWebView2ServerCertificateErrorDetectedEventArgs* const args) {
+        if (args == nullptr) {
+            return S_OK;
+        }
+        ComPtr<ICoreWebView2Deferral> deferral;
+        HRESULT status = prepareCertificateRequest(args, deferral.GetAddressOf());
+        COREWEBVIEW2_WEB_ERROR_STATUS errorStatus =
+            COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+        LPWSTR rawRequestUri = nullptr;
+        if (!isShuttingDown_ && tabId == activeTabId_ &&
+            tabControllers_.find(tabId) != tabControllers_.end()) {
+            status = firstFailure(status, args->get_ErrorStatus(&errorStatus));
+            status = firstFailure(status, args->get_RequestUri(&rawRequestUri));
+        } else {
+            status = firstFailure(status, E_ABORT);
+        }
+        CoTaskMemString requestUri(rawRequestUri);
+        const QString origin = normalizedOriginFromUri(requestUri.get());
+        if (FAILED(status) || deferral == nullptr || origin.isEmpty() ||
+            listener_ == nullptr) {
+            static_cast<void>(completeCertificateDecision(
+                args, deferral.Get(),
+                gui::BrowserCertificateDecision::ReturnToSafety));
+            return S_OK;
+        }
+        const std::uint64_t requestId = nextSensitiveRequestId();
+        PendingCertificate pending{args, deferral, origin, lifecycleSerial_,
+                                   generation};
+        if (!pendingCertificates_.insert(requestId, std::move(pending))) {
+            static_cast<void>(completeCertificateDecision(
+                args, deferral.Get(),
+                gui::BrowserCertificateDecision::ReturnToSafety));
+            return S_OK;
+        }
+        const QString description = certificateErrorDescription(errorStatus);
+        dispatchTabListener(
+            [requestId, origin,
+             description](gui::BrowserEventListener& listener) {
+                listener.onCertificateErrorRequested(requestId, origin,
+                                                     description);
+            });
+        scheduleCertificateTimeout(requestId, lifecycleSerial_);
+        return S_OK;
+    }
+
+    // 调用线程：次级标签 WebView2 事件所在 GUI STA；外部协议必须由用户确认。
+    HRESULT handleExternalProtocolRequest(
+        const std::uint64_t tabId, const std::uint64_t generation,
+        ICoreWebView2LaunchingExternalUriSchemeEventArgs* const args) {
+        if (args == nullptr) {
+            return S_OK;
+        }
+        ComPtr<ICoreWebView2Deferral> deferral;
+        HRESULT status =
+            prepareExternalProtocolRequest(args, deferral.GetAddressOf());
+        BOOL isUserInitiated = FALSE;
+        LPWSTR rawUri = nullptr;
+        LPWSTR rawOrigin = nullptr;
+        if (!isShuttingDown_ && tabId == activeTabId_ &&
+            tabControllers_.find(tabId) != tabControllers_.end()) {
+            status = firstFailure(status,
+                                  args->get_IsUserInitiated(&isUserInitiated));
+            status = firstFailure(status, args->get_Uri(&rawUri));
+            status = firstFailure(status,
+                                  args->get_InitiatingOrigin(&rawOrigin));
+        } else {
+            status = firstFailure(status, E_ABORT);
+        }
+        CoTaskMemString uri(rawUri);
+        CoTaskMemString initiatingOrigin(rawOrigin);
+        const QString target =
+            uri != nullptr ? QString::fromWCharArray(uri.get()) : QString{};
+        const QString origin = normalizedOriginFromUri(initiatingOrigin.get());
+        if (FAILED(status) || deferral == nullptr || isUserInitiated == FALSE ||
+            !isValidExternalTarget(target) || origin.isEmpty() ||
+            listener_ == nullptr) {
+            static_cast<void>(
+                completeExternalProtocolDecision(args, deferral.Get(), false));
+            return S_OK;
+        }
+        const std::uint64_t requestId = nextSensitiveRequestId();
+        PendingExternalProtocol pending{args, deferral, lifecycleSerial_,
+                                        generation};
+        if (!pendingExternalProtocols_.insert(requestId, std::move(pending))) {
+            static_cast<void>(
+                completeExternalProtocolDecision(args, deferral.Get(), false));
+            return S_OK;
+        }
+        dispatchTabListener(
+            [requestId, origin, target](gui::BrowserEventListener& listener) {
+                listener.onExternalProtocolRequested(requestId, origin, target);
+            });
+        scheduleExternalProtocolTimeout(requestId, lifecycleSerial_);
+        return S_OK;
+    }
+
     // 调用线程：GUI STA；回调持有 deferral，经监听器等待用户决定。
     HRESULT registerPermissionRequested() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
@@ -1262,6 +1831,10 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2*,
                     ICoreWebView2PermissionRequestedEventArgs* const args) -> HRESULT {
                     if (weakLifetime.expired()) {
+                        static_cast<void>(rejectPermissionRequest(args));
+                        return S_OK;
+                    }
+                    if (activeTabId_ != 1) {
                         static_cast<void>(rejectPermissionRequest(args));
                         return S_OK;
                     }
@@ -1370,6 +1943,10 @@ class WebView2BrowserBackend::Impl final {
                         static_cast<void>(rejectScreenCaptureRequest(args));
                         return S_OK;
                     }
+                    if (activeTabId_ != 1) {
+                        static_cast<void>(rejectScreenCaptureRequest(args));
+                        return S_OK;
+                    }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         static_cast<void>(rejectScreenCaptureRequest(args));
@@ -1474,6 +2051,16 @@ class WebView2BrowserBackend::Impl final {
                             status,
                             completeDownloadCancellation(
                                 args, operation.Get(), deferral.Get())));
+                        return S_OK;
+                    }
+                    if (activeTabId_ != 1) {
+                        ComPtr<ICoreWebView2DownloadOperation> operation;
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareDownloadRequest(
+                            args, operation.GetAddressOf(), deferral.GetAddressOf());
+                        static_cast<void>(firstFailure(
+                            status, completeDownloadCancellation(
+                                        args, operation.Get(), deferral.Get())));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
@@ -1590,6 +2177,17 @@ class WebView2BrowserBackend::Impl final {
                                 gui::BrowserCertificateDecision::ReturnToSafety)));
                         return S_OK;
                     }
+                    if (activeTabId_ != 1) {
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareCertificateRequest(
+                            args, deferral.GetAddressOf());
+                        static_cast<void>(firstFailure(
+                            status, completeCertificateDecision(
+                                        args, deferral.Get(),
+                                        gui::BrowserCertificateDecision::
+                                            ReturnToSafety)));
+                        return S_OK;
+                    }
                     const std::uint64_t generation = generation_;
                     if (!isActive(weakLifetime, lifecycleSerial, generation)) {
                         ComPtr<ICoreWebView2Deferral> deferral;
@@ -1693,6 +2291,15 @@ class WebView2BrowserBackend::Impl final {
                             status,
                             completeExternalProtocolDecision(
                                 args, deferral.Get(), false)));
+                        return S_OK;
+                    }
+                    if (activeTabId_ != 1) {
+                        ComPtr<ICoreWebView2Deferral> deferral;
+                        const HRESULT status = prepareExternalProtocolRequest(
+                            args, deferral.GetAddressOf());
+                        static_cast<void>(firstFailure(
+                            status, completeExternalProtocolDecision(
+                                        args, deferral.Get(), false)));
                         return S_OK;
                     }
                     const std::uint64_t generation = generation_;
@@ -1813,65 +2420,59 @@ class WebView2BrowserBackend::Impl final {
             environment_ == nullptr || profile_ == nullptr) {
             return rejectNewWindow(args);
         }
-        if (!popupCoordinator_.tryReserve()) {
+
+        // 新窗口请求先取得 deferral，再把稳定请求 ID 和 URL 排队到 Qt 主循环。
+        LPWSTR rawUri = nullptr;
+        const HRESULT uriResult = args->get_Uri(&rawUri);
+        CoTaskMemString uri(rawUri);
+        if (FAILED(uriResult) || uri == nullptr || listener_ == nullptr) {
             const HRESULT result = rejectNewWindow(args);
-            const std::uint64_t generation = generation_;
-            dispatchListener(generation, [](gui::BrowserEventListener& listener) {
+            dispatchTabListener([](gui::BrowserEventListener& listener) {
                 listener.onPopupRejected();
             });
-            return result;
+            return FAILED(uriResult) ? uriResult : result;
         }
 
-        const std::weak_ptr<int> weakLifetime = lifetime_;
-        const std::uint64_t lifecycleSerial = lifecycleSerial_;
-        auto popup = std::make_unique<WebView2PopupWindow>(
-            environment_, profile_, parentWindow_,
-            [this, weakLifetime, lifecycleSerial](WebView2PopupWindow* closedPopup) {
-                if (weakLifetime.expired()) {
+        ComPtr<ICoreWebView2Deferral> deferral;
+        const HRESULT prepareResult =
+            preparePopupRequest(args, deferral.GetAddressOf());
+        if (FAILED(prepareResult) || deferral == nullptr) {
+            static_cast<void>(completePopupRequest(
+                args, deferral.Get(), static_cast<ICoreWebView2*>(nullptr)));
+            dispatchTabListener([](gui::BrowserEventListener& listener) {
+                listener.onPopupRejected();
+            });
+            return FAILED(prepareResult) ? prepareResult : E_POINTER;
+        }
+
+        const std::uint64_t requestId = nextSensitiveRequestId();
+        if (!pendingNewWindows_.insert(
+                requestId, PendingNewWindow{args, deferral, lifecycleSerial_})) {
+            static_cast<void>(completePopupRequest(
+                args, deferral.Get(), static_cast<ICoreWebView2*>(nullptr)));
+            dispatchTabListener([](gui::BrowserEventListener& listener) {
+                listener.onPopupRejected();
+            });
+            return E_UNEXPECTED;
+        }
+        const QString url = QString::fromWCharArray(uri.get());
+        dispatchTabListener(
+            [this, requestId, url](gui::BrowserEventListener& listener) {
+                if (listener.onNewTabRequested(requestId, url)) {
                     return;
                 }
-                QTimer::singleShot(
-                    0, QApplication::instance(),
-                    [this, weakLifetime, lifecycleSerial, closedPopup] {
-                        if (weakLifetime.expired() || isShuttingDown_ ||
-                            lifecycleSerial != lifecycleSerial_) {
-                            return;
-                        }
-                        const auto found = std::find_if(
-                            popupWindows_.begin(), popupWindows_.end(),
-                            [closedPopup](const auto& candidate) {
-                                return candidate.get() == closedPopup;
-                            });
-                        if (found != popupWindows_.end()) {
-                            popupWindows_.erase(found);
-                            popupCoordinator_.release();
-                        }
-                    });
-            },
-            [this, weakLifetime, lifecycleSerial](
-                ICoreWebView2NewWindowRequestedEventArgs* nestedArgs) {
-                if (weakLifetime.expired() || isShuttingDown_ ||
-                    lifecycleSerial != lifecycleSerial_) {
-                    return rejectNewWindow(nestedArgs);
+                std::optional<PendingNewWindow> pending =
+                    pendingNewWindows_.take(requestId);
+                if (pending.has_value()) {
+                    logOperationFailure(
+                        "popup_rejection_failed",
+                        completePopupRequest(pending->args.Get(),
+                                             pending->deferral.Get(),
+                                             static_cast<ICoreWebView2*>(nullptr)));
                 }
-                return handleNewWindowRequest(nestedArgs);
+                listener.onPopupRejected();
             });
-        WebView2PopupWindow* const popupPointer = popup.get();
-        popupWindows_.push_back(std::move(popup));
-        const HRESULT result = popupPointer->createFor(args);
-        if (FAILED(result)) {
-            const auto found = std::find_if(
-                popupWindows_.begin(), popupWindows_.end(),
-                [popupPointer](const auto& candidate) {
-                    return candidate.get() == popupPointer;
-                });
-            if (found != popupWindows_.end()) {
-                popupWindows_.erase(found);
-                popupCoordinator_.release();
-            }
-            logOperationFailure("popup_creation_failed", result);
-        }
-        return FAILED(result) ? result : S_OK;
+        return S_OK;
     }
 
     // 调用线程：GUI STA；事件回调只更新稳定导航状态，禁止操作 Qt 控件。
@@ -1916,11 +2517,10 @@ class WebView2BrowserBackend::Impl final {
                         }
                         const NavigationStart start = navigation_.start(navigationId);
                         if (start.shouldReport) {
-                            dispatchListener(
-                                start.generation,
+                            dispatchTabListener(
                                 [generation = start.generation](
                                     gui::BrowserEventListener& listener) {
-                                    listener.onNavigationStarted(generation);
+                                    listener.onTabNavigationStarted(1, generation);
                                 });
                         }
                     } else {
@@ -2021,14 +2621,17 @@ class WebView2BrowserBackend::Impl final {
                             COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
                         static_cast<void>(args->get_WebErrorStatus(&status));
                         if (status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED) {
-                            emitNavigationSnapshot(eventGeneration);
+                            emitNavigationSnapshot(
+                                eventGeneration, SnapshotKind::NavigationStopped);
                         } else {
                             reportError(eventGeneration,
                                         gui::BrowserErrorKind::NavigationFailed, E_FAIL,
                                         "navigation_completed_with_error");
                         }
                     } else {
-                        emitNavigationSnapshot(eventGeneration);
+                        emitNavigationSnapshot(
+                            eventGeneration,
+                            SnapshotKind::NavigationCompleted);
                     }
                     return S_OK;
                 })
@@ -2053,10 +2656,12 @@ class WebView2BrowserBackend::Impl final {
                 [this, weakLifetime, lifecycleSerial](ICoreWebView2*, IUnknown*) -> HRESULT {
                     if (weakLifetime.expired() || isShuttingDown_ ||
                         navigation_.isNavigating() || clearDataNavigation_.isBusy() ||
+                        isClearedBlankSnapshotSuppressed_ ||
                         lifecycleSerial != lifecycleSerial_) {
                         return S_OK;
                     }
-                    emitNavigationSnapshot(generation_);
+                    emitNavigationSnapshot(
+                        generation_, SnapshotKind::DocumentStateChanged);
                     return S_OK;
                 })
                 .Get(),
@@ -2079,7 +2684,7 @@ class WebView2BrowserBackend::Impl final {
             Callback<ICoreWebView2ContainsFullScreenElementChangedEventHandler>(
                 [this, weakLifetime, lifecycleSerial](ICoreWebView2*, IUnknown*) -> HRESULT {
                     if (weakLifetime.expired() || isShuttingDown_ ||
-                        lifecycleSerial != lifecycleSerial_) {
+                        lifecycleSerial != lifecycleSerial_ || activeTabId_ != 1) {
                         return S_OK;
                     }
                     BOOL isFullScreen = FALSE;
@@ -2122,7 +2727,8 @@ class WebView2BrowserBackend::Impl final {
                     ICoreWebView2AcceleratorKeyPressedEventArgs* const args)
                     -> HRESULT {
                     if (weakLifetime.expired() || isShuttingDown_ ||
-                        lifecycleSerial != lifecycleSerial_ || args == nullptr) {
+                        lifecycleSerial != lifecycleSerial_ || activeTabId_ != 1 ||
+                        args == nullptr) {
                         return S_OK;
                     }
                     const bool isControlDown =
@@ -2168,7 +2774,8 @@ class WebView2BrowserBackend::Impl final {
     }
 
     // 调用线程：WebView2 导航或标题事件所在的 GUI STA，界面更新统一经监听器投递。
-    void emitNavigationSnapshot(const std::uint64_t generation) {
+    void emitNavigationSnapshot(const std::uint64_t generation,
+                                const SnapshotKind kind) {
         if (webView_ == nullptr) {
             return;
         }
@@ -2196,13 +2803,22 @@ class WebView2BrowserBackend::Impl final {
                                                      : QString{};
         const QString documentTitle = title != nullptr ? QString::fromWCharArray(title.get())
                                                        : QString{};
-        dispatchListener(
-            generation,
-            [generation, visibleUrl, documentTitle, canGoBack,
-             canGoForward](gui::BrowserEventListener& listener) {
-                listener.onNavigationCompleted(generation, visibleUrl, documentTitle,
-                                               canGoBack != FALSE,
-                                               canGoForward != FALSE);
+        dispatchTabListener(
+            [generation, visibleUrl, documentTitle, canGoBack, canGoForward,
+             kind](gui::BrowserEventListener& listener) {
+                if (kind == SnapshotKind::NavigationCompleted) {
+                    listener.onTabNavigationCompleted(
+                        1, generation, visibleUrl, documentTitle,
+                        canGoBack != FALSE, canGoForward != FALSE);
+                } else if (kind == SnapshotKind::NavigationStopped) {
+                    listener.onTabNavigationStopped(
+                        1, generation, visibleUrl, documentTitle,
+                        canGoBack != FALSE, canGoForward != FALSE);
+                } else {
+                    listener.onTabDocumentStateChanged(
+                        1, generation, visibleUrl, documentTitle,
+                        canGoBack != FALSE, canGoForward != FALSE);
+                }
             });
     }
 
@@ -2211,14 +2827,6 @@ class WebView2BrowserBackend::Impl final {
     void dispatchListener(const std::uint64_t generation, CallbackType callback) {
         const std::weak_ptr<int> weakLifetime = lifetime_;
         const std::uint64_t lifecycleSerial = lifecycleSerial_;
-        if (QThread::currentThread() == QApplication::instance()->thread()) {
-            if (isActive(weakLifetime, lifecycleSerial, generation) &&
-                listener_ != nullptr) {
-                callback(*listener_);
-            }
-            return;
-        }
-
         QMetaObject::invokeMethod(
             QApplication::instance(),
             [this, weakLifetime, lifecycleSerial, generation,
@@ -2226,6 +2834,23 @@ class WebView2BrowserBackend::Impl final {
                 if (!weakLifetime.expired() &&
                     isActive(weakLifetime, lifecycleSerial, generation) &&
                     listener_ != nullptr) {
+                    callback(*listener_);
+                }
+            },
+            Qt::QueuedConnection);
+    }
+
+    template <typename CallbackType>
+    // 调用线程：GUI STA 或 WebView2 回调线程；标签自身代次由 GUI 标签模型验证。
+    void dispatchTabListener(CallbackType callback) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        QMetaObject::invokeMethod(
+            QApplication::instance(),
+            [this, weakLifetime, lifecycleSerial,
+             callback = std::move(callback)]() mutable {
+                if (!weakLifetime.expired() && !isShuttingDown_ &&
+                    lifecycleSerial == lifecycleSerial_ && listener_ != nullptr) {
                     callback(*listener_);
                 }
             },
@@ -2262,7 +2887,12 @@ class WebView2BrowserBackend::Impl final {
     // 调用线程：创建 COM 对象的 GUI STA；必须先撤销全部事件，再关闭 Controller。
     void releaseBrowserResources() noexcept {
         requestExitFullScreenForShutdown();
-        closePopups();
+        for (auto& [tabId, tab] : tabControllers_) {
+            Q_UNUSED(tabId);
+            tab->close();
+        }
+        tabControllers_.clear();
+        activeTabId_ = 1;
         cancelPendingSensitiveRequests();
         newWindowRequested_.reset();
         acceleratorKeyPressed_.reset();
@@ -2318,14 +2948,16 @@ class WebView2BrowserBackend::Impl final {
     EventRegistration newWindowRequested_;
     EventRegistration acceleratorKeyPressed_;
     PendingRequestStore<PendingPermission> pendingPermissions_;
+    PendingRequestStore<PendingNewWindow> pendingNewWindows_;
     PendingRequestStore<PendingScreenCapture> pendingScreenCaptures_;
     PendingRequestStore<PendingExternalProtocol> pendingExternalProtocols_;
     PendingRequestStore<PendingCertificate> pendingCertificates_;
     PendingRequestStore<PendingDownload> pendingDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> activeDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> retryDownloads_;
-    std::vector<std::unique_ptr<WebView2PopupWindow>> popupWindows_;
-    PopupCoordinator popupCoordinator_;
+    std::unordered_map<std::uint64_t, std::unique_ptr<WebView2TabController>>
+        tabControllers_;
+    std::uint64_t activeTabId_{1};
     BrowserLifecycleGate lifecycleGate_;
     std::shared_ptr<int> lifetime_;
     std::uint64_t nextSensitiveRequestId_{1};
@@ -2339,6 +2971,7 @@ class WebView2BrowserBackend::Impl final {
     bool isVisible_{false};
     bool isAudioMutedDesired_{true};
     bool isWebFullScreen_{false};
+    bool isClearedBlankSnapshotSuppressed_{false};
     SuspensionCoordinator suspension_;
     bool isShuttingDown_{true};
 };
@@ -2362,6 +2995,23 @@ void WebView2BrowserBackend::initialize(void* const parentWindowHandle,
 void WebView2BrowserBackend::navigate(const QString& normalizedUrl,
                                       const std::uint64_t generation) {
     impl_->navigate(normalizedUrl, generation);
+}
+
+bool WebView2BrowserBackend::createTab(void* const parentWindowHandle,
+                                       const std::uint64_t tabId,
+                                       const QString& initialUrl,
+                                       const std::uint64_t generation,
+                                       const std::uint64_t newWindowRequestId) {
+    return impl_->createTab(parentWindowHandle, tabId, initialUrl, generation,
+                            newWindowRequestId);
+}
+
+void WebView2BrowserBackend::closeTab(const std::uint64_t tabId) {
+    impl_->closeTab(tabId);
+}
+
+void WebView2BrowserBackend::activateTab(const std::uint64_t tabId) {
+    impl_->activateTab(tabId);
 }
 
 void WebView2BrowserBackend::goBack() { impl_->goBack(); }
@@ -2417,8 +3067,6 @@ void WebView2BrowserBackend::answerCertificateError(
 }
 
 void WebView2BrowserBackend::exitFullScreen() { impl_->exitFullScreen(); }
-
-void WebView2BrowserBackend::closePopups() noexcept { impl_->closePopups(); }
 
 void WebView2BrowserBackend::shutdown() noexcept { impl_->shutdown(); }
 

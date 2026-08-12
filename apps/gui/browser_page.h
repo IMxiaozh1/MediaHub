@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <QVector>
 
 #include <cstdint>
 #include <optional>
@@ -12,11 +13,13 @@ class QFrame;
 class QLabel;
 class QKeyEvent;
 class QLineEdit;
+class QListWidget;
 class QPushButton;
 class QResizeEvent;
 class QShowEvent;
 class QStackedLayout;
 class QToolButton;
+class QTabBar;
 
 namespace mediahub::gui {
 
@@ -60,6 +63,16 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
                                const QString& title,
                                bool canGoBack,
                                bool canGoForward) override;
+    void onDocumentStateChanged(std::uint64_t generation,
+                                const QString& visibleUrl,
+                                const QString& title,
+                                bool canGoBack,
+                                bool canGoForward) override;
+    void onNavigationStopped(std::uint64_t generation,
+                             const QString& visibleUrl,
+                             const QString& title,
+                             bool canGoBack,
+                             bool canGoForward) override;
     void onFullScreenChanged(std::uint64_t generation,
                              bool isFullScreen) override;
     void onAcceleratorRequested(std::uint64_t generation,
@@ -83,6 +96,32 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
                            std::int64_t totalBytes) override;
     void onBrowsingDataCleared(std::uint64_t generation) override;
     void onPopupRejected() override;
+    bool onNewTabRequested(std::uint64_t newWindowRequestId,
+                           const QString& url) override;
+    void onTabReady(std::uint64_t tabId, std::uint64_t generation) override;
+    void onTabNavigationStarted(std::uint64_t tabId,
+                                std::uint64_t generation) override;
+    void onTabNavigationCompleted(std::uint64_t tabId,
+                                  std::uint64_t generation,
+                                  const QString& visibleUrl,
+                                  const QString& title,
+                                  bool canGoBack,
+                                  bool canGoForward) override;
+    void onTabDocumentStateChanged(std::uint64_t tabId,
+                                   std::uint64_t generation,
+                                   const QString& visibleUrl,
+                                   const QString& title,
+                                   bool canGoBack,
+                                   bool canGoForward) override;
+    void onTabNavigationStopped(std::uint64_t tabId,
+                                std::uint64_t generation,
+                                const QString& visibleUrl,
+                                const QString& title,
+                                bool canGoBack,
+                                bool canGoForward) override;
+    void onTabError(std::uint64_t tabId, std::uint64_t generation,
+                    BrowserErrorKind kind, long errorCode) override;
+    void onTabCloseRequested(std::uint64_t tabId) override;
 
  signals:
     void fullScreenChanged(bool isFullScreen);
@@ -94,6 +133,10 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void showEvent(QShowEvent* event) override;
     // 调用线程：GUI 主线程。只提交最新有效的物理像素客户区。
     void resizeEvent(QResizeEvent* event) override;
+
+ private slots:
+    // 调用线程：GUI 主线程。标签栏关闭请求只关闭对应网页控制器。
+    void closeTab(int index);
 
  private:
     void buildUi();
@@ -119,6 +162,25 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void updateBackendBounds();
     void recordSuccessfulNavigation(const QString& visibleUrl,
                                     const QString& title);
+    void updateRecordedNavigationTitle(const QString& visibleUrl,
+                                       const QString& title);
+    void applyTabDocumentState(int index, const QString& visibleUrl,
+                               const QString& title, bool canGoBack,
+                               bool canGoForward, bool didFinishNavigation,
+                               bool shouldRecordHistory);
+    void showHistory();
+    void showFavorites();
+    void refreshHistoryList();
+    void refreshFavoritesList();
+    void openStoredUrl(const QString& url, bool isNewTab);
+    void showFavoriteEditor(int favoriteIndex = -1);
+    void saveFavoriteEditor();
+    void removeSelectedFavorite();
+    // 调用线程：GUI 主线程。切换标签前退出旧网页全屏并恢复宿主界面。
+    void leaveWebFullScreenForTabChange();
+    void activateTab(int index);
+    void updateTabPresentation();
+    [[nodiscard]] int findTabIndex(std::uint64_t tabId) const noexcept;
     [[nodiscard]] QString errorText(BrowserErrorKind kind) const;
 
     BrowserBackend& backend_;
@@ -133,6 +195,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     bool wasInformationRowHidden_{false};
     bool wasDownloadWidgetHidden_{true};
     QFrame* toolbar_{nullptr};
+    QTabBar* tabBar_{nullptr};
     QWidget* informationRow_{nullptr};
     QWidget* browserHost_{nullptr};
     QStackedLayout* contentStack_{nullptr};
@@ -143,10 +206,21 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QLineEdit* addressEdit_{nullptr};
     QPushButton* goButton_{nullptr};
     QPushButton* clearDataButton_{nullptr};
+    QToolButton* historyButton_{nullptr};
+    QToolButton* favoritesButton_{nullptr};
     QLabel* titleLabel_{nullptr};
     QLabel* statusLabel_{nullptr};
     QLabel* errorLabel_{nullptr};
     QDialog* clearDataDialog_{nullptr};
+    QDialog* historyDialog_{nullptr};
+    QListWidget* historyList_{nullptr};
+    QDialog* favoritesDialog_{nullptr};
+    QListWidget* favoritesList_{nullptr};
+    QDialog* favoriteEditorDialog_{nullptr};
+    QLineEdit* favoriteTitleEdit_{nullptr};
+    QLineEdit* favoriteUrlEdit_{nullptr};
+    QLineEdit* favoriteNoteEdit_{nullptr};
+    int editingFavoriteIndex_{-1};
     BrowserPermissionDialog* permissionDialog_{nullptr};
     std::optional<std::uint64_t> pendingPermissionId_;
     BrowserPermissionKind pendingPermissionKind_{BrowserPermissionKind::Other};
@@ -158,6 +232,20 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     std::optional<std::uint64_t> activeDownloadId_;
     bool isDownloadCancellationSent_{false};
     QString responsiveSize_;
+
+    struct BrowserTabRecord {
+        std::uint64_t tabId{0};
+        std::uint64_t generation{0};
+        QString address;
+        QString title;
+        bool canGoBack{false};
+        bool canGoForward{false};
+        BrowserPageState state{BrowserPageState::Unavailable};
+        std::optional<BrowserErrorKind> lastError;
+    };
+    QVector<BrowserTabRecord> tabs_;
+    int currentTabIndex_{0};
+    std::uint64_t nextTabId_{2};
 };
 
 }  // namespace mediahub::gui

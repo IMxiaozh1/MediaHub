@@ -9,6 +9,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -16,6 +17,7 @@
 #include <QShowEvent>
 #include <QStyle>
 #include <QStackedLayout>
+#include <QTabBar>
 #include <QToolButton>
 #include <QTimer>
 #include <QUrl>
@@ -23,6 +25,8 @@
 #include <QtMath>
 
 #include <utility>
+#include <algorithm>
+#include <functional>
 
 #include "browser_backend.h"
 #include "browser_data_store.h"
@@ -68,6 +72,56 @@ class BrowserAddressEdit final : public QLineEdit {
     bool selectsOnMouseRelease_{false};
 };
 
+class BrowserTabBar final : public QTabBar {
+ public:
+    explicit BrowserTabBar(QWidget* const parent) : QTabBar(parent) {}
+
+ protected:
+    void mousePressEvent(QMouseEvent* const event) override {
+        if (event->button() == Qt::MiddleButton) {
+            const int index = tabAt(event->pos());
+            if (index >= 0) {
+                emit tabCloseRequested(index);
+                event->accept();
+                return;
+            }
+        }
+        QTabBar::mousePressEvent(event);
+    }
+};
+
+// 历史和收藏项把左键、Ctrl+左键和中键统一成稳定打开动作。
+class BrowserLinkListWidget final : public QListWidget {
+ public:
+    using OpenCallback = std::function<void(const QString&, bool)>;
+
+    explicit BrowserLinkListWidget(QWidget* const parent)
+        : QListWidget(parent) {}
+
+    void setOpenCallback(OpenCallback callback) {
+        openCallback_ = std::move(callback);
+    }
+
+ protected:
+    void mouseReleaseEvent(QMouseEvent* const event) override {
+        QListWidget::mouseReleaseEvent(event);
+        if (event->button() != Qt::LeftButton &&
+            event->button() != Qt::MiddleButton) {
+            return;
+        }
+        QListWidgetItem* const item = itemAt(event->pos());
+        if (item == nullptr || !openCallback_) {
+            return;
+        }
+        const bool isNewTab = event->button() == Qt::MiddleButton ||
+                              event->modifiers().testFlag(Qt::ControlModifier);
+        openCallback_(item->data(Qt::UserRole).toString(), isNewTab);
+    }
+
+ private:
+    OpenCallback openCallback_;
+};
+
 QString normalizedWebOrigin(const QString& origin) {
     const QUrl parsed(origin, QUrl::StrictMode);
     const QString scheme = parsed.scheme().toLower();
@@ -110,6 +164,8 @@ BrowserPage::BrowserPage(BrowserBackend& backend, QString userDataDirectory,
       userDataDirectory_(std::move(userDataDirectory)) {
     setObjectName(QStringLiteral("browserPage"));
     buildUi();
+    tabs_.append(BrowserTabRecord{1, generation_});
+    tabBar_->addTab(QStringLiteral("新标签页"));
     backend_.setEventListener(this);
     updateControls();
 }
@@ -163,7 +219,6 @@ void BrowserPage::shutdown() noexcept {
         isWebFullScreen_ = false;
         backend_.exitFullScreen();
     }
-    backend_.closePopups();
     backend_.shutdown();
     state_ = BrowserPageState::Unavailable;
 }
@@ -183,7 +238,14 @@ void BrowserPage::exitWebFullScreen() {
 }
 
 void BrowserPage::onBrowserReady(std::uint64_t generation) {
-    if (generation != generation_ || isShuttingDown_) {
+    const int index = findTabIndex(1);
+    if (isShuttingDown_ || index < 0 ||
+        generation != tabs_.at(index).generation) {
+        return;
+    }
+    tabs_[index].state = BrowserPageState::Ready;
+    tabs_[index].lastError.reset();
+    if (index != currentTabIndex_) {
         return;
     }
     state_ = BrowserPageState::Ready;
@@ -195,7 +257,20 @@ void BrowserPage::onBrowserReady(std::uint64_t generation) {
 
 void BrowserPage::onBrowserError(std::uint64_t generation, BrowserErrorKind kind,
                                  long) {
-    if (generation != generation_ || isShuttingDown_) {
+    if (isShuttingDown_) {
+        return;
+    }
+    const int index = kind == BrowserErrorKind::ClearDataFailed
+                          ? currentTabIndex_
+                          : findTabIndex(1);
+    if (index < 0 || index >= tabs_.size() ||
+        tabs_.at(index).generation != generation ||
+        (kind == BrowserErrorKind::ClearDataFailed && generation != generation_)) {
+        return;
+    }
+    tabs_[index].state = BrowserPageState::Failed;
+    tabs_[index].lastError = kind;
+    if (index != currentTabIndex_) {
         return;
     }
     state_ = BrowserPageState::Failed;
@@ -204,7 +279,14 @@ void BrowserPage::onBrowserError(std::uint64_t generation, BrowserErrorKind kind
 }
 
 void BrowserPage::onNavigationStarted(std::uint64_t generation) {
-    if (generation != generation_ || isShuttingDown_) {
+    const int index = findTabIndex(1);
+    if (isShuttingDown_ || index < 0 ||
+        generation != tabs_.at(index).generation) {
+        return;
+    }
+    tabs_[index].state = BrowserPageState::Navigating;
+    tabs_[index].lastError.reset();
+    if (index != currentTabIndex_) {
         return;
     }
     rejectUnansweredSensitiveRequests();
@@ -218,23 +300,44 @@ void BrowserPage::onNavigationCompleted(std::uint64_t generation,
                                         const QString& title,
                                         bool canGoBack,
                                         bool canGoForward) {
-    if (generation != generation_ || isShuttingDown_) {
+    const int index = findTabIndex(1);
+    if (isShuttingDown_ || index < 0 ||
+        generation != tabs_.at(index).generation) {
         return;
     }
-    state_ = BrowserPageState::Ready;
-    addressEdit_->setText(visibleUrl);
-    titleLabel_->setText(title.isEmpty() ? QStringLiteral("网页") : title);
-    statusLabel_->setText(QStringLiteral("载入完成"));
-    backButton_->setEnabled(canGoBack);
-    forwardButton_->setEnabled(canGoForward);
-    showHost();
-    updateControls();
-    recordSuccessfulNavigation(visibleUrl, title);
+    applyTabDocumentState(index, visibleUrl, title, canGoBack, canGoForward,
+                          true, true);
+}
+
+void BrowserPage::onDocumentStateChanged(
+    const std::uint64_t generation, const QString& visibleUrl,
+    const QString& title, const bool canGoBack, const bool canGoForward) {
+    const int index = findTabIndex(1);
+    if (isShuttingDown_ || index < 0 ||
+        generation != tabs_.at(index).generation) {
+        return;
+    }
+    applyTabDocumentState(index, visibleUrl, title, canGoBack, canGoForward,
+                          false, false);
+}
+
+void BrowserPage::onNavigationStopped(
+    const std::uint64_t generation, const QString& visibleUrl,
+    const QString& title, const bool canGoBack, const bool canGoForward) {
+    const int index = findTabIndex(1);
+    if (isShuttingDown_ || index < 0 ||
+        generation != tabs_.at(index).generation) {
+        return;
+    }
+    applyTabDocumentState(index, visibleUrl, title, canGoBack, canGoForward,
+                          true, false);
 }
 
 void BrowserPage::onFullScreenChanged(std::uint64_t generation,
                                       bool isFullScreen) {
-    if (generation != generation_ || isShuttingDown_) {
+    if (isShuttingDown_ || currentTabIndex_ < 0 ||
+        currentTabIndex_ >= tabs_.size() ||
+        generation != tabs_.at(currentTabIndex_).generation) {
         return;
     }
     if (isFullScreen == isWebFullScreen_) {
@@ -258,7 +361,9 @@ void BrowserPage::onFullScreenChanged(std::uint64_t generation,
 
 void BrowserPage::onAcceleratorRequested(
     const std::uint64_t generation, const BrowserAccelerator accelerator) {
-    if (generation != generation_ || isShuttingDown_) {
+    if (isShuttingDown_ || currentTabIndex_ < 0 ||
+        currentTabIndex_ >= tabs_.size() ||
+        generation != tabs_.at(currentTabIndex_).generation) {
         return;
     }
     switch (accelerator) {
@@ -502,6 +607,14 @@ void BrowserPage::onBrowsingDataCleared(std::uint64_t generation) {
     if (generation != generation_ || isShuttingDown_) {
         return;
     }
+    BrowserTabRecord& tab = tabs_[0];
+    tab.address.clear();
+    tab.title.clear();
+    tab.canGoBack = false;
+    tab.canGoForward = false;
+    tab.state = BrowserPageState::Ready;
+    tab.lastError.reset();
+    tabBar_->setTabText(0, QStringLiteral("新标签页"));
     state_ = BrowserPageState::Ready;
     addressEdit_->clear();
     titleLabel_->setText(QStringLiteral("网页"));
@@ -512,7 +625,184 @@ void BrowserPage::onBrowsingDataCleared(std::uint64_t generation) {
 
 void BrowserPage::onPopupRejected() {
     if (!isShuttingDown_) {
-        statusLabel_->setText(QStringLiteral("登录弹窗数量已达上限"));
+        statusLabel_->setText(QStringLiteral("无法打开新的网页标签"));
+    }
+}
+
+bool BrowserPage::onNewTabRequested(const std::uint64_t newWindowRequestId,
+                                    const QString& url) {
+    if (isShuttingDown_ || url.trimmed().isEmpty()) {
+        return false;
+    }
+    const QString trimmedUrl = url.trimmed();
+    const bool isInternalBlank =
+        trimmedUrl.compare(QStringLiteral("about:blank"),
+                           Qt::CaseInsensitive) == 0;
+    const BrowserAddress address = normalizeBrowserAddress(trimmedUrl);
+    if (!isInternalBlank && address.kind != BrowserAddressKind::Web) {
+        return false;
+    }
+    const QString initialUrl =
+        isInternalBlank ? QStringLiteral("about:blank") : address.url;
+    const std::uint64_t tabId = nextTabId_;
+    const std::uint64_t tabGeneration = generation_ + 1;
+    const auto nativeHandle = reinterpret_cast<void*>(
+        static_cast<quintptr>(browserHost_->winId()));
+    if (!backend_.createTab(nativeHandle, tabId, initialUrl, tabGeneration,
+                            newWindowRequestId)) {
+        return false;
+    }
+    leaveWebFullScreenForTabChange();
+    rejectUnansweredSensitiveRequests();
+    generation_ = tabGeneration;
+    ++nextTabId_;
+    tabs_.append(BrowserTabRecord{tabId, tabGeneration, initialUrl, {}, false,
+                                  false, BrowserPageState::Initializing});
+    const int newIndex = tabs_.size() - 1;
+    tabBar_->addTab(QStringLiteral("新标签页"));
+    currentTabIndex_ = newIndex;
+    tabBar_->setCurrentIndex(newIndex);
+    backend_.activateTab(tabId);
+    updateTabPresentation();
+    return true;
+}
+
+void BrowserPage::onTabReady(const std::uint64_t tabId,
+                             const std::uint64_t generation) {
+    const int index = findTabIndex(tabId);
+    if (index < 0 || tabs_.at(index).generation != generation ||
+        isShuttingDown_) {
+        return;
+    }
+    tabs_[index].state = BrowserPageState::Ready;
+    tabs_[index].lastError.reset();
+    if (index == currentTabIndex_) {
+        state_ = BrowserPageState::Ready;
+        statusLabel_->setText(QStringLiteral("网页组件已就绪"));
+        showHost();
+        updateControls();
+        updateBackendBounds();
+    }
+}
+
+void BrowserPage::onTabNavigationStarted(const std::uint64_t tabId,
+                                         const std::uint64_t generation) {
+    const int index = findTabIndex(tabId);
+    if (index < 0 || tabs_.at(index).generation != generation ||
+        isShuttingDown_) {
+        return;
+    }
+    tabs_[index].state = BrowserPageState::Navigating;
+    tabs_[index].lastError.reset();
+    if (index == currentTabIndex_) {
+        if (state_ == BrowserPageState::ClearingData) {
+            return;
+        }
+        rejectUnansweredSensitiveRequests();
+        state_ = BrowserPageState::Navigating;
+        statusLabel_->setText(QStringLiteral("正在载入..."));
+        updateControls();
+    }
+}
+
+void BrowserPage::onTabNavigationCompleted(
+    const std::uint64_t tabId, const std::uint64_t generation,
+    const QString& visibleUrl, const QString& title, const bool canGoBack,
+    const bool canGoForward) {
+    const int index = findTabIndex(tabId);
+    if (index < 0 || tabs_.at(index).generation != generation ||
+        isShuttingDown_ || state_ == BrowserPageState::ClearingData) {
+        return;
+    }
+    applyTabDocumentState(index, visibleUrl, title, canGoBack, canGoForward,
+                          true, true);
+}
+
+void BrowserPage::onTabDocumentStateChanged(
+    const std::uint64_t tabId, const std::uint64_t generation,
+    const QString& visibleUrl, const QString& title, const bool canGoBack,
+    const bool canGoForward) {
+    const int index = findTabIndex(tabId);
+    if (index < 0 || tabs_.at(index).generation != generation ||
+        isShuttingDown_ || state_ == BrowserPageState::ClearingData) {
+        return;
+    }
+    applyTabDocumentState(index, visibleUrl, title, canGoBack, canGoForward,
+                          false, false);
+}
+
+void BrowserPage::onTabNavigationStopped(
+    const std::uint64_t tabId, const std::uint64_t generation,
+    const QString& visibleUrl, const QString& title, const bool canGoBack,
+    const bool canGoForward) {
+    const int index = findTabIndex(tabId);
+    if (index < 0 || tabs_.at(index).generation != generation ||
+        isShuttingDown_ || state_ == BrowserPageState::ClearingData) {
+        return;
+    }
+    applyTabDocumentState(index, visibleUrl, title, canGoBack, canGoForward,
+                          true, false);
+}
+
+void BrowserPage::applyTabDocumentState(
+    const int index, const QString& visibleUrl, const QString& title,
+    const bool canGoBack, const bool canGoForward,
+    const bool didFinishNavigation, const bool shouldRecordHistory) {
+    BrowserTabRecord& tab = tabs_[index];
+    tab.address = visibleUrl;
+    tab.title = title;
+    tab.canGoBack = canGoBack;
+    tab.canGoForward = canGoForward;
+    if (didFinishNavigation) {
+        tab.state = BrowserPageState::Ready;
+        tab.lastError.reset();
+    }
+    tabBar_->setTabText(index,
+                        title.isEmpty() ? QStringLiteral("新标签页") : title);
+    if (index == currentTabIndex_) {
+        addressEdit_->setText(visibleUrl);
+        titleLabel_->setText(title.isEmpty() ? QStringLiteral("网页") : title);
+        backButton_->setEnabled(canGoBack);
+        forwardButton_->setEnabled(canGoForward);
+        if (didFinishNavigation) {
+            state_ = BrowserPageState::Ready;
+            statusLabel_->setText(QStringLiteral("载入完成"));
+            showHost();
+        }
+        updateControls();
+    }
+    if (shouldRecordHistory) {
+        recordSuccessfulNavigation(visibleUrl, title);
+    } else if (!didFinishNavigation) {
+        updateRecordedNavigationTitle(visibleUrl, title);
+    }
+}
+
+void BrowserPage::onTabError(const std::uint64_t tabId,
+                             const std::uint64_t generation,
+                             const BrowserErrorKind kind,
+                             const long errorCode) {
+    Q_UNUSED(errorCode);
+    const int index = findTabIndex(tabId);
+    if (index < 0 || tabs_.at(index).generation != generation ||
+        isShuttingDown_) {
+        return;
+    }
+    tabs_[index].state = BrowserPageState::Failed;
+    tabs_[index].lastError = kind;
+    if (index == currentTabIndex_) {
+        state_ = BrowserPageState::Failed;
+        showError(kind);
+        updateControls();
+    }
+}
+
+void BrowserPage::onTabCloseRequested(const std::uint64_t tabId) {
+    for (int index = 0; index < tabs_.size(); ++index) {
+        if (tabs_.at(index).tabId == tabId) {
+            closeTab(index);
+            return;
+        }
     }
 }
 
@@ -571,6 +861,11 @@ void BrowserPage::buildUi() {
     toolbarLayout->setContentsMargins(10, 8, 10, 8);
     toolbarLayout->setSpacing(6);
 
+    tabBar_ = new BrowserTabBar(this);
+    tabBar_->setObjectName(QStringLiteral("browserTabBar"));
+    tabBar_->setTabsClosable(true);
+    tabBar_->setMovable(true);
+
     backButton_ = createToolButton(QStringLiteral("browserBackButton"),
                                    QStringLiteral("后退"), toolbar_);
     forwardButton_ = createToolButton(QStringLiteral("browserForwardButton"),
@@ -587,6 +882,11 @@ void BrowserPage::buildUi() {
     goButton_->setObjectName(QStringLiteral("browserGoButton"));
     clearDataButton_ = new QPushButton(QStringLiteral("清除网页数据"), toolbar_);
     clearDataButton_->setObjectName(QStringLiteral("browserClearDataButton"));
+    historyButton_ = createToolButton(QStringLiteral("browserHistoryButton"),
+                                      QStringLiteral("历史"), toolbar_);
+    favoritesButton_ = createToolButton(
+        QStringLiteral("browserFavoritesButton"), QStringLiteral("收藏夹"),
+        toolbar_);
 
     toolbarLayout->addWidget(backButton_);
     toolbarLayout->addWidget(forwardButton_);
@@ -594,6 +894,8 @@ void BrowserPage::buildUi() {
     toolbarLayout->addWidget(homeButton_);
     toolbarLayout->addWidget(addressEdit_, 1);
     toolbarLayout->addWidget(goButton_);
+    toolbarLayout->addWidget(historyButton_);
+    toolbarLayout->addWidget(favoritesButton_);
     toolbarLayout->addWidget(clearDataButton_);
 
     informationRow_ = new QWidget(this);
@@ -622,6 +924,7 @@ void BrowserPage::buildUi() {
     contentStack_->addWidget(errorLabel_);
     contentStack_->setCurrentWidget(errorLabel_);
 
+    rootLayout->addWidget(tabBar_);
     rootLayout->addWidget(toolbar_);
     rootLayout->addWidget(informationRow_);
     downloadWidget_ = new BrowserDownloadWidget(this);
@@ -632,6 +935,19 @@ void BrowserPage::buildUi() {
 
     connect(addressEdit_, &QLineEdit::returnPressed, this,
             &BrowserPage::submitAddress);
+    connect(tabBar_, &QTabBar::currentChanged, this,
+            &BrowserPage::activateTab);
+    connect(tabBar_, &QTabBar::tabCloseRequested, this,
+            &BrowserPage::closeTab);
+    connect(tabBar_, &QTabBar::tabMoved, this,
+            [this](const int from, const int to) {
+                if (from < 0 || from >= tabs_.size() || to < 0 ||
+                    to >= tabs_.size()) {
+                    return;
+                }
+                tabs_.move(from, to);
+                currentTabIndex_ = tabBar_->currentIndex();
+            });
     connect(goButton_, &QPushButton::clicked, this, &BrowserPage::submitAddress);
     connect(backButton_, &QToolButton::clicked, this, [this] { backend_.goBack(); });
     connect(forwardButton_, &QToolButton::clicked, this,
@@ -642,6 +958,10 @@ void BrowserPage::buildUi() {
             [this] { navigateTo(kBrowserHomeUrl); });
     connect(clearDataButton_, &QPushButton::clicked, this,
             &BrowserPage::showClearDataConfirmation);
+    connect(historyButton_, &QToolButton::clicked, this,
+            &BrowserPage::showHistory);
+    connect(favoritesButton_, &QToolButton::clicked, this,
+            &BrowserPage::showFavorites);
     connect(downloadWidget_, &BrowserDownloadWidget::destinationChosen, this,
             [this](const std::uint64_t requestId, const QString& destination) {
                 if (!isShuttingDown_ && activeDownloadId_.has_value() &&
@@ -689,7 +1009,8 @@ void BrowserPage::updateResponsiveStyle() {
     setProperty("responsiveSize", sizeKey);
     const QList<QWidget*> widgets{this, toolbar_, addressEdit_, goButton_,
                                   clearDataButton_, backButton_, forwardButton_,
-                                  reloadButton_, homeButton_};
+                                  reloadButton_, homeButton_, historyButton_,
+                                  favoritesButton_};
     for (QWidget* const widget : widgets) {
         if (widget == nullptr) {
             continue;
@@ -719,11 +1040,382 @@ void BrowserPage::navigateTo(const QString& normalizedUrl) {
         return;
     }
     rejectUnansweredSensitiveRequests();
+    tabs_[currentTabIndex_].address = normalizedUrl;
     ++generation_;
+    tabs_[currentTabIndex_].generation = generation_;
+    tabs_[currentTabIndex_].state = BrowserPageState::Navigating;
+    tabs_[currentTabIndex_].lastError.reset();
     state_ = BrowserPageState::Navigating;
     statusLabel_->setText(QStringLiteral("正在载入..."));
     updateControls();
     backend_.navigate(normalizedUrl, generation_);
+}
+
+void BrowserPage::activateTab(const int index) {
+    if (isShuttingDown_ || index < 0 || index >= tabs_.size() ||
+        index == currentTabIndex_) {
+        return;
+    }
+    leaveWebFullScreenForTabChange();
+    rejectUnansweredSensitiveRequests();
+    currentTabIndex_ = index;
+    updateTabPresentation();
+    const BrowserTabRecord& tab = tabs_.at(currentTabIndex_);
+    backend_.activateTab(tab.tabId);
+    state_ = tab.state;
+    updateControls();
+}
+
+void BrowserPage::closeTab(const int index) {
+    if (isShuttingDown_ || state_ == BrowserPageState::ClearingData ||
+        index < 0 || index >= tabs_.size()) {
+        return;
+    }
+    const bool wasCurrent = index == currentTabIndex_;
+    if (wasCurrent) {
+        leaveWebFullScreenForTabChange();
+        rejectUnansweredSensitiveRequests();
+    }
+    if (tabs_.size() == 1) {
+        BrowserTabRecord& tab = tabs_[0];
+        ++generation_;
+        tab.generation = generation_;
+        tab.address.clear();
+        tab.title.clear();
+        tab.canGoBack = false;
+        tab.canGoForward = false;
+        tab.state = BrowserPageState::Navigating;
+        tab.lastError.reset();
+        tabBar_->setTabText(0, QStringLiteral("新标签页"));
+        updateTabPresentation();
+        statusLabel_->setText(QStringLiteral("正在打开空白页..."));
+        backend_.navigate(QStringLiteral("about:blank"), generation_);
+        return;
+    }
+    const std::uint64_t closedTabId = tabs_.at(index).tabId;
+    tabs_.removeAt(index);
+    tabBar_->blockSignals(true);
+    tabBar_->removeTab(index);
+    backend_.closeTab(closedTabId);
+    if (wasCurrent) {
+        currentTabIndex_ = std::min(index, tabs_.size() - 1);
+    } else if (index < currentTabIndex_) {
+        --currentTabIndex_;
+    }
+    currentTabIndex_ = std::clamp(currentTabIndex_, 0, tabs_.size() - 1);
+    tabBar_->setCurrentIndex(currentTabIndex_);
+    tabBar_->blockSignals(false);
+    backend_.activateTab(tabs_.at(currentTabIndex_).tabId);
+    updateTabPresentation();
+}
+
+void BrowserPage::updateTabPresentation() {
+    if (currentTabIndex_ < 0 || currentTabIndex_ >= tabs_.size()) {
+        return;
+    }
+    const BrowserTabRecord& tab = tabs_.at(currentTabIndex_);
+    addressEdit_->setText(tab.address);
+    titleLabel_->setText(tab.title.isEmpty() ? QStringLiteral("网页") : tab.title);
+    backButton_->setEnabled(tab.canGoBack);
+    forwardButton_->setEnabled(tab.canGoForward);
+    state_ = tab.state;
+    if (tab.state == BrowserPageState::Failed && tab.lastError.has_value()) {
+        showError(*tab.lastError);
+    } else {
+        showHost();
+        switch (tab.state) {
+            case BrowserPageState::Initializing:
+                statusLabel_->setText(QStringLiteral("正在初始化网页组件..."));
+                break;
+            case BrowserPageState::Navigating:
+                statusLabel_->setText(QStringLiteral("正在载入..."));
+                break;
+            case BrowserPageState::Ready:
+                statusLabel_->setText(QStringLiteral("载入完成"));
+                break;
+            case BrowserPageState::ClearingData:
+                statusLabel_->setText(QStringLiteral("正在清除网页数据..."));
+                break;
+            case BrowserPageState::Unavailable:
+                statusLabel_->setText(QStringLiteral("网页组件尚未初始化"));
+                break;
+            case BrowserPageState::Failed:
+                break;
+        }
+    }
+    updateControls();
+}
+
+void BrowserPage::leaveWebFullScreenForTabChange() {
+    if (!isWebFullScreen_) {
+        return;
+    }
+    backend_.exitFullScreen();
+    onFullScreenChanged(tabs_.at(currentTabIndex_).generation, false);
+}
+
+int BrowserPage::findTabIndex(const std::uint64_t tabId) const noexcept {
+    for (int index = 0; index < tabs_.size(); ++index) {
+        if (tabs_.at(index).tabId == tabId) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+void BrowserPage::showHistory() {
+    if (historyDialog_ == nullptr) {
+        historyDialog_ = new QDialog(this);
+        historyDialog_->setObjectName(QStringLiteral("browserHistoryDialog"));
+        historyDialog_->setWindowTitle(QStringLiteral("浏览历史"));
+        historyDialog_->resize(680, 460);
+        auto* layout = new QVBoxLayout(historyDialog_);
+        auto* list = new BrowserLinkListWidget(historyDialog_);
+        historyList_ = list;
+        historyList_->setObjectName(QStringLiteral("browserHistoryList"));
+        historyList_->setAlternatingRowColors(true);
+        list->setOpenCallback([this](const QString& url, const bool isNewTab) {
+            openStoredUrl(url, isNewTab);
+            historyDialog_->hide();
+        });
+        layout->addWidget(historyList_);
+        auto* closeButton = new QPushButton(QStringLiteral("关闭"), historyDialog_);
+        connect(closeButton, &QPushButton::clicked, historyDialog_, &QDialog::hide);
+        layout->addWidget(closeButton, 0, Qt::AlignRight);
+    }
+    refreshHistoryList();
+    historyDialog_->show();
+    historyDialog_->raise();
+    historyDialog_->activateWindow();
+}
+
+void BrowserPage::showFavorites() {
+    if (favoritesDialog_ == nullptr) {
+        favoritesDialog_ = new QDialog(this);
+        favoritesDialog_->setObjectName(QStringLiteral("browserFavoritesDialog"));
+        favoritesDialog_->setWindowTitle(QStringLiteral("收藏夹"));
+        favoritesDialog_->resize(680, 460);
+        auto* layout = new QVBoxLayout(favoritesDialog_);
+        auto* list = new BrowserLinkListWidget(favoritesDialog_);
+        favoritesList_ = list;
+        favoritesList_->setObjectName(QStringLiteral("browserFavoritesList"));
+        favoritesList_->setAlternatingRowColors(true);
+        list->setOpenCallback([this](const QString& url, const bool isNewTab) {
+            openStoredUrl(url, isNewTab);
+            favoritesDialog_->hide();
+        });
+        layout->addWidget(favoritesList_);
+        auto* buttons = new QHBoxLayout();
+        auto* addButton = new QPushButton(QStringLiteral("收藏当前网页"),
+                                          favoritesDialog_);
+        addButton->setObjectName(QStringLiteral("browserFavoriteAddButton"));
+        auto* editButton = new QPushButton(QStringLiteral("编辑"),
+                                            favoritesDialog_);
+        editButton->setObjectName(QStringLiteral("browserFavoriteEditButton"));
+        auto* removeButton = new QPushButton(QStringLiteral("删除"),
+                                              favoritesDialog_);
+        removeButton->setObjectName(QStringLiteral("browserFavoriteRemoveButton"));
+        auto* closeButton = new QPushButton(QStringLiteral("关闭"),
+                                            favoritesDialog_);
+        buttons->addWidget(addButton);
+        buttons->addWidget(editButton);
+        buttons->addWidget(removeButton);
+        buttons->addStretch();
+        buttons->addWidget(closeButton);
+        layout->addLayout(buttons);
+        connect(addButton, &QPushButton::clicked, this,
+                [this] { showFavoriteEditor(); });
+        connect(editButton, &QPushButton::clicked, this, [this] {
+            showFavoriteEditor(favoritesList_->currentRow());
+        });
+        connect(removeButton, &QPushButton::clicked, this,
+                &BrowserPage::removeSelectedFavorite);
+        const auto updateSelectionActions = [this, editButton, removeButton] {
+            const bool hasSelection = favoritesList_->currentRow() >= 0;
+            editButton->setEnabled(hasSelection);
+            removeButton->setEnabled(hasSelection);
+        };
+        connect(favoritesList_, &QListWidget::currentRowChanged,
+                favoritesDialog_, [updateSelectionActions](int) {
+                    updateSelectionActions();
+                });
+        updateSelectionActions();
+        connect(closeButton, &QPushButton::clicked, favoritesDialog_,
+                &QDialog::hide);
+    }
+    refreshFavoritesList();
+    favoritesDialog_->show();
+    favoritesDialog_->raise();
+    favoritesDialog_->activateWindow();
+}
+
+void BrowserPage::refreshHistoryList() {
+    if (historyList_ == nullptr) {
+        return;
+    }
+    historyList_->clear();
+    if (dataStore_ == nullptr) {
+        return;
+    }
+    const QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    for (const BrowserHistoryEntry& entry : history) {
+        const QString label = entry.title.isEmpty() ? entry.url
+                                                    : entry.title + QStringLiteral("\n") +
+                                                          entry.url;
+        auto* item = new QListWidgetItem(label, historyList_);
+        item->setData(Qt::UserRole, entry.url);
+        item->setToolTip(entry.url);
+    }
+}
+
+void BrowserPage::refreshFavoritesList() {
+    if (favoritesList_ == nullptr) {
+        return;
+    }
+    favoritesList_->clear();
+    if (dataStore_ == nullptr) {
+        return;
+    }
+    const QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    for (const BrowserFavoriteEntry& entry : favorites) {
+        QString label = entry.title.isEmpty() ? entry.url
+                                              : entry.title + QStringLiteral("\n") +
+                                                    entry.url;
+        if (!entry.note.isEmpty()) {
+            label += QStringLiteral("\n备注：") + entry.note;
+        }
+        auto* item = new QListWidgetItem(label, favoritesList_);
+        item->setData(Qt::UserRole, entry.url);
+        item->setToolTip(entry.url);
+    }
+    favoritesList_->setCurrentRow(-1);
+}
+
+void BrowserPage::openStoredUrl(const QString& url, const bool isNewTab) {
+    const BrowserAddress address = normalizeBrowserAddress(url);
+    if (address.kind != BrowserAddressKind::Web || isShuttingDown_) {
+        return;
+    }
+    if (isNewTab) {
+        static_cast<void>(onNewTabRequested(0, address.url));
+        return;
+    }
+    navigateTo(address.url);
+}
+
+void BrowserPage::showFavoriteEditor(const int favoriteIndex) {
+    if (dataStore_ == nullptr || currentTabIndex_ < 0 ||
+        currentTabIndex_ >= tabs_.size()) {
+        return;
+    }
+    QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    BrowserFavoriteEntry entry;
+    editingFavoriteIndex_ = favoriteIndex;
+    if (favoriteIndex >= 0 && favoriteIndex < favorites.size()) {
+        entry = favorites.at(favoriteIndex);
+    } else {
+        editingFavoriteIndex_ = -1;
+        const BrowserTabRecord& tab = tabs_.at(currentTabIndex_);
+        const BrowserAddress address = normalizeBrowserAddress(tab.address);
+        if (address.kind != BrowserAddressKind::Web) {
+            statusLabel_->setText(QStringLiteral("当前标签没有可收藏的网址"));
+            return;
+        }
+        entry = BrowserFavoriteEntry{address.url, tab.title, {}};
+    }
+
+    if (favoriteEditorDialog_ == nullptr) {
+        favoriteEditorDialog_ = new QDialog(this);
+        favoriteEditorDialog_->setObjectName(
+            QStringLiteral("browserFavoriteEditorDialog"));
+        favoriteEditorDialog_->setWindowTitle(QStringLiteral("编辑收藏"));
+        auto* layout = new QVBoxLayout(favoriteEditorDialog_);
+        layout->addWidget(new QLabel(QStringLiteral("标题"),
+                                     favoriteEditorDialog_));
+        favoriteTitleEdit_ = new QLineEdit(favoriteEditorDialog_);
+        favoriteTitleEdit_->setObjectName(
+            QStringLiteral("browserFavoriteTitleEdit"));
+        layout->addWidget(favoriteTitleEdit_);
+        layout->addWidget(new QLabel(QStringLiteral("网址"),
+                                     favoriteEditorDialog_));
+        favoriteUrlEdit_ = new QLineEdit(favoriteEditorDialog_);
+        favoriteUrlEdit_->setObjectName(
+            QStringLiteral("browserFavoriteUrlEdit"));
+        layout->addWidget(favoriteUrlEdit_);
+        layout->addWidget(new QLabel(QStringLiteral("备注"),
+                                     favoriteEditorDialog_));
+        favoriteNoteEdit_ = new QLineEdit(favoriteEditorDialog_);
+        favoriteNoteEdit_->setObjectName(
+            QStringLiteral("browserFavoriteNoteEdit"));
+        layout->addWidget(favoriteNoteEdit_);
+        auto* buttons = new QHBoxLayout();
+        auto* cancelButton = new QPushButton(QStringLiteral("取消"),
+                                             favoriteEditorDialog_);
+        auto* saveButton = new QPushButton(QStringLiteral("保存"),
+                                           favoriteEditorDialog_);
+        saveButton->setObjectName(QStringLiteral("browserFavoriteSaveButton"));
+        buttons->addStretch();
+        buttons->addWidget(cancelButton);
+        buttons->addWidget(saveButton);
+        layout->addLayout(buttons);
+        connect(cancelButton, &QPushButton::clicked, favoriteEditorDialog_,
+                &QDialog::hide);
+        connect(saveButton, &QPushButton::clicked, this,
+                &BrowserPage::saveFavoriteEditor);
+    }
+    favoriteTitleEdit_->setText(entry.title);
+    favoriteUrlEdit_->setText(entry.url);
+    favoriteNoteEdit_->setText(entry.note);
+    favoriteEditorDialog_->show();
+    favoriteEditorDialog_->raise();
+    favoriteEditorDialog_->activateWindow();
+}
+
+void BrowserPage::saveFavoriteEditor() {
+    if (dataStore_ == nullptr) {
+        return;
+    }
+    const BrowserAddress address =
+        normalizeBrowserAddress(favoriteUrlEdit_->text());
+    if (address.kind != BrowserAddressKind::Web) {
+        favoriteUrlEdit_->setFocus();
+        return;
+    }
+    QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    BrowserFavoriteEntry entry{address.url, favoriteTitleEdit_->text(),
+                               favoriteNoteEdit_->text()};
+    const bool isEditing = editingFavoriteIndex_ >= 0 &&
+                           editingFavoriteIndex_ < favorites.size();
+    int insertionIndex = isEditing ? editingFavoriteIndex_ : 0;
+    if (isEditing) {
+        favorites.removeAt(editingFavoriteIndex_);
+    }
+    for (int index = favorites.size() - 1; index >= 0; --index) {
+        if (favorites.at(index).url.compare(entry.url, Qt::CaseInsensitive) == 0) {
+            favorites.removeAt(index);
+            if (index < insertionIndex) {
+                --insertionIndex;
+            }
+        }
+    }
+    favorites.insert(std::clamp(insertionIndex, 0, favorites.size()), entry);
+    dataStore_->saveFavorites(favorites);
+    favoriteEditorDialog_->hide();
+    refreshFavoritesList();
+}
+
+void BrowserPage::removeSelectedFavorite() {
+    if (dataStore_ == nullptr || favoritesList_ == nullptr) {
+        return;
+    }
+    const int index = favoritesList_->currentRow();
+    QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    if (index < 0 || index >= favorites.size()) {
+        return;
+    }
+    favorites.removeAt(index);
+    dataStore_->saveFavorites(favorites);
+    refreshFavoritesList();
 }
 
 void BrowserPage::showClearDataConfirmation() {
@@ -733,9 +1425,13 @@ void BrowserPage::showClearDataConfirmation() {
         clearDataDialog_->setWindowTitle(QStringLiteral("清除网页数据"));
         auto* layout = new QVBoxLayout(clearDataDialog_);
         auto* explanation = new QLabel(
-            QStringLiteral("将清除 MediaHub 内置网页的 Cookie、缓存和网站存储，"
-                           "并退出网页账号；系统 Edge 不受影响。"),
+            QStringLiteral("将清除 MediaHub 内置浏览器专用 Profile 的 Cookie、"
+                           "LocalStorage、IndexedDB、缓存、已保存密码和自动填充数据，"
+                           "并关闭其他网页标签。MediaHub 浏览历史和收藏夹会保留，"
+                           "系统 Edge 的资料不受影响。"),
             clearDataDialog_);
+        explanation->setObjectName(
+            QStringLiteral("browserClearDataExplanation"));
         explanation->setWordWrap(true);
         layout->addWidget(explanation);
         auto* buttons = new QHBoxLayout();
@@ -763,8 +1459,28 @@ void BrowserPage::confirmClearBrowsingData() {
         state_ == BrowserPageState::ClearingData) {
         return;
     }
+    leaveWebFullScreenForTabChange();
     rejectUnansweredSensitiveRequests();
     ++generation_;
+    const BrowserTabRecord survivingTab = tabs_.at(currentTabIndex_);
+    for (const BrowserTabRecord& tab : tabs_) {
+        if (tab.tabId != survivingTab.tabId) {
+            backend_.closeTab(tab.tabId);
+        }
+    }
+    tabs_ = {survivingTab};
+    tabs_[0].generation = generation_;
+    tabs_[0].state = BrowserPageState::ClearingData;
+    currentTabIndex_ = 0;
+    tabBar_->blockSignals(true);
+    while (tabBar_->count() > 0) {
+        tabBar_->removeTab(0);
+    }
+    tabBar_->addTab(survivingTab.title.isEmpty()
+                        ? QStringLiteral("新标签页")
+                        : survivingTab.title);
+    tabBar_->setCurrentIndex(0);
+    tabBar_->blockSignals(false);
     state_ = BrowserPageState::ClearingData;
     statusLabel_->setText(QStringLiteral("正在清除网页数据..."));
     updateControls();
@@ -889,21 +1605,43 @@ void BrowserPage::recordSuccessfulNavigation(const QString& visibleUrl,
     if (dataStore_ == nullptr) {
         return;
     }
-    const BrowserAddress normalized = normalizeBrowserAddress(visibleUrl);
-    if (normalized.kind != BrowserAddressKind::Web) {
+    const QString storedUrl = normalizeStoredBrowserUrl(visibleUrl);
+    if (storedUrl.isEmpty()) {
         return;
     }
     QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
     for (auto iterator = history.begin(); iterator != history.end();) {
-        if (iterator->url == normalized.url) {
+        if (iterator->url == storedUrl) {
             iterator = history.erase(iterator);
         } else {
             ++iterator;
         }
     }
     history.prepend(BrowserHistoryEntry{
-        normalized.url, title.trimmed(), QDateTime::currentMSecsSinceEpoch()});
+        storedUrl, title.trimmed(), QDateTime::currentMSecsSinceEpoch()});
     dataStore_->saveHistory(history);
+}
+
+void BrowserPage::updateRecordedNavigationTitle(const QString& visibleUrl,
+                                                const QString& title) {
+    if (dataStore_ == nullptr) {
+        return;
+    }
+    const QString storedUrl = normalizeStoredBrowserUrl(visibleUrl);
+    if (storedUrl.isEmpty()) {
+        return;
+    }
+    QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    for (BrowserHistoryEntry& entry : history) {
+        if (entry.url == storedUrl) {
+            const QString trimmedTitle = title.trimmed();
+            if (entry.title != trimmedTitle) {
+                entry.title = trimmedTitle;
+                dataStore_->saveHistory(history);
+            }
+            return;
+        }
+    }
 }
 
 QString BrowserPage::errorText(BrowserErrorKind kind) const {

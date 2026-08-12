@@ -245,9 +245,9 @@ if(NOT MEDIAHUB_CORE_ONLY)
         src/browser_webview2/webview2_default_deny.h
         src/browser_webview2/webview2_handles.h
         src/browser_webview2/webview2_pending_request.h
-        src/browser_webview2/webview2_popup_window.cpp
-        src/browser_webview2/webview2_popup_window.h
         src/browser_webview2/webview2_state.h
+        src/browser_webview2/webview2_tab_controller.cpp
+        src/browser_webview2/webview2_tab_controller.h
     )
     target_include_directories(mediahub_browser_webview2
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"

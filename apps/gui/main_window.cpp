@@ -100,7 +100,6 @@ class UnavailableBrowserBackend final : public BrowserBackend {
   void answerCertificateError(std::uint64_t,
                               BrowserCertificateDecision) override {}
   void exitFullScreen() override {}
-  void closePopups() noexcept override {}
   void shutdown() noexcept override { listener_ = nullptr; }
 
  private:

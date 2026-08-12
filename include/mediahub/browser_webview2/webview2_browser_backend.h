@@ -30,6 +30,13 @@ class WebView2BrowserBackend final : public gui::BrowserBackend {
                     std::uint64_t generation) override;
     // 调用线程：GUI 主线程。
     void navigate(const QString& normalizedUrl, std::uint64_t generation) override;
+    [[nodiscard]] bool createTab(void* parentWindowHandle,
+                                 std::uint64_t tabId,
+                                 const QString& initialUrl,
+                                 std::uint64_t generation,
+                                 std::uint64_t newWindowRequestId = 0) override;
+    void closeTab(std::uint64_t tabId) override;
+    void activateTab(std::uint64_t tabId) override;
     // 调用线程：GUI 主线程。
     void goBack() override;
     // 调用线程：GUI 主线程。
@@ -46,24 +53,22 @@ class WebView2BrowserBackend final : public gui::BrowserBackend {
     void setSuspended(bool isSuspended) override;
     // 调用线程：GUI 主线程。
     void clearBrowsingData(std::uint64_t generation) override;
-    // 调用线程：GUI 主线程。安全决定在后续阶段接入，此阶段不自动允许。
+    // 调用线程：GUI 主线程。只完成当前仍有效的宿主权限决定。
     void answerPermission(std::uint64_t requestId,
                           gui::BrowserPermissionDecision decision) override;
-    // 调用线程：GUI 主线程。下载决定在后续阶段接入，此阶段不开始下载。
+    // 调用线程：GUI 主线程。目标已由宿主完成安全校验。
     void chooseDownloadPath(std::uint64_t requestId,
                             const QString& destination) override;
     // 调用线程：GUI 主线程。
     void cancelDownload(std::uint64_t requestId) override;
-    // 调用线程：GUI 主线程。外部协议在后续阶段接入，此阶段不启动应用。
+    // 调用线程：GUI 主线程。只允许用户明确确认的当前外部协议请求。
     void answerExternalProtocol(std::uint64_t requestId, bool isAllowed) override;
-    // 调用线程：GUI 主线程。证书例外在后续阶段接入，此阶段不放行。
+    // 调用线程：GUI 主线程。证书例外只应用于当前 WebView2 会话。
     void answerCertificateError(
         std::uint64_t requestId,
         gui::BrowserCertificateDecision decision) override;
     // 调用线程：GUI 主线程。
     void exitFullScreen() override;
-    // 调用线程：GUI 主线程。不等待浏览器子进程。
-    void closePopups() noexcept override;
     // 调用线程：GUI 主线程。不等待内核线程或浏览器子进程。
     void shutdown() noexcept override;
 

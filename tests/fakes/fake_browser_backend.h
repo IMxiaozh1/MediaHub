@@ -15,6 +15,9 @@ enum class FakeBrowserCommandKind {
     SetEventListener,
     Initialize,
     Navigate,
+    CreateTab,
+    CloseTab,
+    ActivateTab,
     GoBack,
     GoForward,
     ReloadOrStop,
@@ -29,7 +32,6 @@ enum class FakeBrowserCommandKind {
     AnswerExternalProtocol,
     AnswerCertificateError,
     ExitFullScreen,
-    ClosePopups,
     Shutdown,
 };
 
@@ -38,6 +40,7 @@ struct FakeBrowserCommand {
     QString text;
     QRect bounds;
     std::uint64_t requestId{0};
+    std::uint64_t newWindowRequestId{0};
     std::uint64_t generation{0};
     bool flag{false};
     gui::BrowserPermissionDecision permissionDecision{
@@ -66,6 +69,30 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         FakeBrowserCommand command{FakeBrowserCommandKind::Navigate};
         command.text = normalizedUrl;
         command.generation = generation;
+        commands.push_back(command);
+    }
+
+    bool createTab(void*, std::uint64_t tabId, const QString& initialUrl,
+                   std::uint64_t generation,
+                   std::uint64_t newWindowRequestId = 0) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::CreateTab};
+        command.requestId = tabId;
+        command.newWindowRequestId = newWindowRequestId;
+        command.text = initialUrl;
+        command.generation = generation;
+        commands.push_back(command);
+        return canCreateTab;
+    }
+
+    void closeTab(std::uint64_t tabId) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::CloseTab};
+        command.requestId = tabId;
+        commands.push_back(command);
+    }
+
+    void activateTab(std::uint64_t tabId) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::ActivateTab};
+        command.requestId = tabId;
         commands.push_back(command);
     }
 
@@ -139,10 +166,6 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         commands.push_back({FakeBrowserCommandKind::ExitFullScreen});
     }
 
-    void closePopups() noexcept override {
-        commands.push_back({FakeBrowserCommandKind::ClosePopups});
-    }
-
     void shutdown() noexcept override {
         commands.push_back({FakeBrowserCommandKind::Shutdown});
     }
@@ -160,6 +183,79 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         if (listener_ != nullptr) {
             listener_->onNavigationCompleted(generation, visibleUrl, title, canGoBack,
                                              canGoForward);
+        }
+    }
+
+    void emitDocumentStateChanged(std::uint64_t generation,
+                                  const QString& visibleUrl,
+                                  const QString& title = {},
+                                  bool canGoBack = false,
+                                  bool canGoForward = false) {
+        if (listener_ != nullptr) {
+            listener_->onDocumentStateChanged(generation, visibleUrl, title,
+                                              canGoBack, canGoForward);
+        }
+    }
+
+    void emitNavigationStopped(std::uint64_t generation,
+                               const QString& visibleUrl,
+                               const QString& title = {},
+                               bool canGoBack = false,
+                               bool canGoForward = false) {
+        if (listener_ != nullptr) {
+            listener_->onNavigationStopped(generation, visibleUrl, title,
+                                           canGoBack, canGoForward);
+        }
+    }
+
+    bool emitNewTabRequested(const QString& url,
+                             const std::uint64_t newWindowRequestId = 0) {
+        return listener_ != nullptr &&
+               listener_->onNewTabRequested(newWindowRequestId, url);
+    }
+
+    void emitTabReady(std::uint64_t tabId, std::uint64_t generation) {
+        if (listener_ != nullptr) {
+            listener_->onTabReady(tabId, generation);
+        }
+    }
+
+    void emitTabNavigationStarted(std::uint64_t tabId,
+                                  std::uint64_t generation) {
+        if (listener_ != nullptr) {
+            listener_->onTabNavigationStarted(tabId, generation);
+        }
+    }
+
+    void emitTabNavigationCompleted(std::uint64_t tabId,
+                                    std::uint64_t generation,
+                                    const QString& visibleUrl,
+                                    const QString& title = {},
+                                    bool canGoBack = false,
+                                    bool canGoForward = false) {
+        if (listener_ != nullptr) {
+            listener_->onTabNavigationCompleted(tabId, generation, visibleUrl,
+                                                title, canGoBack,
+                                                canGoForward);
+        }
+    }
+
+    void emitTabDocumentStateChanged(std::uint64_t tabId,
+                                     std::uint64_t generation,
+                                     const QString& visibleUrl,
+                                     const QString& title = {},
+                                     bool canGoBack = false,
+                                     bool canGoForward = false) {
+        if (listener_ != nullptr) {
+            listener_->onTabDocumentStateChanged(tabId, generation, visibleUrl,
+                                                 title, canGoBack,
+                                                 canGoForward);
+        }
+    }
+
+    void emitTabCloseRequested(std::uint64_t tabId) {
+        if (listener_ != nullptr) {
+            listener_->onTabCloseRequested(tabId);
         }
     }
 
@@ -253,6 +349,7 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
     }
 
     std::vector<FakeBrowserCommand> commands;
+    bool canCreateTab{true};
 
  private:
     void recordFlag(FakeBrowserCommandKind kind, bool flag) {

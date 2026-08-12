@@ -4,10 +4,12 @@
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QTabBar>
 
 #include <limits>
 
@@ -32,8 +34,20 @@ class MemoryBrowserDataStore final : public BrowserDataStore {
         ++saveCount;
     }
 
+    QVector<BrowserFavoriteEntry> loadFavorites() override {
+        return favorites;
+    }
+
+    void saveFavorites(
+        const QVector<BrowserFavoriteEntry>& value) override {
+        favorites = value;
+        ++favoriteSaveCount;
+    }
+
     QVector<BrowserHistoryEntry> history;
+    QVector<BrowserFavoriteEntry> favorites;
     int saveCount{0};
+    int favoriteSaveCount{0};
 };
 
 }  // namespace
@@ -47,8 +61,17 @@ class BrowserPageTest final : public QObject {
     void keepsAddressEditableAndSelectsOldAddressOnFocus();
     void reusesCurrentPageAndRecordsSuccessfulNavigation();
     void persistsAndNormalizesBrowserHistory();
+    void persistsAndNormalizesBrowserFavorites();
+    void limitsPersistedBrowserRecords();
+    void opensHistoryInCurrentOrNewTabFromMouseGesture();
+    void opensFavoritesInCurrentOrNewTabFromMouseGesture();
+    void addsEditsDeduplicatesAndRemovesFavorites();
+    void convertsNewWindowRequestsToTabsAndKeepsBlankTab();
+    void switchesTabsWithoutReloadAndKeepsIndependentState();
+    void closingBackgroundTabKeepsCurrentPageRequests();
     void requiresConfirmationBeforeClearingBrowsingData();
     void clearCompletionShowsBlankPageOnlyForCurrentGeneration();
+    void clearingProfileKeepsBrowserRecordsAndOneRealBlankTab();
     void routesNavigationToolbarCommands();
     void routesOriginAwarePermissionChoicesAndRejectsUnsafeRequests();
     void screenCaptureAllowsOnlyCurrentRequest();
@@ -64,7 +87,7 @@ class BrowserPageTest final : public QObject {
     void deactivatesAndActivatesBrowserInSafeOrder();
     void escapeExitsWebFullScreenFirst();
     void mainWindowPrioritizesWebFullScreenAndRestoresChrome();
-    void shutdownDetachesThenClosesPopupsBeforeBackend();
+    void shutdownDetachesListenerBeforeBackend();
     void detachesListenerAndShutsDownOnDestruction();
     void appliesResponsiveSizeAcrossToolbarBreakpoints();
     void routesBrowserHistoryShortcuts();
@@ -158,23 +181,41 @@ void BrowserPageTest::reusesCurrentPageAndRecordsSuccessfulNavigation() {
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate), 1);
     backend.emitNavigationCompleted(
         2, QStringLiteral("https://example.com/one"), QStringLiteral("First"));
+    const qint64 firstVisit = dataStore.history.constFirst().visitedAtMilliseconds;
+    backend.emitDocumentStateChanged(
+        2, QStringLiteral("https://example.com/one"), QStringLiteral("Updated"));
+    QCOMPARE(dataStore.saveCount, 2);
+    QCOMPARE(dataStore.history.size(), 1);
+    QCOMPARE(dataStore.history.constFirst().title, QStringLiteral("Updated"));
+    QCOMPARE(dataStore.history.constFirst().visitedAtMilliseconds, firstVisit);
 
     address->setText(QStringLiteral("https://example.com/two"));
     QTest::keyClick(address, Qt::Key_Return);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate), 2);
     backend.emitNavigationCompleted(
         3, QStringLiteral("https://example.com/two"), QStringLiteral("Second"));
-    backend.emitNavigationCompleted(
-        3, QStringLiteral("https://example.com/one"), QStringLiteral("Updated"));
 
     QCOMPARE(dataStore.saveCount, 3);
     QCOMPARE(dataStore.history.size(), 2);
     QCOMPARE(dataStore.history.at(0).url,
-             QStringLiteral("https://example.com/one"));
-    QCOMPARE(dataStore.history.at(0).title, QStringLiteral("Updated"));
-    QVERIFY(dataStore.history.at(0).visitedAtMilliseconds > 0);
-    QCOMPARE(dataStore.history.at(1).url,
              QStringLiteral("https://example.com/two"));
+    QCOMPARE(dataStore.history.at(1).url,
+             QStringLiteral("https://example.com/one"));
+    QCOMPARE(dataStore.history.at(1).title, QStringLiteral("Updated"));
+    QCOMPARE(dataStore.history.at(1).visitedAtMilliseconds, firstVisit);
+
+    address->setText(QStringLiteral("https://example.com/stopped"));
+    QTest::keyClick(address, Qt::Key_Return);
+    QCOMPARE(page.state(), BrowserPageState::Navigating);
+    backend.emitNavigationStopped(
+        4, QStringLiteral("https://example.com/two"),
+        QStringLiteral("Second"), true, false);
+    QCOMPARE(page.state(), BrowserPageState::Ready);
+    QCOMPARE(dataStore.saveCount, 3);
+    QCOMPARE(dataStore.history.size(), 2);
+    QCOMPARE(dataStore.history.at(0).url,
+             QStringLiteral("https://example.com/two"));
+    QCOMPARE(dataStore.history.at(1).visitedAtMilliseconds, firstVisit);
 }
 
 void BrowserPageTest::persistsAndNormalizesBrowserHistory() {
@@ -183,7 +224,8 @@ void BrowserPageTest::persistsAndNormalizesBrowserHistory() {
     const QString settingsFile = directory.filePath(QStringLiteral("browser.ini"));
     QSettingsBrowserDataStore writer(settingsFile);
     writer.saveHistory({
-        {QStringLiteral("HTTPS://Example.com/path"), QStringLiteral("First"), -1},
+        {QStringLiteral("HTTPS://Example.com/path?code=secret#token"),
+         QStringLiteral("First"), -1},
         {QStringLiteral("https://example.com/path"), QStringLiteral("Duplicate"), 2},
         {QStringLiteral("javascript:alert(1)"), QStringLiteral("Blocked"), 3},
         {QStringLiteral("https://other.example"), QStringLiteral("Other"), 4},
@@ -196,6 +238,438 @@ void BrowserPageTest::persistsAndNormalizesBrowserHistory() {
     QCOMPARE(history.at(0).title, QStringLiteral("First"));
     QCOMPARE(history.at(0).visitedAtMilliseconds, qint64{0});
     QCOMPARE(history.at(1).url, QStringLiteral("https://other.example"));
+}
+
+void BrowserPageTest::persistsAndNormalizesBrowserFavorites() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString settingsFile = directory.filePath(QStringLiteral("browser.ini"));
+    QSettingsBrowserDataStore writer(settingsFile);
+    writer.saveFavorites({
+        {QStringLiteral("HTTPS://Example.com/path?token=secret#private"),
+         QStringLiteral(" First "),
+         QStringLiteral(" note ")},
+        {QStringLiteral("https://example.com/path"),
+         QStringLiteral("Duplicate"), QStringLiteral("ignored")},
+        {QStringLiteral("javascript:alert(1)"), QStringLiteral("Blocked"),
+         QStringLiteral("blocked")},
+        {QStringLiteral("https://other.example"), QStringLiteral("Other"),
+         QStringLiteral("Second note")},
+    });
+
+    QSettingsBrowserDataStore reader(settingsFile);
+    const QVector<BrowserFavoriteEntry> favorites = reader.loadFavorites();
+    QCOMPARE(favorites.size(), 2);
+    QCOMPARE(favorites.at(0).url,
+             QStringLiteral("https://example.com/path"));
+    QCOMPARE(favorites.at(0).title, QStringLiteral("First"));
+    QCOMPARE(favorites.at(0).note, QStringLiteral("note"));
+    QCOMPARE(favorites.at(1).url, QStringLiteral("https://other.example"));
+    QCOMPARE(reader.loadHistory().size(), 0);
+}
+
+void BrowserPageTest::limitsPersistedBrowserRecords() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString settingsFile = directory.filePath(QStringLiteral("browser.ini"));
+    QSettingsBrowserDataStore store(settingsFile);
+
+    QVector<BrowserHistoryEntry> history;
+    history.reserve(510);
+    for (int index = 0; index < 510; ++index) {
+        history.append(
+            {QStringLiteral("https://history-%1.example").arg(index),
+             QStringLiteral("History %1").arg(index), index});
+    }
+    store.saveHistory(history);
+    const QVector<BrowserHistoryEntry> storedHistory = store.loadHistory();
+    QCOMPARE(storedHistory.size(), 500);
+    QCOMPARE(storedHistory.constFirst().url,
+             QStringLiteral("https://history-0.example"));
+    QCOMPARE(storedHistory.constLast().url,
+             QStringLiteral("https://history-499.example"));
+
+    QVector<BrowserFavoriteEntry> favorites;
+    favorites.reserve(5010);
+    for (int index = 0; index < 5010; ++index) {
+        favorites.append(
+            {QStringLiteral("https://favorite-%1.example").arg(index),
+             QStringLiteral("Favorite %1").arg(index),
+             QStringLiteral("Note %1").arg(index)});
+    }
+    store.saveFavorites(favorites);
+    const QVector<BrowserFavoriteEntry> storedFavorites = store.loadFavorites();
+    QCOMPARE(storedFavorites.size(), 5000);
+    QCOMPARE(storedFavorites.constFirst().url,
+             QStringLiteral("https://favorite-0.example"));
+    QCOMPARE(storedFavorites.constLast().url,
+             QStringLiteral("https://favorite-4999.example"));
+    QCOMPARE(store.loadHistory().size(), 500);
+}
+
+void BrowserPageTest::opensHistoryInCurrentOrNewTabFromMouseGesture() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    dataStore.history = {
+        {QStringLiteral("https://history.example/one"), QStringLiteral("One"), 2},
+        {QStringLiteral("https://history.example/two"), QStringLiteral("Two"), 1},
+    };
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    auto openHistory = [&page]() {
+        QTest::mouseClick(
+            page.findChild<QToolButton*>(QStringLiteral("browserHistoryButton")),
+            Qt::LeftButton);
+        auto* const list =
+            page.findChild<QListWidget*>(QStringLiteral("browserHistoryList"));
+        QCoreApplication::processEvents();
+        return list;
+    };
+
+    QListWidget* list = openHistory();
+    QVERIFY(list != nullptr);
+    QCOMPARE(list->count(), 2);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      list->visualItemRect(list->item(0)).center());
+    QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
+    QCOMPARE(backend.lastCommand().text,
+             QStringLiteral("https://history.example/one"));
+
+    list = openHistory();
+    const auto commandCountBeforeControlClick = backend.commands.size();
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::ControlModifier,
+                      list->visualItemRect(list->item(1)).center());
+    QCOMPARE(backend.commands.at(commandCountBeforeControlClick).kind,
+             test::FakeBrowserCommandKind::CreateTab);
+    QCOMPARE(backend.commands.at(commandCountBeforeControlClick).text,
+             QStringLiteral("https://history.example/two"));
+
+    list = openHistory();
+    const auto commandCountBeforeMiddleClick = backend.commands.size();
+    QTest::mouseClick(list->viewport(), Qt::MiddleButton, Qt::NoModifier,
+                      list->visualItemRect(list->item(0)).center());
+    QCOMPARE(backend.commands.at(commandCountBeforeMiddleClick).kind,
+             test::FakeBrowserCommandKind::CreateTab);
+    QCOMPARE(backend.commands.at(commandCountBeforeMiddleClick).text,
+             QStringLiteral("https://history.example/one"));
+}
+
+void BrowserPageTest::opensFavoritesInCurrentOrNewTabFromMouseGesture() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    dataStore.favorites = {
+        {QStringLiteral("https://favorite.example/one"),
+         QStringLiteral("One"), QStringLiteral("first")},
+        {QStringLiteral("https://favorite.example/two"),
+         QStringLiteral("Two"), QStringLiteral("second")},
+    };
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    auto openFavorites = [&page]() {
+        QTest::mouseClick(
+            page.findChild<QToolButton*>(QStringLiteral("browserFavoritesButton")),
+            Qt::LeftButton);
+        auto* const list =
+            page.findChild<QListWidget*>(QStringLiteral("browserFavoritesList"));
+        QCoreApplication::processEvents();
+        return list;
+    };
+
+    QListWidget* list = openFavorites();
+    QVERIFY(list != nullptr);
+    QCOMPARE(list->count(), 2);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      list->visualItemRect(list->item(0)).center());
+    QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
+    QCOMPARE(backend.lastCommand().text,
+             QStringLiteral("https://favorite.example/one"));
+
+    list = openFavorites();
+    const auto commandCountBeforeControlClick = backend.commands.size();
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::ControlModifier,
+                      list->visualItemRect(list->item(1)).center());
+    QCOMPARE(backend.commands.at(commandCountBeforeControlClick).kind,
+             test::FakeBrowserCommandKind::CreateTab);
+    QCOMPARE(backend.commands.at(commandCountBeforeControlClick).text,
+             QStringLiteral("https://favorite.example/two"));
+
+    list = openFavorites();
+    const auto commandCountBeforeMiddleClick = backend.commands.size();
+    QTest::mouseClick(list->viewport(), Qt::MiddleButton, Qt::NoModifier,
+                      list->visualItemRect(list->item(0)).center());
+    QCOMPARE(backend.commands.at(commandCountBeforeMiddleClick).kind,
+             test::FakeBrowserCommandKind::CreateTab);
+    QCOMPARE(backend.commands.at(commandCountBeforeMiddleClick).text,
+             QStringLiteral("https://favorite.example/one"));
+}
+
+void BrowserPageTest::addsEditsDeduplicatesAndRemovesFavorites() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    dataStore.favorites = {
+        {QStringLiteral("https://existing.example/page"),
+         QStringLiteral("Existing"), QStringLiteral("old")},
+    };
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://current.example/page"),
+        QStringLiteral("Current"));
+
+    QTest::mouseClick(
+        page.findChild<QToolButton*>(QStringLiteral("browserFavoritesButton")),
+        Qt::LeftButton);
+    auto* const list =
+        page.findChild<QListWidget*>(QStringLiteral("browserFavoritesList"));
+    QVERIFY(list != nullptr);
+    QCOMPARE(list->count(), 1);
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserFavoriteAddButton")),
+        Qt::LeftButton);
+    auto* const title = page.findChild<QLineEdit*>(
+        QStringLiteral("browserFavoriteTitleEdit"));
+    auto* const url = page.findChild<QLineEdit*>(
+        QStringLiteral("browserFavoriteUrlEdit"));
+    auto* const note = page.findChild<QLineEdit*>(
+        QStringLiteral("browserFavoriteNoteEdit"));
+    QVERIFY(title != nullptr);
+    QVERIFY(url != nullptr);
+    QVERIFY(note != nullptr);
+    QCOMPARE(title->text(), QStringLiteral("Current"));
+    QCOMPARE(url->text(), QStringLiteral("https://current.example/page"));
+    note->setText(QStringLiteral("new note"));
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserFavoriteSaveButton")),
+        Qt::LeftButton);
+    QCOMPARE(dataStore.favorites.size(), 2);
+    QCOMPARE(dataStore.favorites.at(0).note, QStringLiteral("new note"));
+
+    list->setCurrentRow(0);
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserFavoriteEditButton")),
+        Qt::LeftButton);
+    title->setText(QStringLiteral("Merged"));
+    url->setText(QStringLiteral("https://existing.example/page"));
+    note->setText(QStringLiteral("updated"));
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserFavoriteSaveButton")),
+        Qt::LeftButton);
+    QCOMPARE(dataStore.favorites.size(), 1);
+    QCOMPARE(dataStore.favorites.at(0).url,
+             QStringLiteral("https://existing.example/page"));
+    QCOMPARE(dataStore.favorites.at(0).title, QStringLiteral("Merged"));
+    QCOMPARE(dataStore.favorites.at(0).note, QStringLiteral("updated"));
+
+    list->setCurrentRow(0);
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserFavoriteRemoveButton")),
+        Qt::LeftButton);
+    QVERIFY(dataStore.favorites.isEmpty());
+    QCOMPARE(list->count(), 0);
+}
+
+void BrowserPageTest::convertsNewWindowRequestsToTabsAndKeepsBlankTab() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    auto* const tabBar = page.findChild<QTabBar*>(QStringLiteral("browserTabBar"));
+    QVERIFY(tabBar != nullptr);
+    QCOMPARE(tabBar->count(), 1);
+    QVERIFY(backend.emitNewTabRequested(
+        QStringLiteral("https://new.example/login"), 81));
+    QCOMPARE(tabBar->count(), 2);
+    QCOMPARE(backend.commands.at(backend.commands.size() - 2).kind,
+             test::FakeBrowserCommandKind::CreateTab);
+    QCOMPARE(backend.commands.at(backend.commands.size() - 2).requestId,
+             std::uint64_t{2});
+    QCOMPARE(backend.commands.at(backend.commands.size() - 2).newWindowRequestId,
+             std::uint64_t{81});
+    QCOMPARE(backend.commands.at(backend.commands.size() - 2).text,
+             QStringLiteral("https://new.example/login"));
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::ActivateTab);
+
+    QMetaObject::invokeMethod(tabBar, "tabCloseRequested", Qt::DirectConnection,
+                              Q_ARG(int, 1));
+    QCOMPARE(tabBar->count(), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CloseTab), 1);
+    QCOMPARE(backend.commands.at(backend.commands.size() - 2).requestId,
+             std::uint64_t{2});
+
+    page.onFullScreenChanged(1, true);
+    QVERIFY(page.isWebFullScreen());
+    const auto commandCountBeforeBlank = backend.commands.size();
+    QVERIFY(backend.emitNewTabRequested(QStringLiteral("about:blank")));
+    QVERIFY(!page.isWebFullScreen());
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ExitFullScreen), 1);
+    QCOMPARE(tabBar->count(), 2);
+    QCOMPARE(backend.commands.at(commandCountBeforeBlank).kind,
+             test::FakeBrowserCommandKind::CreateTab);
+    QCOMPARE(backend.commands.at(commandCountBeforeBlank).text,
+             QStringLiteral("about:blank"));
+    QCOMPARE(backend.commands.at(commandCountBeforeBlank + 1).kind,
+             test::FakeBrowserCommandKind::ExitFullScreen);
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::ActivateTab);
+    QMetaObject::invokeMethod(tabBar, "tabCloseRequested", Qt::DirectConnection,
+                              Q_ARG(int, 1));
+
+    QMetaObject::invokeMethod(tabBar, "tabCloseRequested", Qt::DirectConnection,
+                              Q_ARG(int, 0));
+    QCOMPARE(tabBar->count(), 1);
+    QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Navigate);
+    QCOMPARE(backend.lastCommand().text, QStringLiteral("about:blank"));
+
+    backend.canCreateTab = false;
+    QVERIFY(!backend.emitNewTabRequested(
+        QStringLiteral("https://rejected.example")));
+    QCOMPARE(tabBar->count(), 1);
+    backend.canCreateTab = true;
+}
+
+void BrowserPageTest::switchesTabsWithoutReloadAndKeepsIndependentState() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://one.example/start"), QStringLiteral("One"),
+        true, false);
+
+    QVERIFY(backend.emitNewTabRequested(QStringLiteral("https://two.example")));
+    backend.emitTabReady(2, 2);
+    backend.emitTabNavigationStarted(2, 2);
+    backend.emitTabNavigationCompleted(
+        2, 2, QStringLiteral("https://two.example/page"),
+        QStringLiteral("Two"), false, true);
+
+    auto* const tabBar =
+        page.findChild<QTabBar*>(QStringLiteral("browserTabBar"));
+    auto* const address =
+        page.findChild<QLineEdit*>(QStringLiteral("browserAddressEdit"));
+    auto* const title =
+        page.findChild<QLabel*>(QStringLiteral("browserTitleLabel"));
+    auto* const browserHost =
+        page.findChild<QWidget*>(QStringLiteral("browserNativeHost"));
+    auto* const errorLabel =
+        page.findChild<QLabel*>(QStringLiteral("browserErrorLabel"));
+    auto* const status =
+        page.findChild<QLabel*>(QStringLiteral("browserStatusLabel"));
+    QVERIFY(tabBar != nullptr);
+    QVERIFY(address != nullptr);
+    QVERIFY(title != nullptr);
+    QVERIFY(browserHost != nullptr);
+    QVERIFY(errorLabel != nullptr);
+    QVERIFY(status != nullptr);
+    QCOMPARE(address->text(), QStringLiteral("https://two.example/page"));
+    QCOMPARE(title->text(), QStringLiteral("Two"));
+
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://one.example/background"),
+        QStringLiteral("One background"), false, true);
+    QCOMPARE(address->text(), QStringLiteral("https://two.example/page"));
+    QCOMPARE(title->text(), QStringLiteral("Two"));
+    QCOMPARE(tabBar->tabText(0), QStringLiteral("One background"));
+
+    backend.emitError(1, BrowserErrorKind::NavigationFailed, -1);
+    QCOMPARE(address->text(), QStringLiteral("https://two.example/page"));
+    QCOMPARE(title->text(), QStringLiteral("Two"));
+    QCOMPARE(page.state(), BrowserPageState::Ready);
+
+    const int navigationCount =
+        backend.count(test::FakeBrowserCommandKind::Navigate);
+    backend.emitPermissionRequested(50, QStringLiteral("https://two.example"),
+                                    BrowserPermissionKind::Camera);
+    tabBar->setCurrentIndex(0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 1);
+    QCOMPARE(backend.commands.at(backend.commands.size() - 2).requestId,
+             std::uint64_t{50});
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::ActivateTab);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{1});
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate),
+             navigationCount);
+    QCOMPARE(address->text(), QStringLiteral("https://one.example/background"));
+    QCOMPARE(title->text(), QStringLiteral("One background"));
+    QCOMPARE(page.state(), BrowserPageState::Failed);
+    QVERIFY(errorLabel->isVisibleTo(&page));
+    QVERIFY(!browserHost->isVisibleTo(&page));
+
+    tabBar->setCurrentIndex(1);
+    QCOMPARE(page.state(), BrowserPageState::Ready);
+    QVERIFY(browserHost->isVisibleTo(&page));
+    QVERIFY(!errorLabel->isVisibleTo(&page));
+    QCOMPARE(status->text(), QStringLiteral("载入完成"));
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate),
+             navigationCount);
+
+    tabBar->setCurrentIndex(0);
+
+    backend.emitTabNavigationCompleted(
+        2, 2, QStringLiteral("https://two.example/background"),
+        QStringLiteral("Two background"), true, true);
+    QCOMPARE(address->text(), QStringLiteral("https://one.example/background"));
+    QCOMPARE(tabBar->tabText(1), QStringLiteral("Two background"));
+    QCOMPARE(dataStore.history.constFirst().url,
+             QStringLiteral("https://two.example/background"));
+
+    tabBar->moveTab(1, 0);
+    QCOMPARE(tabBar->currentIndex(), 1);
+    backend.emitTabCloseRequested(2);
+    QCOMPARE(tabBar->count(), 1);
+    QCOMPARE(tabBar->tabText(0), QStringLiteral("One background"));
+}
+
+void BrowserPageTest::closingBackgroundTabKeepsCurrentPageRequests() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    QVERIFY(backend.emitNewTabRequested(QStringLiteral("https://two.example")));
+    backend.emitTabReady(2, 2);
+
+    auto* const tabBar =
+        page.findChild<QTabBar*>(QStringLiteral("browserTabBar"));
+    QVERIFY(tabBar != nullptr);
+    QCOMPARE(tabBar->currentIndex(), 1);
+    backend.emitPermissionRequested(60, QStringLiteral("https://two.example"),
+                                    BrowserPermissionKind::Camera);
+    auto* const permissionDialog = page.findChild<BrowserPermissionDialog*>(
+        QStringLiteral("browserPermissionDialog"));
+    QVERIFY(permissionDialog != nullptr);
+    QVERIFY(permissionDialog->isVisible());
+
+    QMetaObject::invokeMethod(tabBar, "tabCloseRequested", Qt::DirectConnection,
+                              Q_ARG(int, 0));
+    QCOMPARE(tabBar->count(), 1);
+    QCOMPARE(tabBar->currentIndex(), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 0);
+    QVERIFY(permissionDialog->isVisible());
+
+    QTest::mouseClick(
+        permissionDialog->findChild<QPushButton*>(
+            QStringLiteral("browserPermissionDenyButton")),
+        Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::AnswerPermission), 1);
+    QCOMPARE(backend.lastCommand().requestId, std::uint64_t{60});
 }
 
 void BrowserPageTest::requiresConfirmationBeforeClearingBrowsingData() {
@@ -246,6 +720,25 @@ void BrowserPageTest::requiresConfirmationBeforeClearingBrowsingData() {
     QVERIFY(errorLabel != nullptr);
     QVERIFY(errorLabel->isVisible());
     QVERIFY(errorLabel->text().contains(QStringLiteral("清除")));
+
+    auto* const address =
+        page.findChild<QLineEdit*>(QStringLiteral("browserAddressEdit"));
+    auto* const browserHost =
+        page.findChild<QWidget*>(QStringLiteral("browserNativeHost"));
+    QVERIFY(address != nullptr);
+    QVERIFY(browserHost != nullptr);
+    address->setText(QStringLiteral("https://recovered.example"));
+    QTest::keyClick(address, Qt::Key_Return);
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::Navigate);
+    QCOMPARE(backend.lastCommand().text,
+             QStringLiteral("https://recovered.example"));
+    QCOMPARE(backend.lastCommand().generation, std::uint64_t{3});
+    backend.emitNavigationCompleted(
+        3, QStringLiteral("https://recovered.example"),
+        QStringLiteral("Recovered"));
+    QCOMPARE(page.state(), BrowserPageState::Ready);
+    QVERIFY(browserHost->isVisibleTo(&page));
 }
 
 void BrowserPageTest::clearCompletionShowsBlankPageOnlyForCurrentGeneration() {
@@ -284,6 +777,78 @@ void BrowserPageTest::clearCompletionShowsBlankPageOnlyForCurrentGeneration() {
     QVERIFY(addressEdit->text().isEmpty());
     QCOMPARE(titleLabel->text(), QStringLiteral("网页"));
     QVERIFY(statusLabel->text().contains(QStringLiteral("已清除")));
+}
+
+void BrowserPageTest::clearingProfileKeepsBrowserRecordsAndOneRealBlankTab() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    dataStore.history = {{QStringLiteral("https://history.example"),
+                          QStringLiteral("History"), 1}};
+    dataStore.favorites = {{QStringLiteral("https://favorite.example"),
+                            QStringLiteral("Favorite"), QStringLiteral("note")}};
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    QVERIFY(backend.emitNewTabRequested(
+        QStringLiteral("https://signed-in.example/account")));
+    backend.emitTabReady(2, 2);
+    page.onFullScreenChanged(2, true);
+    QVERIFY(page.isWebFullScreen());
+
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserClearDataButton")),
+        Qt::LeftButton);
+    auto* const dialog =
+        page.findChild<QDialog*>(QStringLiteral("browserClearDataDialog"));
+    auto* const explanation = page.findChild<QLabel*>(
+        QStringLiteral("browserClearDataExplanation"));
+    QVERIFY(dialog != nullptr);
+    QVERIFY(explanation != nullptr);
+    for (const QString& term : {QStringLiteral("Cookie"),
+                                QStringLiteral("LocalStorage"),
+                                QStringLiteral("IndexedDB"),
+                                QStringLiteral("缓存"),
+                                QStringLiteral("已保存密码"),
+                                QStringLiteral("自动填充"),
+                                QStringLiteral("Edge"),
+                                QStringLiteral("历史"),
+                                QStringLiteral("收藏夹")}) {
+        QVERIFY2(explanation->text().contains(term), qPrintable(term));
+    }
+    QTest::mouseClick(
+        dialog->findChild<QPushButton*>(
+            QStringLiteral("browserClearDataConfirmButton")),
+        Qt::LeftButton);
+    QVERIFY(!page.isWebFullScreen());
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ExitFullScreen), 1);
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::ClearBrowsingData);
+    QCOMPARE(backend.lastCommand().generation, std::uint64_t{3});
+
+    auto* const tabBar =
+        page.findChild<QTabBar*>(QStringLiteral("browserTabBar"));
+    QCOMPARE(tabBar->count(), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CloseTab), 1);
+    const auto closeCommand = std::find_if(
+        backend.commands.cbegin(), backend.commands.cend(),
+        [](const test::FakeBrowserCommand& command) {
+            return command.kind == test::FakeBrowserCommandKind::CloseTab;
+        });
+    QVERIFY(closeCommand != backend.commands.cend());
+    QCOMPARE(closeCommand->requestId, std::uint64_t{1});
+    QMetaObject::invokeMethod(tabBar, "tabCloseRequested", Qt::DirectConnection,
+                              Q_ARG(int, 0));
+    QCOMPARE(tabBar->count(), 1);
+    backend.emitBrowsingDataCleared(3);
+    QCOMPARE(tabBar->count(), 1);
+    QCOMPARE(tabBar->tabText(0), QStringLiteral("新标签页"));
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CloseTab), 1);
+    QCOMPARE(dataStore.history.size(), 1);
+    QCOMPARE(dataStore.favorites.size(), 1);
+    QCOMPARE(dataStore.saveCount, 0);
+    QCOMPARE(dataStore.favoriteSaveCount, 0);
 }
 
 void BrowserPageTest::routesNavigationToolbarCommands() {
@@ -830,18 +1395,16 @@ void BrowserPageTest::mainWindowPrioritizesWebFullScreenAndRestoresChrome() {
     QVERIFY(!playlistPanel->isHidden());
 }
 
-void BrowserPageTest::shutdownDetachesThenClosesPopupsBeforeBackend() {
+void BrowserPageTest::shutdownDetachesListenerBeforeBackend() {
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
 
     page.shutdown();
 
-    QVERIFY(backend.commands.size() >= 4);
+    QVERIFY(backend.commands.size() >= 3);
     const auto commandCount = backend.commands.size();
-    QCOMPARE(backend.commands[commandCount - 3].kind,
-             test::FakeBrowserCommandKind::SetEventListener);
     QCOMPARE(backend.commands[commandCount - 2].kind,
-             test::FakeBrowserCommandKind::ClosePopups);
+             test::FakeBrowserCommandKind::SetEventListener);
     QCOMPARE(backend.commands[commandCount - 1].kind,
              test::FakeBrowserCommandKind::Shutdown);
 }
@@ -874,6 +1437,8 @@ void BrowserPageTest::appliesResponsiveSizeAcrossToolbarBreakpoints() {
         QStringLiteral("browserHomeButton"),
         QStringLiteral("browserAddressEdit"),
         QStringLiteral("browserGoButton"),
+        QStringLiteral("browserHistoryButton"),
+        QStringLiteral("browserFavoritesButton"),
         QStringLiteral("browserClearDataButton"),
     };
 

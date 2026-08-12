@@ -25,6 +25,23 @@ class BrowserBackend {
     // 调用线程：GUI 主线程。url 已通过顶层地址策略规范化。
     virtual void navigate(const QString& normalizedUrl,
                           std::uint64_t generation) = 0;
+    // 调用线程：GUI 主线程。创建与现有 Profile 共享的新网页选项卡。
+    [[nodiscard]] virtual bool createTab(void* parentWindowHandle,
+                                         std::uint64_t tabId,
+                                         const QString& initialUrl,
+                                         std::uint64_t generation,
+                                         std::uint64_t newWindowRequestId = 0) {
+        Q_UNUSED(parentWindowHandle);
+        Q_UNUSED(tabId);
+        Q_UNUSED(initialUrl);
+        Q_UNUSED(generation);
+        Q_UNUSED(newWindowRequestId);
+        return false;
+    }
+    // 调用线程：GUI 主线程。关闭一个标签的 WebView Controller。
+    virtual void closeTab(std::uint64_t tabId) { Q_UNUSED(tabId); }
+    // 调用线程：GUI 主线程。切换当前可见 Controller。
+    virtual void activateTab(std::uint64_t tabId) { Q_UNUSED(tabId); }
     // 调用线程：GUI 主线程。
     virtual void goBack() = 0;
     // 调用线程：GUI 主线程。
@@ -56,8 +73,6 @@ class BrowserBackend {
                                         BrowserCertificateDecision decision) = 0;
     // 调用线程：GUI 主线程。
     virtual void exitFullScreen() = 0;
-    // 调用线程：GUI 主线程。关闭全部受控登录子窗口，不等待浏览器子进程。
-    virtual void closePopups() noexcept = 0;
     // 调用线程：GUI 主线程。必须丢弃迟到回调并确定性释放所有控制器。
     virtual void shutdown() noexcept = 0;
 };

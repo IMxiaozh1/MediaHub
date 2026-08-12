@@ -54,14 +54,4 @@ HRESULT rejectNewWindow(Args* const args) noexcept {
     return args != nullptr ? args->put_Handled(TRUE) : E_POINTER;
 }
 
-// popup 事件回调始终按 COM 合约返回 S_OK；拒绝写入失败时必须在返回前关闭 Controller。
-template <typename CloseNow>
-HRESULT completePopupSafetyDecision(const HRESULT safetyResult,
-                                    CloseNow&& closeNow) noexcept {
-    if (FAILED(safetyResult)) {
-        closeNow();
-    }
-    return S_OK;
-}
-
 }  // namespace mediahub::browser_webview2
