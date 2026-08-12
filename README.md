@@ -2,11 +2,12 @@
 
 一个使用 C++20 和 Qt 5.14.2 开发的 Windows 桌面媒体播放器。
 
-> **当前状态：v0.1 至 v0.5 均已按本地自用版本完成。**
+> **当前状态：v0.1 至 v0.5 均已按本地自用版本完成；v0.6 自动化交付候选完成，
+> W-M01 至 W-M18 待用户人工验收。**
 
 ## 这是什么
 
-MediaHub 已完成五个本地自用版本：
+MediaHub 已完成五个本地自用版本，并形成 v0.6 自动化交付候选：
 
 | 版本 | 能力 | 状态 |
 |---|---|---|
@@ -15,6 +16,7 @@ MediaHub 已完成五个本地自用版本：
 | v0.3 | 区分本地音频、本地视频和直播场景的界面重构 | 本地自用已完成 |
 | v0.4 | 恢复列表和直播 URL，增加历史、取消、静音与快捷键帮助 | 本地自用已完成 |
 | v0.5 | 直播清单搜索与收藏持久化，本地最近播放和断点续播 | 本地自用已完成，ZIP 在仓库外保留 |
+| v0.6 | WebView2 内置网页浏览器、隔离资料、安全交互和网页全屏 | 自动化交付候选完成，人工验收待执行 |
 
 播放内核采用 libVLC，但藏在一个自定义的 `PlayerEngine` 纯虚接口之后。界面代码
 完全不知道 libVLC 的存在，使界面、核心逻辑和真实播放能力可以分别测试和维护。
@@ -62,6 +64,23 @@ MediaHub 已完成五个本地自用版本：
   [docs/规划/10-v0.5-日常使用增强.md](docs/规划/10-v0.5-日常使用增强.md)。
 - 用户已在仓库外独立生成并保留 v0.5 ZIP；仓库不提交该文件，完成说明不填写当前
   工作区无法核对的路径、大小和哈希。
+
+## v0.6 内置网页浏览器
+
+- 增加与本地、直播并列的“网页”展示模式，提供地址栏、后退/前进、刷新、主页、
+  响应式工具栏，以及 Ctrl+L、Alt+左/右、Ctrl+R、F5 和网页全屏 Esc 路由。
+- 网页使用 MediaHub 隔离 Profile，不读取系统 Edge 个人资料；主页面与受控登录弹窗
+  共享资料，支持确认后清除 Cookie、站点存储与缓存。
+- 权限、屏幕捕获、下载、上传入口、外部协议和证书错误均经过显式安全处理；网页
+  切出时静音、挂起并隐藏，进入网页会暂停正在播放的原生媒体，离开后不自动续播。
+- 假后端、受控环回和真实 WebView2 Runtime 自动化已经覆盖导航、资料持久与清除、
+  弹窗、全屏、下载/取消、响应式布局和关闭顺序。受控页面不代表真实账号、公共网站、
+  DRM、音画观感、实际 Windows DPI 或网站兼容性。
+- 当前状态是“自动化交付候选完成、人工验收待执行”，不是“v0.6 全部完成”。详细
+  证据和 W-M01 至 W-M18 人工矩阵见
+  [docs/测试/28-v0.6-内置网页浏览器测试.md](docs/测试/28-v0.6-内置网页浏览器测试.md)。
+- 项目版本更新为 `0.6.0` 后，普通 Windows Release/Debug 均重新配置并构建成功，
+  fresh 全量 CTest 分别为 `81/81`（103.20 秒）和 `81/81`（226.09 秒）。
 
 ## v0.1 已完成能力
 
@@ -159,10 +178,15 @@ MediaHub 不内置任何直播源列表，不提供源搜索能力，也不实�
 | CMake | 3.20 以上 | 已在本机 |
 | Ninja | 任意 | VS 2022 自带 |
 | libVLC | 3.0.21 win64 SDK | 已在本机 `C:\SDK\vlc-3.0.21` |
+| WebView2 SDK | 1.0.4129.50 x64 | 已固定在 `Third_Party/webview2`，静态链接 Loader |
+| WebView2 Runtime | Evergreen x64 | 构建机和运行目标均需预先安装，不进入发布包 |
 | GoogleTest | 1.17.0 | 已固定在 `Third_Party/googletest` |
 
 libVLC 不随仓库分发。获取和接入步骤见
 [docs/交付/01-依赖接入与部署说明.md](docs/交付/01-依赖接入与部署说明.md)。
+WebView2 SDK 目录必须包含固定版本头文件、x64 静态 Loader 及 LICENSE/NOTICE；如需
+使用仓库外副本，可通过 `MEDIAHUB_WEBVIEW2_ROOT` 指向等价目录。不要把 Evergreen
+Runtime、用户 Profile、Cookie 或缓存复制到仓库或发布目录。
 
 ### 怎么构建
 
@@ -170,10 +194,11 @@ libVLC 不随仓库分发。获取和接入步骤见
 Qt Creator 中配置构建套件。
 
 ```powershell
-cmake -S . -B cmake-build-debug -G Ninja ^
-      -DCMAKE_BUILD_TYPE=Debug ^
-      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" ^
-      -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21"
+cmake -S . -B cmake-build-debug -G Ninja `
+      -DCMAKE_BUILD_TYPE=Debug `
+      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" `
+      -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" `
+      -DMEDIAHUB_WEBVIEW2_ROOT="Third_Party/webview2"
 
 cmake --build cmake-build-debug
 ctest --test-dir cmake-build-debug --output-on-failure
@@ -182,8 +207,8 @@ ctest --test-dir cmake-build-debug --output-on-failure
 只构建并测试不依赖 Qt、libVLC 的核心层：
 
 ```powershell
-cmake -S . -B cmake-build-core-debug -G Ninja ^
-      -DCMAKE_BUILD_TYPE=Debug ^
+cmake -S . -B cmake-build-core-debug -G Ninja `
+      -DCMAKE_BUILD_TYPE=Debug `
       -DMEDIAHUB_CORE_ONLY=ON
 
 cmake --build cmake-build-core-debug
@@ -240,27 +265,32 @@ MP3 内嵌歌词，再按酷狗、网易云、LRCLIB、TheAudioDB 的顺序在�
 轻按右方向键按当前跳转值快进一次，长按则临时
 以固定 2.0× 播放并显示 2.0×，松开后恢复用户原先选择的速度。
 
-### 生成发布目录
+### 生成 v0.6 发布目录
 
-阶段 12 使用单独的 Release 配置生成干净发布目录。目标 Qt 安装必须包含匹配版本的
-源码许可证文件；目标机器需预先安装 Microsoft Visual C++ 2015-2022
-Redistributable（x64）。发布前缀应使用新的空目录：
+正式包必须使用单独的 Release 配置和此前不存在的安装前缀。目标 Qt 安装需包含匹配
+版本的源码许可证，固定 WebView2 SDK 需包含 LICENSE/NOTICE；目标机器需预先安装
+Microsoft Visual C++ 2015-2022 Redistributable（x64）和 WebView2 Evergreen Runtime
+（x64）。WebView2 Loader 静态链接，不应出现 `WebView2Loader.dll`：
 
 ```powershell
-cmake -S . -B cmake-build-stage12-release -G Ninja ^
-      -DCMAKE_BUILD_TYPE=Release ^
-      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" ^
-      -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" ^
+cmake -S . -B cmake-build-release -G Ninja `
+      -DCMAKE_BUILD_TYPE=Release `
+      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" `
+      -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" `
+      -DMEDIAHUB_WEBVIEW2_ROOT="Third_Party/webview2" `
       -DMEDIAHUB_PACKAGE_RELEASE=ON
-cmake --build cmake-build-stage12-release
-cmake --install cmake-build-stage12-release --config Release ^
-      --prefix dist/MediaHub-0.1.0-win64
-cmake -DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.1.0-win64 ^
+cmake --build cmake-build-release
+ctest --test-dir cmake-build-release --output-on-failure
+cmake --install cmake-build-release --config Release `
+      --prefix dist/MediaHub-0.6.0-win64
+cmake -DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.6.0-win64 `
       -P tools/validate_release_package.cmake
 ```
 
-发布目录和构建目录均被 `.gitignore` 排除。隔离启动与依赖来源检查见
-`tools/stage12_isolated_smoke.ps1`。
+校验器要求顶层正式程序、Qt/libVLC 运行库、365 个 VLC 插件和六项法律材料，并拒绝
+Profile、Cache、Cookie、reparse、测试/probe、库文件、错误架构或动态 Loader。当前
+发布候选已有 400 个文件、365 个 VLC 插件、0 reparse、0 禁入项证据；该结构结果不替代
+W-M01 至 W-M18 的真实网页人工验收。发布目录和构建目录均被 `.gitignore` 排除。
 
 “打开文件”按钮位于播放列表底部。列表支持拖放、双击播放以及右键播放、暂停、停止、
 置顶、上移、下移、移出列表和仅修改列表显示名的重命名；重命名不会改动电脑中的
@@ -278,6 +308,10 @@ cmake -DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.1.0-win64 ^
 
 - [docs/01-文档导航.md](docs/01-文档导航.md) — 文档导航
 - [docs/02-开发交接.md](docs/02-开发交接.md) — **当前状态和下一步，开工前先读这份**
+- [docs/规划/11-v0.6-内置网页浏览器.md](docs/规划/11-v0.6-内置网页浏览器.md) — v0.6
+  浏览器能力、安全边界和 W-01 至 W-18
+- [docs/测试/28-v0.6-内置网页浏览器测试.md](docs/测试/28-v0.6-内置网页浏览器测试.md) —
+  v0.6 自动化分层证据与 W-M01 至 W-M18 待验收矩阵
 - [docs/规划/10-v0.5-日常使用增强.md](docs/规划/10-v0.5-日常使用增强.md) — 直播搜索、收藏持久化、最近播放和断点规则
 - [docs/测试/24-v0.5-日常使用增强测试.md](docs/测试/24-v0.5-日常使用增强测试.md) — v0.5 自动化、构建矩阵和人工验收
 - [docs/交付/08-v0.5.0-版本完成说明.md](docs/交付/08-v0.5.0-版本完成说明.md) — v0.5
