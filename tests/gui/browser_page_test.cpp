@@ -765,6 +765,15 @@ void BrowserPageTest::appliesResponsiveSizeAcrossToolbarBreakpoints() {
     QVERIFY(toolbar != nullptr);
     QVERIFY(address != nullptr);
     QCOMPARE(address->minimumWidth(), 180);
+    const QStringList controlNames{
+        QStringLiteral("browserBackButton"),
+        QStringLiteral("browserForwardButton"),
+        QStringLiteral("browserReloadButton"),
+        QStringLiteral("browserHomeButton"),
+        QStringLiteral("browserAddressEdit"),
+        QStringLiteral("browserGoButton"),
+        QStringLiteral("browserClearDataButton"),
+    };
 
     struct Breakpoint {
         QSize size;
@@ -779,11 +788,26 @@ void BrowserPageTest::appliesResponsiveSizeAcrossToolbarBreakpoints() {
     for (const auto &entry : breakpoints) {
         page.resize(entry.size);
         QCoreApplication::processEvents();
+        QCOMPARE(page.size(), entry.size);
         QCOMPARE(page.property("responsiveSize").toString(), entry.key);
         QCOMPARE(address->font().pixelSize(), entry.addressFontPixels);
         QVERIFY(page.rect().contains(toolbar->geometry()));
-        QVERIFY(toolbar->rect().contains(address->geometry()));
-        QVERIFY(address->isVisible());
+        for (const QString &objectName : controlNames) {
+            QWidget *const control = page.findChild<QWidget *>(objectName);
+            QVERIFY2(control != nullptr, qPrintable(objectName));
+            QVERIFY2(control->isVisible(), qPrintable(objectName));
+            QVERIFY2(!control->geometry().isEmpty(), qPrintable(objectName));
+            const QRect toolbarGeometry(control->mapTo(toolbar, QPoint{}),
+                                        control->size());
+            QVERIFY2(toolbar->rect().contains(toolbarGeometry),
+                     qPrintable(objectName));
+            if (control == address) {
+                QVERIFY(address->width() >= address->minimumWidth());
+            } else {
+                QVERIFY2(control->width() >= control->sizeHint().width(),
+                         qPrintable(objectName));
+            }
+        }
     }
 }
 
