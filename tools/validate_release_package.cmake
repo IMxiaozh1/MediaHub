@@ -1,16 +1,22 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(mediahubPrimaryPackageDir "")
-if(DEFINED MEDIAHUB_PACKAGE_DIR AND NOT MEDIAHUB_PACKAGE_DIR STREQUAL "")
-    cmake_path(ABSOLUTE_PATH MEDIAHUB_PACKAGE_DIR NORMALIZE
-               OUTPUT_VARIABLE mediahubPrimaryPackageDir)
-endif()
+function(normalize_package_path inputVariable outputVariable)
+    set(normalizedPath "")
+    if(DEFINED ${inputVariable} AND NOT "${${inputVariable}}" STREQUAL "")
+        cmake_path(ABSOLUTE_PATH ${inputVariable} NORMALIZE
+                   OUTPUT_VARIABLE normalizedPath)
+        cmake_path(GET normalizedPath ROOT_PATH normalizedRoot)
+        if("${normalizedPath}/" STREQUAL "${normalizedRoot}")
+            set(normalizedPath "${normalizedRoot}")
+        elseif(NOT normalizedPath STREQUAL "${normalizedRoot}")
+            string(REGEX REPLACE "/+$" "" normalizedPath "${normalizedPath}")
+        endif()
+    endif()
+    set(${outputVariable} "${normalizedPath}" PARENT_SCOPE)
+endfunction()
 
-set(mediahubAliasPackageDir "")
-if(DEFINED PACKAGE_ROOT AND NOT PACKAGE_ROOT STREQUAL "")
-    cmake_path(ABSOLUTE_PATH PACKAGE_ROOT NORMALIZE
-               OUTPUT_VARIABLE mediahubAliasPackageDir)
-endif()
+normalize_package_path(MEDIAHUB_PACKAGE_DIR mediahubPrimaryPackageDir)
+normalize_package_path(PACKAGE_ROOT mediahubAliasPackageDir)
 
 if(mediahubPrimaryPackageDir STREQUAL "" AND mediahubAliasPackageDir STREQUAL "")
     message(FATAL_ERROR
@@ -21,6 +27,12 @@ if(NOT mediahubPrimaryPackageDir STREQUAL ""
    AND NOT mediahubAliasPackageDir STREQUAL "")
     set(mediahubPrimaryPackageDirForCompare "${mediahubPrimaryPackageDir}")
     set(mediahubAliasPackageDirForCompare "${mediahubAliasPackageDir}")
+    if(NOT mediahubPrimaryPackageDirForCompare MATCHES "/$")
+        string(APPEND mediahubPrimaryPackageDirForCompare "/")
+    endif()
+    if(NOT mediahubAliasPackageDirForCompare MATCHES "/$")
+        string(APPEND mediahubAliasPackageDirForCompare "/")
+    endif()
     if(WIN32)
         string(TOLOWER "${mediahubPrimaryPackageDirForCompare}"
                mediahubPrimaryPackageDirForCompare)
