@@ -18,11 +18,14 @@ namespace mediahub::gui {
 const QVector<ShortcutHelpEntry>& ShortcutHelpDialog::entries() {
   static const QVector<ShortcutHelpEntry> kEntries{
       {QStringLiteral("Ctrl+O"), QStringLiteral("打开本地媒体文件")},
-      {QStringLiteral("Ctrl+L"), QStringLiteral("打开网络地址")},
+      {QStringLiteral("Ctrl+L"), QStringLiteral("网页模式：聚焦并全选地址；直播模式：打开网络地址")},
       {QStringLiteral("Space"), QStringLiteral("播放或暂停")},
-      {QStringLiteral("F5"), QStringLiteral("刷新当前直播")},
+      {QStringLiteral("Ctrl+R"), QStringLiteral("网页模式：刷新当前网页")},
+      {QStringLiteral("F5"), QStringLiteral("网页模式：刷新当前网页；直播模式：刷新当前直播")},
       {QStringLiteral("F11"), QStringLiteral("进入或退出全屏")},
-      {QStringLiteral("Esc"), QStringLiteral("退出全屏")},
+      {QStringLiteral("Esc"), QStringLiteral("优先退出网页全屏，否则退出播放器全屏")},
+      {QStringLiteral("Alt+左键"), QStringLiteral("网页后退")},
+      {QStringLiteral("Alt+右键"), QStringLiteral("网页前进")},
       {QStringLiteral("上键"), QStringLiteral("音量增加 5%")},
       {QStringLiteral("下键"), QStringLiteral("音量降低 5%")},
       {QStringLiteral("左键"), QStringLiteral("按当前步长后退")},

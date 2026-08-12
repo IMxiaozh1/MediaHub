@@ -17,6 +17,7 @@
 #include "browser_permission_dialog.h"
 #include "browser_navigation_policy.h"
 #include "fakes/fake_browser_backend.h"
+#include "ui_theme.h"
 
 namespace mediahub::gui {
 
@@ -45,6 +46,9 @@ class BrowserPageTest final : public QObject {
     void mainWindowPrioritizesWebFullScreenAndRestoresChrome();
     void shutdownDetachesThenClosesPopupsBeforeBackend();
     void detachesListenerAndShutsDownOnDestruction();
+    void appliesResponsiveSizeAcrossToolbarBreakpoints();
+    void routesBrowserHistoryShortcuts();
+    void routesWebShortcutsWithoutNativeConflicts();
 };
 
 void BrowserPageTest::normalizesOnlySupportedTopLevelAddresses() {
@@ -748,6 +752,75 @@ void BrowserPageTest::detachesListenerAndShutsDownOnDestruction() {
 
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetEventListener), 2);
     QCOMPARE(backend.lastCommand().kind, test::FakeBrowserCommandKind::Shutdown);
+}
+
+void BrowserPageTest::appliesResponsiveSizeAcrossToolbarBreakpoints() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.setStyleSheet(mainWindowStyleSheet());
+    page.show();
+    QCoreApplication::processEvents();
+    auto *const toolbar = page.findChild<QWidget *>(QStringLiteral("browserToolbar"));
+    auto *const address = page.findChild<QLineEdit *>(QStringLiteral("browserAddressEdit"));
+    QVERIFY(toolbar != nullptr);
+    QVERIFY(address != nullptr);
+    QCOMPARE(address->minimumWidth(), 180);
+
+    struct Breakpoint {
+        QSize size;
+        QString key;
+        int addressFontPixels;
+    };
+    const QList<Breakpoint> breakpoints{
+        {QSize(960, 640), QStringLiteral("normal"), 13},
+        {QSize(1200, 800), QStringLiteral("large"), 15},
+        {QSize(1600, 1000), QStringLiteral("extraLarge"), 17},
+    };
+    for (const auto &entry : breakpoints) {
+        page.resize(entry.size);
+        QCoreApplication::processEvents();
+        QCOMPARE(page.property("responsiveSize").toString(), entry.key);
+        QCOMPARE(address->font().pixelSize(), entry.addressFontPixels);
+        QVERIFY(page.rect().contains(toolbar->geometry()));
+        QVERIFY(toolbar->rect().contains(address->geometry()));
+        QVERIFY(address->isVisible());
+    }
+}
+
+void BrowserPageTest::routesBrowserHistoryShortcuts() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+
+    auto *const address = page.findChild<QLineEdit *>(QStringLiteral("browserAddressEdit"));
+    QVERIFY(address != nullptr);
+    address->setFocus();
+    QTest::keyClick(address, Qt::Key_Left, Qt::AltModifier);
+    QTest::keyClick(address, Qt::Key_Right, Qt::AltModifier);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::GoBack), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::GoForward), 1);
+}
+
+void BrowserPageTest::routesWebShortcutsWithoutNativeConflicts() {
+    test::FakeBrowserBackend backend;
+    MainWindow window(&backend, QStringLiteral("C:/temporary-profile"));
+    window.show();
+    window.showDisplayMode(DisplayMode::Web);
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    auto *const address = window.findChild<QLineEdit *>(
+        QStringLiteral("browserAddressEdit"));
+    QVERIFY(address != nullptr);
+    address->setText(QStringLiteral("https://example.com/path"));
+    address->setCursorPosition(0);
+    QTest::keyClick(address, Qt::Key_L, Qt::ControlModifier);
+    QCOMPARE(address->selectedText(), address->text());
+
+    QTest::keyClick(address, Qt::Key_R, Qt::ControlModifier);
+    QTest::keyClick(address, Qt::Key_F5);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::ReloadOrStop), 2);
 }
 
 }  // namespace mediahub::gui

@@ -1422,6 +1422,10 @@ void MainWindow::showDisplayMode(const DisplayMode mode) {
   localModeButton_->setChecked(mode == DisplayMode::Local);
   liveModeButton_->setChecked(mode == DisplayMode::Live);
   webModeButton_->setChecked(showsWeb);
+  // Ctrl+L 在网页模式交给地址栏，避免与“打开网络地址”菜单动作冲突。
+  if (openNetworkAction_ != nullptr) {
+    openNetworkAction_->setEnabled(!showsWeb);
+  }
   for (QShortcut* const shortcut : nativePlaybackShortcuts_) {
     shortcut->setEnabled(!showsWeb);
   }
@@ -1485,7 +1489,8 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   const QSignalBlocker lyricsBlocker(lyricsButton_);
   applyPresentationMode(presentationModeFor(viewState));
   openAction_->setEnabled(viewState.canOpen);
-  openNetworkAction_->setEnabled(viewState.canOpen);
+  openNetworkAction_->setEnabled(viewState.canOpen &&
+                                 displayMode_ != DisplayMode::Web);
   showPlaylistKind(viewState.isLivePlaylistActive ? 1 : 0);
   openButton_->setEnabled(viewState.canOpen);
   isLivePlaylistLoading_ = viewState.isLivePlaylistLoading;
@@ -1809,6 +1814,7 @@ void MainWindow::changeEvent(QEvent* const event) {
 
 void MainWindow::resizeEvent(QResizeEvent* const event) {
   QMainWindow::resizeEvent(event);
+  // 主窗口保留高度门槛保护播放器控制行；网页页按自身可用宽度独立分档。
   updatePlaylistResponsiveStyle();
 }
 

@@ -4757,6 +4757,14 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
     for (int row = 0; row < table->rowCount(); ++row) {
       shortcuts.append(table->item(row, 0)->text());
     }
+    const auto descriptionFor = [&table](const QString& shortcut) {
+      for (int row = 0; row < table->rowCount(); ++row) {
+        if (table->item(row, 0)->text() == shortcut) {
+          return table->item(row, 1)->text();
+        }
+      }
+      return QString{};
+    };
     inspectedDialog =
         shortcuts.contains(QStringLiteral("F5")) &&
         shortcuts.contains(QStringLiteral("F11")) &&
@@ -4764,7 +4772,14 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
         shortcuts.contains(QStringLiteral("Ctrl+上键")) &&
         shortcuts.contains(QStringLiteral("Ctrl+M")) &&
         shortcuts.contains(QStringLiteral("Ctrl+S")) &&
-        !shortcuts.contains(QStringLiteral("Ctrl+F5"));
+        !shortcuts.contains(QStringLiteral("Ctrl+F5")) &&
+        descriptionFor(QStringLiteral("Ctrl+L")).contains(QStringLiteral("聚焦并全选")) &&
+        descriptionFor(QStringLiteral("Ctrl+L")).contains(QStringLiteral("打开网络地址")) &&
+        descriptionFor(QStringLiteral("Alt+左键")) == QStringLiteral("网页后退") &&
+        descriptionFor(QStringLiteral("Alt+右键")) == QStringLiteral("网页前进") &&
+        descriptionFor(QStringLiteral("Ctrl+R")).contains(QStringLiteral("刷新当前网页")) &&
+        descriptionFor(QStringLiteral("F5")).contains(QStringLiteral("刷新当前直播")) &&
+        descriptionFor(QStringLiteral("Esc")).contains(QStringLiteral("优先退出网页全屏"));
     auto *const okButton = buttons->button(QDialogButtonBox::Ok);
     QCOMPARE(okButton->objectName(), QStringLiteral("shortcutHelpOkButton"));
     QCOMPARE(okButton->text(), QStringLiteral("确定"));

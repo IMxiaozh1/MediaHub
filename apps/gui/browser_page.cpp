@@ -11,6 +11,7 @@
 #include <QResizeEvent>
 #include <QShortcut>
 #include <QShowEvent>
+#include <QStyle>
 #include <QStackedLayout>
 #include <QToolButton>
 #include <QTimer>
@@ -460,6 +461,21 @@ void BrowserPage::keyPressEvent(QKeyEvent* const event) {
         event->accept();
         return;
     }
+    if (event->modifiers().testFlag(Qt::AltModifier) &&
+        !event->modifiers().testFlag(Qt::ControlModifier) &&
+        !event->modifiers().testFlag(Qt::ShiftModifier) &&
+        !event->modifiers().testFlag(Qt::MetaModifier)) {
+        if (event->key() == Qt::Key_Left) {
+            backend_.goBack();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Right) {
+            backend_.goForward();
+            event->accept();
+            return;
+        }
+    }
     QWidget::keyPressEvent(event);
 }
 
@@ -479,6 +495,7 @@ void BrowserPage::showEvent(QShowEvent* event) {
 
 void BrowserPage::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
+    updateResponsiveStyle();
     updateBackendBounds();
 }
 
@@ -550,6 +567,8 @@ void BrowserPage::buildUi() {
     rootLayout->addWidget(downloadWidget_);
     rootLayout->addWidget(content, 1);
 
+    updateResponsiveStyle();
+
     connect(addressEdit_, &QLineEdit::returnPressed, this,
             &BrowserPage::submitAddress);
     connect(goButton_, &QPushButton::clicked, this, &BrowserPage::submitAddress);
@@ -589,6 +608,36 @@ void BrowserPage::buildUi() {
     auto* reloadF5 = new QShortcut(QKeySequence(Qt::Key_F5), this);
     connect(reloadF5, &QShortcut::activated, this,
             [this] { backend_.reloadOrStop(); });
+}
+
+void BrowserPage::updateResponsiveStyle() {
+    QString sizeKey;
+    if (width() >= 1500) {
+        sizeKey = QStringLiteral("extraLarge");
+    } else if (width() >= 1200) {
+        sizeKey = QStringLiteral("large");
+    } else if (width() >= 900) {
+        sizeKey = QStringLiteral("normal");
+    } else {
+        sizeKey = QStringLiteral("compact");
+    }
+    if (responsiveSize_ == sizeKey) {
+        return;
+    }
+    responsiveSize_ = sizeKey;
+    setProperty("responsiveSize", sizeKey);
+    const QList<QWidget*> widgets{this, toolbar_, addressEdit_, goButton_,
+                                  clearDataButton_, backButton_, forwardButton_,
+                                  reloadButton_, homeButton_};
+    for (QWidget* const widget : widgets) {
+        if (widget == nullptr) {
+            continue;
+        }
+        widget->setProperty("responsiveSize", sizeKey);
+        widget->style()->unpolish(widget);
+        widget->style()->polish(widget);
+        widget->updateGeometry();
+    }
 }
 
 void BrowserPage::submitAddress() {

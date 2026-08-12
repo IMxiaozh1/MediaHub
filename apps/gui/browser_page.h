@@ -110,6 +110,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     // 调用线程：GUI 主线程。导航前拒绝仍在等待用户回答的旧页面请求。
     void rejectUnansweredSensitiveRequests();
     void updateControls();
+    // 调用线程：GUI 主线程。仅在响应式档位变化时刷新网页工具栏样式。
+    void updateResponsiveStyle();
     void updateBackendBounds();
     [[nodiscard]] QString errorText(BrowserErrorKind kind) const;
 
@@ -148,6 +150,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     std::optional<std::uint64_t> pendingCertificateId_;
     std::optional<std::uint64_t> activeDownloadId_;
     bool isDownloadCancellationSent_{false};
+    QString responsiveSize_;
 };
 
 }  // namespace mediahub::gui

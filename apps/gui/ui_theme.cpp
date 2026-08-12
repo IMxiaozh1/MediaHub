@@ -727,6 +727,21 @@ const QString& mainWindowStyleSheet() {
       QLabel#livePlaylistSourceLabel[responsiveSize="extraLarge"] {
           font-size: 14px;
       }
+      QLineEdit#browserAddressEdit[responsiveSize="compact"],
+      QPushButton#browserGoButton[responsiveSize="compact"],
+      QPushButton#browserClearDataButton[responsiveSize="compact"],
+      QToolButton[responsiveSize="compact"] {
+          font-size: 12px;
+      }
+      QLineEdit#browserAddressEdit[responsiveSize="normal"] {
+          font-size: 13px;
+      }
+      QLineEdit#browserAddressEdit[responsiveSize="large"] {
+          font-size: 15px;
+      }
+      QLineEdit#browserAddressEdit[responsiveSize="extraLarge"] {
+          font-size: 17px;
+      }
   )");
   return styleSheet;
 }
