@@ -176,6 +176,7 @@ class BrowserPageTest final : public QObject {
     void shutdownCancelsEveryConcurrentDownload();
     void deactivatesAndActivatesBrowserInSafeOrder();
     void tracksIndependentTabAudioAndMuteState();
+    void updatesOnlyChangedAudioRowAndSkipsHiddenRebuilds();
     void audioCenterTargetsStableTabAfterManualReorder();
     void escapeExitsWebFullScreenFirst();
     void mainWindowPrioritizesWebFullScreenAndRestoresChrome();
@@ -2821,6 +2822,115 @@ void BrowserPageTest::tracksIndependentTabAudioAndMuteState() {
     QCOMPARE(backend.lastCommand().requestId, std::uint64_t{1});
     QVERIFY(!backend.lastCommand().flag);
     QCOMPARE(audibleCountSpy.takeLast().at(0).toInt(), 1);
+}
+
+void BrowserPageTest::updatesOnlyChangedAudioRowAndSkipsHiddenRebuilds() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserStartupSettingsStore startupSettings;
+    startupSettings.settings.maximumTabCount = 100;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     nullptr, nullptr, &startupSettings);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+
+    backend.emitTabAudioStateChanged(1, 1, true);
+    for (std::uint64_t tabId = 2; tabId <= 100; ++tabId) {
+        QVERIFY(backend.emitNewTabRequested(
+            QStringLiteral("https://audio-%1.example").arg(tabId)));
+        backend.emitTabAudioStateChanged(tabId, tabId, true);
+    }
+
+    auto* const tabBar =
+        page.findChild<QTabBar*>(QStringLiteral("browserTabBar"));
+    auto* const muteButton = page.findChild<QToolButton*>(
+        QStringLiteral("browserCurrentTabMuteButton"));
+    auto* const audioTabsButton = page.findChild<QToolButton*>(
+        QStringLiteral("browserAudioTabsButton"));
+    QVERIFY(tabBar != nullptr);
+    QVERIFY(muteButton != nullptr);
+    QVERIFY(audioTabsButton != nullptr);
+
+    QTest::mouseClick(audioTabsButton, Qt::LeftButton);
+    auto* const audioDialog = page.findChild<QDialog*>(
+        QStringLiteral("browserAudioTabsDialog"));
+    auto* const audioList = page.findChild<QListWidget*>(
+        QStringLiteral("browserAudioTabsList"));
+    auto* const audioMuteButton = page.findChild<QPushButton*>(
+        QStringLiteral("browserAudioTabMuteButton"));
+    QVERIFY(audioDialog != nullptr);
+    QVERIFY(audioList != nullptr);
+    QVERIFY(audioMuteButton != nullptr);
+    QCOMPARE(audioList->count(), 100);
+
+    QSignalSpy rowsInserted(audioList->model(),
+                            &QAbstractItemModel::rowsInserted);
+    QSignalSpy rowsRemoved(audioList->model(),
+                           &QAbstractItemModel::rowsRemoved);
+    QSignalSpy modelReset(audioList->model(), &QAbstractItemModel::modelReset);
+    QSignalSpy dataChanged(audioList->model(), &QAbstractItemModel::dataChanged);
+
+    constexpr std::uint64_t targetTabId = 50;
+    audioDialog->hide();
+    tabBar->setCurrentIndex(static_cast<int>(targetTabId - 1));
+    const int hiddenMuteCount =
+        backend.count(test::FakeBrowserCommandKind::SetTabAudioMuted);
+    QTest::mouseClick(muteButton, Qt::LeftButton);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetTabAudioMuted),
+             hiddenMuteCount + 1);
+    QCOMPARE(backend.lastCommand().requestId, targetTabId);
+    QVERIFY(backend.lastCommand().flag);
+    QCOMPARE(rowsInserted.count(), 0);
+    QCOMPARE(rowsRemoved.count(), 0);
+    QCOMPARE(modelReset.count(), 0);
+    QCOMPARE(dataChanged.count(), 0);
+
+    QTest::mouseClick(audioTabsButton, Qt::LeftButton);
+    QCOMPARE(audioList->count(), 100);
+    int targetRow = -1;
+    for (int row = 0; row < audioList->count(); ++row) {
+        if (audioList->item(row)->data(Qt::UserRole).toULongLong() ==
+            targetTabId) {
+            targetRow = row;
+            break;
+        }
+    }
+    QVERIFY(targetRow >= 0);
+    audioList->setCurrentRow(targetRow);
+    QVERIFY(audioList->item(targetRow)->text().startsWith(
+        QStringLiteral("[已静音]")));
+
+    QVector<QString> textBefore;
+    textBefore.reserve(audioList->count());
+    for (int row = 0; row < audioList->count(); ++row) {
+        textBefore.append(audioList->item(row)->text());
+    }
+    rowsInserted.clear();
+    rowsRemoved.clear();
+    modelReset.clear();
+    dataChanged.clear();
+    const int visibleMuteCount =
+        backend.count(test::FakeBrowserCommandKind::SetTabAudioMuted);
+    QTest::mouseClick(audioMuteButton, Qt::LeftButton);
+
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetTabAudioMuted),
+             visibleMuteCount + 1);
+    QCOMPARE(backend.lastCommand().requestId, targetTabId);
+    QVERIFY(!backend.lastCommand().flag);
+    QCOMPARE(rowsInserted.count(), 0);
+    QCOMPARE(rowsRemoved.count(), 0);
+    QCOMPARE(modelReset.count(), 0);
+    QCOMPARE(dataChanged.count(), 1);
+    int changedRowCount = 0;
+    for (int row = 0; row < audioList->count(); ++row) {
+        if (audioList->item(row)->text() != textBefore.at(row)) {
+            ++changedRowCount;
+            QCOMPARE(row, targetRow);
+        }
+    }
+    QCOMPARE(changedRowCount, 1);
+    QVERIFY(audioList->item(targetRow)->text().startsWith(
+        QStringLiteral("[正在出声]")));
 }
 
 void BrowserPageTest::audioCenterTargetsStableTabAfterManualReorder() {

@@ -195,6 +195,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     [[nodiscard]] bool isTabCollapsedForTest(std::uint64_t tabId) const;
 
  private:
+    struct BrowserTabRecord;
+
     void buildUi();
     [[nodiscard]] int maximumTabCount() const noexcept;
     void openNewTab();
@@ -257,11 +259,15 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void applyCachedFavicon(int index);
     void clearTabFavicons();
     void updateAudioPresentation();
+    void updateAudioTabPresentation(std::uint64_t tabId, bool wasListed);
+    void updateAudioControls();
     void updateAudibleTabCount();
     void toggleCurrentTabMuted();
     void toggleTabMuted(std::uint64_t tabId);
     void showAudioTabs();
     void refreshAudioTabs();
+    void updateAudioTabRow(std::uint64_t tabId, bool wasListed);
+    [[nodiscard]] QString audioTabText(const BrowserTabRecord& tab) const;
     void setCurrentTabZoom(double zoomFactor);
     void adjustCurrentTabZoom(double delta);
     void resetCurrentTabZoom();
@@ -401,6 +407,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     std::optional<std::uint64_t> activeDownloadId_;
     bool isDownloadCancellationSent_{false};
     bool isGloballyMuted_{false};
+    bool isAudioTabsDirty_{true};
     int lastAudibleTabCount_{0};
     QString responsiveSize_;
     bool isNormalizingPinnedTabs_{false};

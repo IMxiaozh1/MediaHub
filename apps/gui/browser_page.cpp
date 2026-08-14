@@ -1177,8 +1177,10 @@ void BrowserPage::onTabAudioStateChanged(const std::uint64_t tabId,
         isShuttingDown_) {
         return;
     }
+    const bool wasListed =
+        tabs_.at(index).isPlayingAudio || tabs_.at(index).isUserMuted;
     tabs_[index].isPlayingAudio = isPlayingAudio;
-    updateAudioPresentation();
+    updateAudioTabPresentation(tabId, wasListed);
     updateAudibleTabCount();
 }
 
@@ -2719,6 +2721,21 @@ void BrowserPage::clearTabFavicons() {
 }
 
 void BrowserPage::updateAudioPresentation() {
+    updateAudioControls();
+    if (audioTabsDialog_ != nullptr && audioTabsDialog_->isVisible()) {
+        refreshAudioTabs();
+    } else {
+        isAudioTabsDirty_ = true;
+    }
+}
+
+void BrowserPage::updateAudioTabPresentation(const std::uint64_t tabId,
+                                             const bool wasListed) {
+    updateAudioControls();
+    updateAudioTabRow(tabId, wasListed);
+}
+
+void BrowserPage::updateAudioControls() {
     if (currentTabMuteButton_ == nullptr || audioTabsButton_ == nullptr ||
         currentTabIndex_ < 0 || currentTabIndex_ >= tabs_.size()) {
         return;
@@ -2739,7 +2756,11 @@ void BrowserPage::updateAudioPresentation() {
     audioTabsButton_->setToolTip(
         count > 0 ? QStringLiteral("%1 个网页标签正在出声").arg(count)
                   : QStringLiteral("查看网页声音标签"));
-    refreshAudioTabs();
+    if (globalAudioMuteButton_ != nullptr) {
+        globalAudioMuteButton_->setText(
+            isGloballyMuted_ ? QStringLiteral("恢复网页声音")
+                             : QStringLiteral("全部网页静音"));
+    }
 }
 
 int BrowserPage::audibleTabCount() const noexcept {
@@ -2776,9 +2797,10 @@ void BrowserPage::toggleTabMuted(const std::uint64_t tabId) {
         return;
     }
     BrowserTabRecord& tab = tabs_[index];
+    const bool wasListed = tab.isPlayingAudio || tab.isUserMuted;
     tab.isUserMuted = !tab.isUserMuted;
     backend_.setTabAudioMuted(tab.tabId, tab.isUserMuted);
-    updateAudioPresentation();
+    updateAudioTabPresentation(tab.tabId, wasListed);
     updateAudibleTabCount();
 }
 
@@ -2853,7 +2875,9 @@ void BrowserPage::showAudioTabs() {
             updateAudibleTabCount();
         });
     }
-    refreshAudioTabs();
+    if (isAudioTabsDirty_) {
+        refreshAudioTabs();
+    }
     audioTabsDialog_->show();
     audioTabsDialog_->raise();
     audioTabsDialog_->activateWindow();
@@ -2873,17 +2897,7 @@ void BrowserPage::refreshAudioTabs() {
         if (!tab.isPlayingAudio && !tab.isUserMuted) {
             continue;
         }
-        QString state;
-        if (tab.isUserMuted || isGloballyMuted_) {
-            state = QStringLiteral("已静音");
-        } else if (tab.isPlayingAudio) {
-            state = QStringLiteral("正在出声");
-        }
-        auto* const item = new QListWidgetItem(
-            QStringLiteral("[%1] %2").arg(
-                state, tab.title.isEmpty() ? QStringLiteral("新标签页")
-                                           : tab.title),
-            audioTabsList_);
+        auto* const item = new QListWidgetItem(audioTabText(tab), audioTabsList_);
         item->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(tab.tabId));
         if (tab.tabId == selectedTabId) {
             selectedRow = audioTabsList_->count() - 1;
@@ -2894,11 +2908,45 @@ void BrowserPage::refreshAudioTabs() {
     } else if (audioTabsList_->count() > 0) {
         audioTabsList_->setCurrentRow(0);
     }
-    if (globalAudioMuteButton_ != nullptr) {
-        globalAudioMuteButton_->setText(
-            isGloballyMuted_ ? QStringLiteral("恢复网页声音")
-                             : QStringLiteral("全部网页静音"));
+    isAudioTabsDirty_ = false;
+}
+
+void BrowserPage::updateAudioTabRow(const std::uint64_t tabId,
+                                    const bool wasListed) {
+    if (audioTabsDialog_ == nullptr || audioTabsList_ == nullptr ||
+        !audioTabsDialog_->isVisible()) {
+        isAudioTabsDirty_ = true;
+        return;
     }
+
+    const int tabIndex = findTabIndex(tabId);
+    const bool isListed = tabIndex >= 0 &&
+                          (tabs_.at(tabIndex).isPlayingAudio ||
+                           tabs_.at(tabIndex).isUserMuted);
+    if (isAudioTabsDirty_ || wasListed != isListed) {
+        refreshAudioTabs();
+        return;
+    }
+    if (!isListed) {
+        return;
+    }
+
+    for (int row = 0; row < audioTabsList_->count(); ++row) {
+        QListWidgetItem* const item = audioTabsList_->item(row);
+        if (item->data(Qt::UserRole).toULongLong() == tabId) {
+            item->setText(audioTabText(tabs_.at(tabIndex)));
+            return;
+        }
+    }
+    refreshAudioTabs();
+}
+
+QString BrowserPage::audioTabText(const BrowserTabRecord& tab) const {
+    const QString state = tab.isUserMuted || isGloballyMuted_
+                              ? QStringLiteral("已静音")
+                              : QStringLiteral("正在出声");
+    return QStringLiteral("[%1] %2").arg(
+        state, tab.title.isEmpty() ? QStringLiteral("新标签页") : tab.title);
 }
 
 void BrowserPage::setCurrentTabZoom(const double zoomFactor) {
