@@ -43,12 +43,29 @@ enum class BrowserPageState {
     ShuttingDown,
 };
 
+// 网页进程失败只暴露宿主可稳定处理的类别，不包含进程描述、退出码或网页数据。
+enum class BrowserProcessFailureKind {
+    RenderProcessExited,
+    RenderProcessUnresponsive,
+    BrowserProcessExited,
+    OtherProcessExited,
+};
+
 // WebView2 原生子窗口只向 GUI 投递稳定快捷键语义，不暴露 Windows 消息或虚拟键值。
 enum class BrowserAccelerator {
     FocusAddress,
+    NewTab,
+    CloseTab,
+    NextTab,
+    PreviousTab,
+    FindInPage,
+    ReopenClosedTab,
     Back,
     Forward,
     Reload,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
     ExitFullScreen,
 };
 
@@ -76,6 +93,7 @@ enum class BrowserCertificateDecision {
 enum class BrowserDownloadState {
     InProgress,
     CancelFailed,
+    RetryableFailure,
     Completed,
     Failed,
     Cancelled,

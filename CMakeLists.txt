@@ -176,19 +176,37 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/app_state_store.cpp
         apps/gui/app_state_store.h
         apps/gui/browser_backend.h
+        apps/gui/browser_bookmark_html.cpp
+        apps/gui/browser_bookmark_html.h
         apps/gui/browser_data_store.cpp
         apps/gui/browser_data_store.h
+        apps/gui/browser_download_center.cpp
+        apps/gui/browser_download_center.h
         apps/gui/browser_download_widget.cpp
         apps/gui/browser_download_widget.h
         apps/gui/browser_event_listener.h
+        apps/gui/browser_favicon_cache.cpp
+        apps/gui/browser_favicon_cache.h
         apps/gui/browser_navigation_policy.cpp
         apps/gui/browser_navigation_policy.h
         apps/gui/browser_page.cpp
         apps/gui/browser_page.h
         apps/gui/browser_permission_dialog.cpp
         apps/gui/browser_permission_dialog.h
+        apps/gui/browser_permission_store.cpp
+        apps/gui/browser_permission_store.h
         apps/gui/browser_profile_directory.cpp
         apps/gui/browser_profile_directory.h
+        apps/gui/browser_session_store.cpp
+        apps/gui/browser_session_store.h
+        apps/gui/browser_startup_settings.cpp
+        apps/gui/browser_startup_settings.h
+        apps/gui/browser_startup_settings_dialog.cpp
+        apps/gui/browser_startup_settings_dialog.h
+        apps/gui/browser_tab_group_dialog.cpp
+        apps/gui/browser_tab_group_dialog.h
+        apps/gui/browser_tab_group_model.cpp
+        apps/gui/browser_tab_group_model.h
         apps/gui/browser_types.h
         apps/gui/engine_event_bridge.cpp
         apps/gui/engine_event_bridge.h
@@ -234,7 +252,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PRIVATE Qt5::Concurrent Qt5::Network
     )
     if(WIN32)
-        target_link_libraries(mediahub_gui_support PRIVATE dwmapi gdi32 user32 winhttp)
+        target_link_libraries(mediahub_gui_support PRIVATE crypt32 dwmapi gdi32 user32 winhttp)
     endif()
     mediahub_enable_warnings(mediahub_gui_support)
 

@@ -41,11 +41,33 @@ AcceleratorDispatch handleAcceleratorKey(Args& args, const bool isControlDown,
     }
 
     std::optional<gui::BrowserAccelerator> accelerator;
-    if (isShiftDown || isWindowsDown) {
+    if (isWindowsDown) {
         return {S_OK, std::nullopt};
     }
-    if (isControlDown && !isAltDown && virtualKey == static_cast<UINT>('L')) {
+    if (isControlDown && !isAltDown && isShiftDown && virtualKey == VK_TAB) {
+        accelerator = gui::BrowserAccelerator::PreviousTab;
+    } else if (isControlDown && !isAltDown && isShiftDown &&
+               virtualKey == static_cast<UINT>('T')) {
+        accelerator = gui::BrowserAccelerator::ReopenClosedTab;
+    } else if (isControlDown && !isAltDown && isShiftDown &&
+               virtualKey == VK_OEM_PLUS) {
+        accelerator = gui::BrowserAccelerator::ZoomIn;
+    } else if (isShiftDown) {
+        return {S_OK, std::nullopt};
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('L')) {
         accelerator = gui::BrowserAccelerator::FocusAddress;
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('T')) {
+        accelerator = gui::BrowserAccelerator::NewTab;
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('W')) {
+        accelerator = gui::BrowserAccelerator::CloseTab;
+    } else if (isControlDown && !isAltDown && virtualKey == VK_TAB) {
+        accelerator = gui::BrowserAccelerator::NextTab;
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('F')) {
+        accelerator = gui::BrowserAccelerator::FindInPage;
     } else if (!isControlDown && isAltDown && virtualKey == VK_LEFT) {
         accelerator = gui::BrowserAccelerator::Back;
     } else if (!isControlDown && isAltDown && virtualKey == VK_RIGHT) {
@@ -53,6 +75,15 @@ AcceleratorDispatch handleAcceleratorKey(Args& args, const bool isControlDown,
     } else if (isControlDown && !isAltDown &&
                virtualKey == static_cast<UINT>('R')) {
         accelerator = gui::BrowserAccelerator::Reload;
+    } else if (isControlDown && !isAltDown &&
+               (virtualKey == VK_OEM_PLUS || virtualKey == VK_ADD)) {
+        accelerator = gui::BrowserAccelerator::ZoomIn;
+    } else if (isControlDown && !isAltDown &&
+               (virtualKey == VK_OEM_MINUS || virtualKey == VK_SUBTRACT)) {
+        accelerator = gui::BrowserAccelerator::ZoomOut;
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('0')) {
+        accelerator = gui::BrowserAccelerator::ResetZoom;
     } else if (!isControlDown && !isAltDown && virtualKey == VK_F5) {
         accelerator = gui::BrowserAccelerator::Reload;
     } else if (!isControlDown && !isAltDown && isWebFullScreen &&

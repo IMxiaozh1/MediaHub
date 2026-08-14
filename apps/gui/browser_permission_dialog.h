@@ -2,10 +2,14 @@
 
 #include <QDialog>
 
+#include "browser_permission_store.h"
 #include "browser_types.h"
 
+class QComboBox;
 class QLabel;
+class QLineEdit;
 class QPushButton;
+class QTableWidget;
 
 namespace mediahub::gui {
 
@@ -38,6 +42,39 @@ class BrowserPermissionDialog final : public QDialog {
     QPushButton* allowOnceButton_{nullptr};
     QPushButton* rememberButton_{nullptr};
     bool isAnswered_{false};
+};
+
+// 管理宿主保存的网站权限，不直接访问 WebView2 Profile。
+class BrowserPermissionManagementDialog final : public QDialog {
+    Q_OBJECT
+
+ public:
+    // 调用线程：GUI 主线程。
+    explicit BrowserPermissionManagementDialog(BrowserPermissionStore& store,
+                                                QWidget* parent = nullptr);
+
+    [[nodiscard]] int visibleEntryCount() const;
+    [[nodiscard]] QString statusText() const;
+    // 调用线程：GUI 主线程。每次显示前重新读取持久化权限。
+    void reloadEntries();
+
+ signals:
+    void permissionsChanged();
+
+ private:
+    void applyFilter(const QString& text);
+    void updateActions();
+    void saveSelected();
+    void removeSelected();
+
+    BrowserPermissionStore& store_;
+    QVector<BrowserPermissionEntry> entries_;
+    QLineEdit* searchEdit_{nullptr};
+    QTableWidget* table_{nullptr};
+    QComboBox* stateCombo_{nullptr};
+    QPushButton* saveButton_{nullptr};
+    QPushButton* removeButton_{nullptr};
+    QLabel* statusLabel_{nullptr};
 };
 
 }  // namespace mediahub::gui

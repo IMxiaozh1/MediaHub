@@ -18,8 +18,10 @@
 #include <QtTest>
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <sstream>
+#include <tuple>
 
 #include "browser_event_listener.h"
 #include "browser_profile_directory.h"
@@ -31,6 +33,7 @@
 #include "webview2_handles.h"
 #include "webview2_pending_request.h"
 #include "webview2_state.h"
+#include "webview2_tab_controller.h"
 
 namespace mediahub::browser_webview2 {
 namespace {
@@ -38,6 +41,7 @@ namespace {
 constexpr std::uint64_t kGeneration = 7;
 constexpr qint64 kInitializationTimeoutMilliseconds = 10000;
 constexpr qint64 kRuntimeBehaviorTimeoutMilliseconds = 10000;
+constexpr qint64 kProfileCleanupTimeoutMilliseconds = 15000;
 
 class FakePermissionArgs final {
  public:
@@ -384,6 +388,17 @@ class FakeActiveDownload final {
     bool isCancelRequested{false};
 };
 
+class FakeResumableDownload final {
+ public:
+    void resetSubscriptions() noexcept {
+        ++resetCalls;
+        hasSubscription = false;
+    }
+
+    int resetCalls{0};
+    bool hasSubscription{false};
+};
+
 class FakeCancelableDownload final {
  public:
     bool isCancelRequested{false};
@@ -416,6 +431,12 @@ class FakeDownloadSnapshotOperation final {
         return reasonResult;
     }
 
+    HRESULT get_CanResume(BOOL* const value) {
+        calls.push_back(QStringLiteral("can_resume"));
+        *value = canResume;
+        return canResumeResult;
+    }
+
     std::vector<QString> calls;
     COREWEBVIEW2_DOWNLOAD_STATE state{COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS};
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON interruptReason{
@@ -426,6 +447,8 @@ class FakeDownloadSnapshotOperation final {
     HRESULT bytesResult{S_OK};
     HRESULT totalResult{S_OK};
     HRESULT reasonResult{S_OK};
+    BOOL canResume{FALSE};
+    HRESULT canResumeResult{S_OK};
 };
 
 // 调用线程：GUI 主线程，在有界事件循环中等待明确谓词。
@@ -505,7 +528,8 @@ class TemporaryWebView2Profile final {
 
     // 调用线程：GUI 主线程，后端关闭后有界等待测试 Profile 释放。
     bool cleanup() {
-        isCleaned_ = removeTemporaryProfile(directory_.path(), 5000);
+        isCleaned_ = removeTemporaryProfile(directory_.path(),
+                                            kProfileCleanupTimeoutMilliseconds);
         if (isCleaned_) {
             pendingTemporaryProfiles().remove(directory_.path());
         }
@@ -830,6 +854,7 @@ class WebView2BrowserTest final : public QObject {
 
  private slots:
     void cleanupTestCase();
+    void suspensionDefaultsToActiveForBackgroundPlayback();
     void suspensionCoordinatesPendingResume();
     void suspensionHandlesFailureAndStaleCompletion();
     void suspensionIgnoresCompletionAfterInvalidation();
@@ -846,12 +871,16 @@ class WebView2BrowserTest final : public QObject {
     void downloadPreparationAttemptsEverySafetyAction();
     void securityPromptPreparationCompletesAfterSetterFailure();
     void downloadDecisionRejectsUnsafeDestination();
+    void rejectedDownloadPathsAlwaysReportTerminalFailure();
+    void downloadEventsOutliveTheirOriginTabGeneration();
     void downloadStartFailuresCompleteAndCleanSubscriptions();
     void pendingDownloadCancellationAwaitsObservedTerminal();
     void pendingDownloadCancellationFailureRemainsRetryable();
     void pendingDownloadCancellationFallsBackWithoutSubscriptions();
     void downloadCancellationFailureAllowsRetryAndShutdownRepeats();
+    void interruptedDownloadResumeTransactionRollsBackSafely();
     void downloadTerminalSnapshotSurvivesProgressReadFailures();
+    void resumableDownloadsUseDedicatedBackendPath();
     void shutdownPermanentlyRejectsReinitialization();
     void controllerCompletionAdoptsOnlyCurrentSuccess();
     void shutdownFullScreenExitRemainsReachableAndOrdered();
@@ -861,6 +890,12 @@ class WebView2BrowserTest final : public QObject {
     void mapsAndHandlesControllerAccelerators();
     void acceleratorFailuresDoNotConsumeWebInput();
     void registersAcceleratorBeforeReadyAndRevokesBeforeClose();
+    void usesNativeFindForCurrentTabAndReleasesItBeforeClose();
+    void registersAudioStateForEveryTabAndKeepsMuteIndependent();
+    void faviconStreamReaderAcceptsPngAndRejectsUnsafePayloads();
+    void registersFaviconAndZoomForEveryTab();
+    void mapsAndRevokesProcessFailureForEveryTab();
+    void exposesUserInitiatedTabRecoveryWithoutSensitiveData();
     void secondaryTabsUseCompleteProfileClearSequence();
     void rejectsSensitiveRequestsFromInactiveTabs();
     void servesControlledPagesOverIpv4Loopback();
@@ -880,7 +915,7 @@ void WebView2BrowserTest::cleanupTestCase() {
     int failedCleanupCount = 0;
     const QSet<QString> profiles = pendingTemporaryProfiles();
     for (const QString& profile : profiles) {
-        if (removeTemporaryProfile(profile, 10000)) {
+        if (removeTemporaryProfile(profile, kProfileCleanupTimeoutMilliseconds)) {
             pendingTemporaryProfiles().remove(profile);
         } else {
             ++failedCleanupCount;
@@ -889,6 +924,13 @@ void WebView2BrowserTest::cleanupTestCase() {
     QVERIFY2(failedCleanupCount == 0,
              qPrintable(QStringLiteral("未能清理 %1 个测试 Profile")
                             .arg(failedCleanupCount)));
+}
+
+void WebView2BrowserTest::suspensionDefaultsToActiveForBackgroundPlayback() {
+    SuspensionCoordinator coordinator;
+
+    QCOMPARE(coordinator.controllerReady().action, SuspensionAction::None);
+    QVERIFY(!coordinator.mustMute());
 }
 
 void WebView2BrowserTest::suspensionCoordinatesPendingResume() {
@@ -1501,6 +1543,75 @@ void WebView2BrowserTest::downloadStartFailuresCompleteAndCleanSubscriptions() {
     verifyFailure(destinationRace, E_INVALIDARG, true);
 }
 
+void WebView2BrowserTest::rejectedDownloadPathsAlwaysReportTerminalFailure() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const int chooseStart = source.indexOf(
+        QStringLiteral("void chooseDownloadPath("));
+    const int chooseEnd = source.indexOf(
+        QStringLiteral("void cancelDownload("), chooseStart);
+    QVERIFY(chooseStart >= 0);
+    QVERIFY(chooseEnd > chooseStart);
+    const QString choose = source.mid(chooseStart, chooseEnd - chooseStart);
+
+    QVERIFY(choose.contains(QStringLiteral("reportRejectedDownload();")));
+    QCOMPARE(choose.count(QStringLiteral("reportRejectedDownload();")), 2);
+    QVERIFY(choose.contains(QStringLiteral("BrowserDownloadState::Failed")));
+    QVERIFY(choose.contains(QStringLiteral("if (FAILED(result))")));
+}
+
+void WebView2BrowserTest::downloadEventsOutliveTheirOriginTabGeneration() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const auto segment = [&source](const QString& start, const QString& end) {
+        const int startIndex = source.indexOf(start);
+        const int endIndex = source.indexOf(end, startIndex);
+        return startIndex >= 0 && endIndex > startIndex
+                   ? source.mid(startIndex, endIndex - startIndex)
+                   : QString{};
+    };
+
+    const QString choose = segment(QStringLiteral("void chooseDownloadPath("),
+                                   QStringLiteral("void cancelDownload("));
+    const QString cancel = segment(QStringLiteral("void cancelDownload("),
+                                   QStringLiteral("void answerExternalProtocol("));
+    const QString emitSegment = segment(
+        QStringLiteral("void emitDownloadUpdate("),
+        QStringLiteral("void cancelPendingSensitiveRequests("));
+    const QString mainRequest = segment(
+        QStringLiteral("HRESULT registerDownloadStarting("),
+        QStringLiteral("HRESULT registerServerCertificateErrorDetected("));
+    const QString dispatcher = segment(
+        QStringLiteral("void dispatchDownloadListener("),
+        QStringLiteral("void reportError("));
+    QVERIFY(!choose.isEmpty());
+    QVERIFY(!cancel.isEmpty());
+    QVERIFY(!emitSegment.isEmpty());
+    QVERIFY(!mainRequest.isEmpty());
+    QVERIFY(!dispatcher.isEmpty());
+
+    QVERIFY(choose.contains(
+        QStringLiteral("active.generation = pending->generation")));
+    QVERIFY(cancel.contains(
+        QStringLiteral("candidate.generation = generation")));
+    QVERIFY(cancel.contains(QStringLiteral("active.generation")));
+    QVERIFY(cancel.contains(QStringLiteral("dispatchDownloadListener(")));
+    QVERIFY(!cancel.contains(QStringLiteral("dispatchListener(")));
+    QVERIFY(emitSegment.contains(QStringLiteral("active.generation")));
+    QVERIFY(emitSegment.contains(QStringLiteral("dispatchDownloadListener(")));
+    QVERIFY(!emitSegment.contains(QStringLiteral("generation_")));
+    QVERIFY(mainRequest.contains(QStringLiteral("dispatchDownloadListener(")));
+    QVERIFY(!mainRequest.contains(QStringLiteral("dispatchListener(")));
+    QVERIFY(dispatcher.contains(QStringLiteral("lifecycleSerial == lifecycleSerial_")));
+    QVERIFY(!dispatcher.contains(QStringLiteral("isActive(")));
+}
+
 void WebView2BrowserTest::pendingDownloadCancellationAwaitsObservedTerminal() {
     std::vector<QString> order;
     FakeDownloadDecisionArgs args;
@@ -1770,6 +1881,111 @@ void WebView2BrowserTest::downloadCancellationFailureAllowsRetryAndShutdownRepea
     QVERIFY(active.isCancelRequested);
 }
 
+void WebView2BrowserTest::interruptedDownloadResumeTransactionRollsBackSafely() {
+    const auto run = [](const HRESULT validationResult,
+                        const HRESULT registrationResult, const bool canStore,
+                        const HRESULT resumeResult) {
+        FakeResumableDownload candidate;
+        bool didStore = false;
+        int resumeCalls = 0;
+        int rollbackCalls = 0;
+        const DownloadResumeOutcome outcome =
+            resumeInterruptedDownloadTransaction(
+                candidate,
+                [validationResult](FakeResumableDownload&) {
+                    return validationResult;
+                },
+                [registrationResult](FakeResumableDownload& active) {
+                    active.hasSubscription = true;
+                    return registrationResult;
+                },
+                [canStore, &didStore](FakeResumableDownload&) {
+                    didStore = canStore;
+                    return canStore;
+                },
+                [resumeResult, &resumeCalls] {
+                    ++resumeCalls;
+                    return resumeResult;
+                },
+                [&rollbackCalls, &candidate] {
+                    ++rollbackCalls;
+                    candidate.resetSubscriptions();
+                });
+        return std::tuple{outcome, candidate.resetCalls,
+                          candidate.hasSubscription, didStore, resumeCalls,
+                          rollbackCalls};
+    };
+
+    const auto [invalid, invalidResets, invalidSubscription, invalidStored,
+                invalidResumeCalls, invalidRollbackCalls] =
+        run(S_FALSE, S_OK, true, S_OK);
+    QCOMPARE(invalid.action, DownloadResumeAction::ReportFailed);
+    QCOMPARE(invalid.result, S_FALSE);
+    QCOMPARE(invalidResets, 0);
+    QVERIFY(!invalidSubscription);
+    QVERIFY(!invalidStored);
+    QCOMPARE(invalidResumeCalls, 0);
+    QCOMPARE(invalidRollbackCalls, 0);
+
+    const auto [validationFailed, validationResets,
+                validationSubscription, validationStored,
+                validationResumeCalls, validationRollbackCalls] =
+        run(E_ACCESSDENIED, S_OK, true, S_OK);
+    QCOMPARE(validationFailed.action,
+             DownloadResumeAction::RemainRetryable);
+    QVERIFY(FAILED(validationFailed.result));
+    QCOMPARE(validationResets, 0);
+    QVERIFY(!validationSubscription);
+    QVERIFY(!validationStored);
+    QCOMPARE(validationResumeCalls, 0);
+    QCOMPARE(validationRollbackCalls, 0);
+
+    const auto [registrationFailed, registrationResets,
+                registrationSubscription, registrationStored,
+                registrationResumeCalls, registrationRollbackCalls] =
+        run(S_OK, E_FAIL, true, S_OK);
+    QCOMPARE(registrationFailed.action,
+             DownloadResumeAction::RemainRetryable);
+    QCOMPARE(registrationResets, 1);
+    QVERIFY(!registrationSubscription);
+    QVERIFY(!registrationStored);
+    QCOMPARE(registrationResumeCalls, 0);
+    QCOMPARE(registrationRollbackCalls, 0);
+
+    const auto [storageFailed, storageResets, storageSubscription,
+                storageStored, storageResumeCalls, storageRollbackCalls] =
+        run(S_OK, S_OK, false, S_OK);
+    QCOMPARE(storageFailed.action, DownloadResumeAction::RemainRetryable);
+    QCOMPARE(storageFailed.result, E_UNEXPECTED);
+    QCOMPARE(storageResets, 1);
+    QVERIFY(!storageSubscription);
+    QVERIFY(!storageStored);
+    QCOMPARE(storageResumeCalls, 0);
+    QCOMPARE(storageRollbackCalls, 0);
+
+    const auto [resumeFailed, resumeResets, resumeSubscription, resumeStored,
+                resumeCalls, resumeRollbackCalls] =
+        run(S_OK, S_OK, true, E_ABORT);
+    QCOMPARE(resumeFailed.action, DownloadResumeAction::RemainRetryable);
+    QVERIFY(FAILED(resumeFailed.result));
+    QCOMPARE(resumeResets, 1);
+    QVERIFY(!resumeSubscription);
+    QVERIFY(resumeStored);
+    QCOMPARE(resumeCalls, 1);
+    QCOMPARE(resumeRollbackCalls, 1);
+
+    const auto [resumed, resumedResets, resumedSubscription, resumedStored,
+                resumedCalls, resumedRollbackCalls] =
+        run(S_OK, S_OK, true, S_OK);
+    QCOMPARE(resumed.action, DownloadResumeAction::Resumed);
+    QCOMPARE(resumed.result, S_OK);
+    QCOMPARE(resumedResets, 0);
+    QVERIFY(resumedSubscription);
+    QVERIFY(resumedStored);
+    QCOMPARE(resumedCalls, 1);
+    QCOMPARE(resumedRollbackCalls, 0);
+}
+
 void WebView2BrowserTest::downloadTerminalSnapshotSurvivesProgressReadFailures() {
     FakeDownloadSnapshotOperation completedOperation;
     completedOperation.state = COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
@@ -1799,11 +2015,86 @@ void WebView2BrowserTest::downloadTerminalSnapshotSurvivesProgressReadFailures()
     QCOMPARE(interrupted.totalBytes, std::int64_t{800});
     QCOMPARE(interruptedOperation.calls.front(), QStringLiteral("state"));
 
+    FakeDownloadSnapshotOperation resumableOperation;
+    resumableOperation.state = COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED;
+    resumableOperation.interruptReason =
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED;
+    resumableOperation.canResume = TRUE;
+    const DownloadSnapshot resumable = readDownloadSnapshot(
+        &resumableOperation, 500, false);
+    QVERIFY(resumable.hasState);
+    QVERIFY(resumable.isTerminal);
+    QVERIFY(resumable.canResume);
+    QCOMPARE(resumable.state,
+             gui::BrowserDownloadState::RetryableFailure);
+    QVERIFY(std::find(resumableOperation.calls.cbegin(),
+                      resumableOperation.calls.cend(),
+                      QStringLiteral("can_resume")) !=
+            resumableOperation.calls.cend());
+
+    FakeDownloadSnapshotOperation nonResumableOperation;
+    nonResumableOperation.state = COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED;
+    nonResumableOperation.interruptReason =
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED;
+    nonResumableOperation.canResume = FALSE;
+    const DownloadSnapshot nonResumable = readDownloadSnapshot(
+        &nonResumableOperation, 500, false);
+    QCOMPARE(nonResumable.state, gui::BrowserDownloadState::Failed);
+    QVERIFY(!nonResumable.canResume);
+
+    FakeDownloadSnapshotOperation canResumeReadFailed;
+    canResumeReadFailed.state = COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED;
+    canResumeReadFailed.interruptReason =
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED;
+    canResumeReadFailed.canResumeResult = E_FAIL;
+    const DownloadSnapshot readFailed = readDownloadSnapshot(
+        &canResumeReadFailed, 500, false);
+    QCOMPARE(readFailed.state, gui::BrowserDownloadState::Failed);
+    QVERIFY(!readFailed.canResume);
+
     std::unordered_map<std::uint64_t, int> active{{7, 70}};
     QVERIFY(!eraseTerminalDownloadIfCurrent(active, 7, 11, 12, true));
     QCOMPARE(active.size(), std::size_t{1});
     active.clear();
     QVERIFY(!eraseTerminalDownloadIfCurrent(active, 7, 11, 11, false));
+}
+
+void WebView2BrowserTest::resumableDownloadsUseDedicatedBackendPath() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const int retryStart = source.indexOf(
+        QStringLiteral("void retryDownload("));
+    const int retryEnd = source.indexOf(
+        QStringLiteral("void answerExternalProtocol("), retryStart);
+    QVERIFY(retryStart >= 0);
+    QVERIFY(retryEnd > retryStart);
+    const QString retry = source.mid(retryStart, retryEnd - retryStart);
+
+    QVERIFY(source.contains(QStringLiteral("resumableDownloads_")));
+    QVERIFY(retry.contains(QStringLiteral("get_CanResume")));
+    QVERIFY(retry.contains(QStringLiteral("->Resume()")));
+    QVERIFY(retry.contains(QStringLiteral("resumableDownloads_.extract(found)")));
+    QVERIFY(retry.contains(QStringLiteral("previousUpdateSerial")));
+    QVERIFY(retry.contains(QStringLiteral("didSynchronouslyUpdate")));
+    QVERIFY(retry.contains(QStringLiteral("BrowserDownloadState::InProgress")));
+    QVERIFY(retry.contains(
+        QStringLiteral("BrowserDownloadState::RetryableFailure")));
+    QVERIFY(retry.contains(QStringLiteral("BrowserDownloadState::Failed")));
+    QVERIFY(source.contains(QStringLiteral(
+        "void WebView2BrowserBackend::retryDownload(")));
+
+    const int emitStart = source.indexOf(
+        QStringLiteral("void emitDownloadUpdate("));
+    const int emitEnd = source.indexOf(
+        QStringLiteral("void cancelPendingSensitiveRequests("), emitStart);
+    QVERIFY(emitStart >= 0);
+    QVERIFY(emitEnd > emitStart);
+    const QString emitBlock = source.mid(emitStart, emitEnd - emitStart);
+    QVERIFY(emitBlock.contains(QStringLiteral("snapshot.canResume")));
+    QVERIFY(emitBlock.contains(QStringLiteral("resumableDownloads_")));
 }
 
 void WebView2BrowserTest::shutdownPermanentlyRejectsReinitialization() {
@@ -1928,17 +2219,40 @@ void WebView2BrowserTest::mapsAndHandlesControllerAccelerators() {
         UINT virtualKey;
         bool isControlDown;
         bool isAltDown;
+        bool isShiftDown;
         gui::BrowserAccelerator accelerator;
     };
     const QList<Case> cases{
-        {static_cast<UINT>('L'), true, false,
+        {static_cast<UINT>('L'), true, false, false,
          gui::BrowserAccelerator::FocusAddress},
-        {VK_LEFT, false, true, gui::BrowserAccelerator::Back},
-        {VK_RIGHT, false, true, gui::BrowserAccelerator::Forward},
-        {static_cast<UINT>('R'), true, false,
+        {static_cast<UINT>('T'), true, false, false,
+         gui::BrowserAccelerator::NewTab},
+        {static_cast<UINT>('W'), true, false, false,
+         gui::BrowserAccelerator::CloseTab},
+        {VK_TAB, true, false, false, gui::BrowserAccelerator::NextTab},
+        {VK_TAB, true, false, true, gui::BrowserAccelerator::PreviousTab},
+        {static_cast<UINT>('F'), true, false, false,
+         gui::BrowserAccelerator::FindInPage},
+        {static_cast<UINT>('T'), true, false, true,
+         gui::BrowserAccelerator::ReopenClosedTab},
+        {VK_LEFT, false, true, false, gui::BrowserAccelerator::Back},
+        {VK_RIGHT, false, true, false, gui::BrowserAccelerator::Forward},
+        {static_cast<UINT>('R'), true, false, false,
          gui::BrowserAccelerator::Reload},
-        {VK_F5, false, false, gui::BrowserAccelerator::Reload},
-        {VK_ESCAPE, false, false, gui::BrowserAccelerator::ExitFullScreen},
+        {VK_OEM_PLUS, true, false, false,
+         gui::BrowserAccelerator::ZoomIn},
+        {VK_OEM_PLUS, true, false, true,
+         gui::BrowserAccelerator::ZoomIn},
+        {VK_ADD, true, false, false, gui::BrowserAccelerator::ZoomIn},
+        {VK_OEM_MINUS, true, false, false,
+         gui::BrowserAccelerator::ZoomOut},
+        {VK_SUBTRACT, true, false, false,
+         gui::BrowserAccelerator::ZoomOut},
+        {static_cast<UINT>('0'), true, false, false,
+         gui::BrowserAccelerator::ResetZoom},
+        {VK_F5, false, false, false, gui::BrowserAccelerator::Reload},
+        {VK_ESCAPE, false, false, false,
+         gui::BrowserAccelerator::ExitFullScreen},
     };
     for (const Case& item : cases) {
         FakeAcceleratorArgs args;
@@ -1947,7 +2261,7 @@ void WebView2BrowserTest::mapsAndHandlesControllerAccelerators() {
             args.kind = COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN;
         }
         const AcceleratorDispatch result = handleAcceleratorKey(
-            args, item.isControlDown, item.isAltDown, false, false,
+            args, item.isControlDown, item.isAltDown, item.isShiftDown, false,
             item.accelerator == gui::BrowserAccelerator::ExitFullScreen);
         QVERIFY(result.accelerator.has_value());
         QCOMPARE(*result.accelerator, item.accelerator);
@@ -1971,6 +2285,14 @@ void WebView2BrowserTest::mapsAndHandlesControllerAccelerators() {
         handleAcceleratorKey(keyUp, false, false, false, false, false);
     QVERIFY(!keyUpResult.accelerator.has_value());
     QCOMPARE(keyUp.handledCalls, 0);
+
+    FakeAcceleratorArgs shiftedWithoutControl;
+    shiftedWithoutControl.virtualKey = static_cast<UINT>('T');
+    const AcceleratorDispatch shiftedWithoutControlResult =
+        handleAcceleratorKey(shiftedWithoutControl, false, false, true, false,
+                             false);
+    QVERIFY(!shiftedWithoutControlResult.accelerator.has_value());
+    QCOMPARE(shiftedWithoutControl.handledCalls, 0);
 }
 
 void WebView2BrowserTest::acceleratorFailuresDoNotConsumeWebInput() {
@@ -2056,6 +2378,465 @@ void WebView2BrowserTest::registersAcceleratorBeforeReadyAndRevokesBeforeClose()
     const int close = release.indexOf(QStringLiteral("controller_->Close()"));
     QVERIFY(revoke >= 0);
     QVERIFY(close > revoke);
+}
+
+void WebView2BrowserTest::usesNativeFindForCurrentTabAndReleasesItBeforeClose() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabSourceFile.errorString()));
+    const QString tabSource = QString::fromUtf8(tabSourceFile.readAll());
+
+    const QStringList nativeFindMarkers{
+        QStringLiteral("ICoreWebView2_28"),
+        QStringLiteral("get_Find"),
+        QStringLiteral("ICoreWebView2Environment15"),
+        QStringLiteral("CreateFindOptions"),
+        QStringLiteral("put_FindTerm"),
+        QStringLiteral("put_IsCaseSensitive(FALSE)"),
+        QStringLiteral("put_ShouldHighlightAllMatches(TRUE)"),
+        QStringLiteral("put_ShouldMatchWord(FALSE)"),
+        QStringLiteral("put_SuppressDefaultFindDialog(TRUE)"),
+        QStringLiteral("add_ActiveMatchIndexChanged"),
+        QStringLiteral("add_MatchCountChanged"),
+        QStringLiteral("Start"),
+        QStringLiteral("FindNext"),
+        QStringLiteral("FindPrevious"),
+        QStringLiteral("Stop"),
+    };
+    for (const QString& marker : nativeFindMarkers) {
+        QVERIFY2(source.contains(marker), qPrintable(marker));
+        QVERIFY2(tabSource.contains(marker), qPrintable(marker));
+    }
+    QVERIFY(source.contains(QStringLiteral("found->second->findInPage")));
+    QVERIFY(source.contains(QStringLiteral("found->second->stopFinding")));
+    QVERIFY(!source.contains(QStringLiteral("ExecuteScript") +
+                             QStringLiteral("(find")));
+    QVERIFY(!tabSource.contains(QStringLiteral("window.find")));
+
+    const int mainReleaseStart = source.indexOf(
+        QStringLiteral("void releaseBrowserResources() noexcept"));
+    const int mainReleaseEnd = source.indexOf(
+        QStringLiteral("void releaseComApartment() noexcept"), mainReleaseStart);
+    const QString mainRelease =
+        source.mid(mainReleaseStart, mainReleaseEnd - mainReleaseStart);
+    const int mainFindRelease = mainRelease.indexOf(
+        QStringLiteral("releaseMainFindController()"));
+    const int mainControllerClose =
+        mainRelease.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(mainFindRelease >= 0);
+    QVERIFY(mainControllerClose > mainFindRelease);
+
+    const int releaseHelperStart = source.indexOf(
+        QStringLiteral("void releaseMainFindController() noexcept"));
+    const int releaseHelperEnd = source.indexOf(
+        QStringLiteral("bool isActive("), releaseHelperStart);
+    const QString releaseHelper =
+        source.mid(releaseHelperStart, releaseHelperEnd - releaseHelperStart);
+    QVERIFY(releaseHelper.contains(
+        QStringLiteral("findActiveMatchIndexChanged_.reset()")));
+    QVERIFY(releaseHelper.contains(
+        QStringLiteral("findMatchCountChanged_.reset()")));
+
+    const int tabCloseStart = tabSource.indexOf(
+        QStringLiteral("void WebView2TabController::close() noexcept"));
+    const QString tabClose = tabSource.mid(tabCloseStart);
+    const int tabFindRelease = tabClose.indexOf(
+        QStringLiteral("releaseFindController()"));
+    const int tabControllerClose =
+        tabClose.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(tabFindRelease >= 0);
+    QVERIFY(tabControllerClose > tabFindRelease);
+
+    const int tabReleaseHelperStart = tabSource.indexOf(
+        QStringLiteral("void WebView2TabController::releaseFindController() noexcept"));
+    const int tabReleaseHelperEnd = tabSource.indexOf(
+        QStringLiteral("void WebView2TabController::setBounds"),
+        tabReleaseHelperStart);
+    const QString tabReleaseHelper = tabSource.mid(
+        tabReleaseHelperStart, tabReleaseHelperEnd - tabReleaseHelperStart);
+    QVERIFY(tabReleaseHelper.contains(
+        QStringLiteral("findActiveMatchIndexChanged_.reset()")));
+    QVERIFY(tabReleaseHelper.contains(
+        QStringLiteral("findMatchCountChanged_.reset()")));
+
+    const QStringList raceSafetyMarkers{
+        QStringLiteral("mainFindRequestSerial_"),
+        QStringLiteral("nextMainFindRequestSerial"),
+        QStringLiteral("isCurrentMainFindRequest"),
+        QStringLiteral("observeMainFindResults"),
+        QStringLiteral("generation != generation_ ||"),
+        QStringLiteral("requestSerial != mainFindRequestSerial_"),
+        QStringLiteral("stopMainFinding"),
+    };
+    for (const QString& marker : raceSafetyMarkers) {
+        QVERIFY2(source.contains(marker), qPrintable(marker));
+    }
+
+    const QStringList tabRaceSafetyMarkers{
+        QStringLiteral("findRequestSerial_"),
+        QStringLiteral("nextFindRequestSerial"),
+        QStringLiteral("isCurrentFindRequest"),
+        QStringLiteral("observeFindResults"),
+        QStringLiteral("generation != generation_ ||"),
+        QStringLiteral("requestSerial != findRequestSerial_"),
+        QStringLiteral("stopFinding(true)"),
+    };
+    for (const QString& marker : tabRaceSafetyMarkers) {
+        QVERIFY2(tabSource.contains(marker), qPrintable(marker));
+    }
+}
+
+void WebView2BrowserTest::registersAudioStateForEveryTabAndKeepsMuteIndependent() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabSourceFile.errorString()));
+    const QString tabSource = QString::fromUtf8(tabSourceFile.readAll());
+    QFile tabHeaderFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.h"));
+    QVERIFY2(tabHeaderFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabHeaderFile.errorString()));
+    const QString tabHeader = QString::fromUtf8(tabHeaderFile.readAll());
+
+    const auto segment = [](const QString& content, const QString& start,
+                            const QString& end) {
+        const int startIndex = content.indexOf(start);
+        const int endIndex = content.indexOf(end, startIndex + start.size());
+        return startIndex >= 0 && endIndex > startIndex
+                   ? content.mid(startIndex, endIndex - startIndex)
+                   : QString{};
+    };
+
+    const QString registerEvents = segment(
+        source, QStringLiteral("HRESULT registerEvents()"),
+        QStringLiteral("HRESULT handlePermissionRequest("));
+    QVERIFY(!registerEvents.isEmpty());
+    QVERIFY(registerEvents.contains(
+        QStringLiteral("registerDocumentPlayingAudioChanged()")));
+    const QString mainAudioHandler = segment(
+        source, QStringLiteral("HRESULT registerDocumentPlayingAudioChanged()"),
+        QStringLiteral("HRESULT registerAcceleratorKeyPressed()"));
+    const QStringList mainAudioMarkers{
+        QStringLiteral("ICoreWebView2_8"),
+        QStringLiteral("add_IsDocumentPlayingAudioChanged"),
+        QStringLiteral("get_IsDocumentPlayingAudio"),
+        QStringLiteral("onTabAudioStateChanged"),
+        QStringLiteral("remove_IsDocumentPlayingAudioChanged"),
+    };
+    QVERIFY(!mainAudioHandler.isEmpty());
+    for (const QString& marker : mainAudioMarkers) {
+        QVERIFY2(mainAudioHandler.contains(marker), qPrintable(marker));
+    }
+    const QString release = segment(
+        source, QStringLiteral("void releaseBrowserResources() noexcept"),
+        QStringLiteral("void releaseComApartment() noexcept"));
+    const int mainAudioReset =
+        release.indexOf(QStringLiteral("documentPlayingAudioChanged_.reset()"));
+    const int mainControllerClose =
+        release.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(mainAudioReset >= 0);
+    QVERIFY(mainControllerClose > mainAudioReset);
+
+    const QString tabEvents = segment(
+        tabSource, QStringLiteral("HRESULT WebView2TabController::registerEvents()"),
+        QStringLiteral("void WebView2TabController::emitNavigationSnapshot("));
+    const QStringList tabAudioMarkers{
+        QStringLiteral("add_IsDocumentPlayingAudioChanged"),
+        QStringLiteral("get_IsDocumentPlayingAudio"),
+        QStringLiteral("audioStateCallback_"),
+        QStringLiteral("remove_IsDocumentPlayingAudioChanged"),
+    };
+    QVERIFY(!tabEvents.isEmpty());
+    for (const QString& marker : tabAudioMarkers) {
+        QVERIFY2(tabEvents.contains(marker), qPrintable(marker));
+    }
+    const QString tabClose = segment(
+        tabSource, QStringLiteral("void WebView2TabController::close() noexcept"),
+        QStringLiteral("}  // namespace mediahub::browser_webview2"));
+    const int tabAudioReset =
+        tabClose.indexOf(QStringLiteral("documentPlayingAudioChanged_.reset()"));
+    const int tabControllerClose =
+        tabClose.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(tabAudioReset >= 0);
+    QVERIFY(tabControllerClose > tabAudioReset);
+
+    const QString activateTab = segment(
+        source, QStringLiteral("void activateTab("),
+        QStringLiteral("void goBack() noexcept"));
+    QVERIFY(activateTab.contains(QStringLiteral("put_IsVisible")));
+    QVERIFY(activateTab.contains(QStringLiteral("setVisible")));
+    QVERIFY(!activateTab.contains(QStringLiteral("setAudioMuted")));
+
+    const QString createTab = segment(
+        source, QStringLiteral("[[nodiscard]] bool createTab("),
+        QStringLiteral("void closeTab("));
+    QVERIFY(createTab.contains(QStringLiteral(
+        "isAudioMutedDesired_ || isTabAudioMuted(tabId)")));
+    const QString setGlobalMute = segment(
+        source, QStringLiteral("void setAudioMuted("),
+        QStringLiteral("void setTabAudioMuted("));
+    QVERIFY(setGlobalMute.contains(QStringLiteral(
+        "isMuted || isTabAudioMuted(tabId)")));
+    const QString setTabMute = segment(
+        source, QStringLiteral("void setTabAudioMuted("),
+        QStringLiteral("[[nodiscard]] bool isTabAudioMuted("));
+    QVERIFY(setTabMute.contains(QStringLiteral("tabAudioMuted_[tabId] = isMuted")));
+    QVERIFY(setTabMute.contains(QStringLiteral(
+        "isAudioMutedDesired_ || isMuted")));
+    const QString effectiveMute = segment(
+        source, QStringLiteral("void applyEffectiveAudioMute() noexcept"),
+        QStringLiteral("void setSuspended("));
+    QVERIFY(effectiveMute.contains(QStringLiteral("isAudioMutedDesired_")));
+    QVERIFY(effectiveMute.contains(QStringLiteral("isTabAudioMuted(1)")));
+    QVERIFY(effectiveMute.contains(QStringLiteral("suspension_.mustMute()")));
+    QVERIFY(!effectiveMute.contains(QStringLiteral("activeTabId_")));
+
+    QVERIFY(source.contains(QStringLiteral("bool isAudioMutedDesired_{false}")));
+    QVERIFY(tabHeader.contains(QStringLiteral("bool isAudioMuted_{false}")));
+}
+
+void WebView2BrowserTest::faviconStreamReaderAcceptsPngAndRejectsUnsafePayloads() {
+    const auto streamForBytes = [](const QByteArray& bytes) {
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+        if (memory == nullptr) {
+            return Microsoft::WRL::ComPtr<IStream>{};
+        }
+        void* const destination = GlobalLock(memory);
+        if (destination == nullptr) {
+            GlobalFree(memory);
+            return Microsoft::WRL::ComPtr<IStream>{};
+        }
+        if (!bytes.isEmpty()) {
+            std::memcpy(destination, bytes.constData(), bytes.size());
+        }
+        GlobalUnlock(memory);
+        Microsoft::WRL::ComPtr<IStream> stream;
+        if (FAILED(CreateStreamOnHGlobal(memory, TRUE, &stream))) {
+            GlobalFree(memory);
+            return Microsoft::WRL::ComPtr<IStream>{};
+        }
+        return stream;
+    };
+
+    QByteArray valid("\x89PNG\r\n\x1a\n", 8);
+    valid.append("test-payload");
+    auto validStream = streamForBytes(valid);
+    QVERIFY(validStream != nullptr);
+    QByteArray output;
+    QCOMPARE(readFaviconPngStream(validStream.Get(), output), S_OK);
+    QCOMPARE(output, valid);
+
+    auto invalidStream = streamForBytes(QByteArrayLiteral("not-a-png"));
+    QVERIFY(invalidStream != nullptr);
+    QCOMPARE(readFaviconPngStream(invalidStream.Get(), output), E_INVALIDARG);
+    QVERIFY(output.isEmpty());
+
+    QByteArray oversized(1024 * 1024 + 1, '\0');
+    oversized.replace(0, 8, QByteArray("\x89PNG\r\n\x1a\n", 8));
+    auto oversizedStream = streamForBytes(oversized);
+    QVERIFY(oversizedStream != nullptr);
+    QCOMPARE(readFaviconPngStream(oversizedStream.Get(), output), E_INVALIDARG);
+    QVERIFY(output.isEmpty());
+    QCOMPARE(readFaviconPngStream(nullptr, output), E_POINTER);
+}
+
+void WebView2BrowserTest::registersFaviconAndZoomForEveryTab() {
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabSourceFile.errorString()));
+    const QString tabSource = QString::fromUtf8(tabSourceFile.readAll());
+
+    const QStringList markers{
+        QStringLiteral("ICoreWebView2_15"),
+        QStringLiteral("add_FaviconChanged"),
+        QStringLiteral("GetFavicon("),
+        QStringLiteral("COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG"),
+        QStringLiteral("remove_FaviconChanged"),
+        QStringLiteral("add_ZoomFactorChanged"),
+        QStringLiteral("get_ZoomFactor"),
+        QStringLiteral("put_ZoomFactor"),
+        QStringLiteral("remove_ZoomFactorChanged"),
+        QStringLiteral("std::clamp(zoomFactor, 0.25, 5.0)"),
+    };
+    for (const QString& marker : markers) {
+        QVERIFY2(source.contains(marker), qPrintable(marker));
+        QVERIFY2(tabSource.contains(marker), qPrintable(marker));
+    }
+    QVERIFY(source.contains(QStringLiteral("mainFaviconRequestSerial_")));
+    QVERIFY(source.contains(QStringLiteral("isCurrentMainFaviconRequest")));
+    QVERIFY(tabSource.contains(QStringLiteral("faviconRequestSerial_")));
+    QVERIFY(tabSource.contains(QStringLiteral("isCurrentFaviconRequest")));
+    QVERIFY(source.contains(QStringLiteral("dispatchTabListener(")));
+    QVERIFY(!source.contains(QStringLiteral("get_FaviconUri")));
+    QVERIFY(!tabSource.contains(QStringLiteral("get_FaviconUri")));
+    QVERIFY(!source.contains(QStringLiteral("QNetworkAccessManager")));
+    QVERIFY(!tabSource.contains(QStringLiteral("QNetworkAccessManager")));
+
+    const int mainCloseStart = source.indexOf(
+        QStringLiteral("void closeTab(const std::uint64_t tabId)"));
+    const int mainCloseEnd = source.indexOf(
+        QStringLiteral("void activateTab("), mainCloseStart);
+    const QString mainClose =
+        source.mid(mainCloseStart, mainCloseEnd - mainCloseStart);
+    const int faviconReset =
+        mainClose.indexOf(QStringLiteral("faviconChanged_.reset()"));
+    const int zoomReset =
+        mainClose.indexOf(QStringLiteral("zoomFactorChanged_.reset()"));
+    const int controllerClose =
+        mainClose.indexOf(QStringLiteral("controller_->Close()"));
+    QVERIFY(faviconReset >= 0);
+    QVERIFY(zoomReset >= 0);
+    QVERIFY(controllerClose > faviconReset);
+    QVERIFY(controllerClose > zoomReset);
+    QVERIFY(mainClose.contains(QStringLiteral("tabZoomFactors_.erase(tabId)")));
+
+    const int tabCloseStart = tabSource.indexOf(
+        QStringLiteral("void WebView2TabController::close() noexcept"));
+    const QString tabClose = tabSource.mid(tabCloseStart);
+    QVERIFY(tabClose.indexOf(QStringLiteral("faviconChanged_.reset()")) >= 0);
+    QVERIFY(tabClose.indexOf(QStringLiteral("zoomFactorChanged_.reset()")) >= 0);
+    QVERIFY(tabClose.indexOf(QStringLiteral("controller_->Close()")) >
+            tabClose.indexOf(QStringLiteral("faviconChanged_.reset()")));
+
+    const int activateStart = source.indexOf(QStringLiteral("void activateTab("));
+    const int activateEnd = source.indexOf(QStringLiteral("void goBack()"),
+                                           activateStart);
+    const QString activate =
+        source.mid(activateStart, activateEnd - activateStart);
+    QVERIFY(!activate.contains(QStringLiteral("put_ZoomFactor")));
+    QVERIFY(!activate.contains(QStringLiteral("setZoomFactor")));
+}
+
+void WebView2BrowserTest::mapsAndRevokesProcessFailureForEveryTab() {
+    QCOMPARE(classifyProcessFailureKind(
+                 COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED),
+             gui::BrowserProcessFailureKind::BrowserProcessExited);
+    QCOMPARE(classifyProcessFailureKind(
+                 COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED),
+             gui::BrowserProcessFailureKind::RenderProcessExited);
+    QCOMPARE(classifyProcessFailureKind(
+                 COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED),
+             gui::BrowserProcessFailureKind::RenderProcessExited);
+    QCOMPARE(classifyProcessFailureKind(
+                 COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE),
+             gui::BrowserProcessFailureKind::RenderProcessUnresponsive);
+    QCOMPARE(classifyProcessFailureKind(
+                 COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED),
+             gui::BrowserProcessFailureKind::OtherProcessExited);
+
+    QFile typesFile(
+        QStringLiteral(MEDIAHUB_SOURCE_DIR "/apps/gui/browser_types.h"));
+    QVERIFY2(typesFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(typesFile.errorString()));
+    const QString types = QString::fromUtf8(typesFile.readAll());
+    QFile listenerFile(
+        QStringLiteral(MEDIAHUB_SOURCE_DIR "/apps/gui/browser_event_listener.h"));
+    QVERIFY2(listenerFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(listenerFile.errorString()));
+    const QString listener = QString::fromUtf8(listenerFile.readAll());
+    QVERIFY(types.contains(QStringLiteral("enum class BrowserProcessFailureKind")));
+    QVERIFY(!types.contains(QStringLiteral("COREWEBVIEW2_PROCESS_FAILED_KIND")));
+    QVERIFY(listener.contains(QStringLiteral("onTabProcessFailed")));
+    QVERIFY(!listener.contains(QStringLiteral("ICoreWebView2ProcessFailedEventArgs")));
+
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    QFile tabSourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_tab_controller.cpp"));
+    QVERIFY2(tabSourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(tabSourceFile.errorString()));
+    const QString tabSource = QString::fromUtf8(tabSourceFile.readAll());
+
+    const QStringList requiredMarkers{
+        QStringLiteral("add_ProcessFailed"),
+        QStringLiteral("get_ProcessFailedKind"),
+        QStringLiteral("classifyProcessFailureKind"),
+        QStringLiteral("remove_ProcessFailed"),
+    };
+    for (const QString& marker : requiredMarkers) {
+        QVERIFY2(source.contains(marker), qPrintable(marker));
+        QVERIFY2(tabSource.contains(marker), qPrintable(marker));
+    }
+    QVERIFY(source.contains(QStringLiteral("onTabProcessFailed")));
+    QVERIFY(tabSource.contains(QStringLiteral("processFailedCallback_")));
+    QVERIFY(source.contains(QStringLiteral("dispatchListener(")));
+    QVERIFY(source.contains(QStringLiteral("dispatchTabListener(")));
+    QVERIFY(source.contains(QStringLiteral(
+        "found->second->generation() != failedGeneration")));
+    QVERIFY(source.contains(QStringLiteral("hasReportedBrowserProcessFailure_")));
+    QVERIFY(source.contains(QStringLiteral("const std::uint64_t reportedTabId")));
+    QVERIFY(source.contains(QStringLiteral("const std::uint64_t reportedGeneration")));
+    QVERIFY(source.contains(QStringLiteral("generation_ != reportedGeneration")));
+    QVERIFY(source.contains(
+        QStringLiteral("controller_ == nullptr || webView_ == nullptr")));
+
+    const int mainReleaseStart = source.indexOf(
+        QStringLiteral("void releaseBrowserResources() noexcept"));
+    const int mainReleaseEnd = source.indexOf(
+        QStringLiteral("void releaseComApartment() noexcept"), mainReleaseStart);
+    const QString mainRelease =
+        source.mid(mainReleaseStart, mainReleaseEnd - mainReleaseStart);
+    QVERIFY(mainRelease.indexOf(QStringLiteral("processFailed_.reset()")) >= 0);
+    QVERIFY(mainRelease.indexOf(QStringLiteral("controller_->Close()")) >
+            mainRelease.indexOf(QStringLiteral("processFailed_.reset()")));
+
+    const int tabCloseStart = tabSource.indexOf(
+        QStringLiteral("void WebView2TabController::close() noexcept"));
+    const QString tabClose = tabSource.mid(tabCloseStart);
+    QVERIFY(tabClose.indexOf(QStringLiteral("processFailed_.reset()")) >= 0);
+    QVERIFY(tabClose.indexOf(QStringLiteral("controller_->Close()")) >
+            tabClose.indexOf(QStringLiteral("processFailed_.reset()")));
+}
+
+void WebView2BrowserTest::exposesUserInitiatedTabRecoveryWithoutSensitiveData() {
+    QFile backendHeader(
+        QStringLiteral(MEDIAHUB_SOURCE_DIR "/apps/gui/browser_backend.h"));
+    QVERIFY2(backendHeader.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(backendHeader.errorString()));
+    const QString interfaceSource = QString::fromUtf8(backendHeader.readAll());
+    QVERIFY(interfaceSource.contains(QStringLiteral("bool recoverTab(std::uint64_t tabId,")));
+    QVERIFY(!interfaceSource.contains(QStringLiteral("ICoreWebView2")));
+
+    QFile sourceFile(QStringLiteral(
+        MEDIAHUB_SOURCE_DIR "/src/browser_webview2/webview2_browser_backend.cpp"));
+    QVERIFY2(sourceFile.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(sourceFile.errorString()));
+    const QString source = QString::fromUtf8(sourceFile.readAll());
+    const int recoveryStart = source.indexOf(
+        QStringLiteral("bool recoverTab(const std::uint64_t tabId,"));
+    const int recoveryEnd = source.indexOf(
+        QStringLiteral("void findInPage("), recoveryStart);
+    QVERIFY(recoveryStart >= 0);
+    QVERIFY(recoveryEnd > recoveryStart);
+    const QString recovery = source.mid(recoveryStart,
+                                        recoveryEnd - recoveryStart);
+    QVERIFY(recovery.contains(QStringLiteral("webView_->Reload()")));
+    QVERIFY(recovery.contains(QStringLiteral("found->second->reload(generation)")));
+    QVERIFY(!recovery.contains(QStringLiteral("reloadOrStop()")));
+    QVERIFY(recovery.contains(QStringLiteral("navigation_.acceptNavigate(generation)")));
+    QVERIFY(recovery.contains(QStringLiteral("return SUCCEEDED(result)")));
+    QVERIFY(!recovery.contains(QStringLiteral("webView_->Navigate(")));
+    QVERIFY(!recovery.contains(QStringLiteral("normalizedUrl")));
 }
 
 void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
@@ -2159,7 +2940,7 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
          {QStringLiteral("prepareDownloadRequest"),
           QStringLiteral("completeDownloadCancellation"),
           QStringLiteral("pendingDownloads_.insert"),
-          QStringLiteral("onDownloadRequested")}},
+          QStringLiteral("onTabDownloadRequested(")}},
         {handlerSegment(
              QStringLiteral("HRESULT registerServerCertificateErrorDetected()"),
              QStringLiteral("HRESULT registerLaunchingExternalUriScheme()")),
@@ -2239,7 +3020,7 @@ void WebView2BrowserTest::requiresEverySensitiveHandlerBeforeReady() {
     QVERIFY(dispatchEnd > dispatchStart);
     const QString dispatchers =
         source.mid(dispatchStart, dispatchEnd - dispatchStart);
-    QCOMPARE(dispatchers.count(QStringLiteral("Qt::QueuedConnection")), 2);
+    QCOMPARE(dispatchers.count(QStringLiteral("Qt::QueuedConnection")), 3);
     QVERIFY(!dispatchers.contains(QStringLiteral("QThread::currentThread")));
     QVERIFY(source.contains(QStringLiteral("std::make_unique<WebView2TabController>")));
     QVERIFY(!source.contains(QStringLiteral("std::make_unique<WebView2PopupWindow>")));
@@ -2940,7 +3721,7 @@ void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {
     testWindow.show();
     QVERIFY(QTest::qWaitForWindowExposed(&testWindow, 5000));
 
-    QTemporaryDir testProfile;
+    TemporaryWebView2Profile testProfile;
     QVERIFY(testProfile.isValid());
 
     std::ostringstream browserLog;
@@ -2970,7 +3751,7 @@ void WebView2BrowserTest::reportsRuntimeStatusWithoutBlockingGuiThread() {
 
     backend.setEventListener(nullptr);
     backend.shutdown();
-    QVERIFY(removeTemporaryProfile(testProfile.path(), 5000));
+    QVERIFY(testProfile.cleanup());
 }
 
 }  // namespace

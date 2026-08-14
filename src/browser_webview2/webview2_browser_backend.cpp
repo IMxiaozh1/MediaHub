@@ -9,6 +9,7 @@
 #include <wrl.h>
 
 #include <QApplication>
+#include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QMetaObject>
@@ -227,6 +228,7 @@ class WebView2BrowserBackend::Impl final {
         std::int64_t totalBytes{-1};
         std::uint64_t lifecycleSerial{0};
         std::uint64_t generation{0};
+        std::uint64_t tabId{0};
     };
 
     struct ActiveDownload final {
@@ -235,6 +237,9 @@ class WebView2BrowserBackend::Impl final {
         EventRegistration stateChanged;
         std::int64_t totalBytes{-1};
         std::uint64_t lifecycleSerial{0};
+        std::uint64_t generation{0};
+        std::uint64_t tabId{0};
+        std::uint64_t updateSerial{0};
         bool isCancelRequested{false};
 
         void resetSubscriptions() noexcept {
@@ -268,6 +273,7 @@ class WebView2BrowserBackend::Impl final {
 
         isShuttingDown_ = false;
         isReady_ = false;
+        hasReportedBrowserProcessFailure_ = false;
         generation_ = generation;
         navigation_.reset(generation);
         lifetime_ = std::make_shared<int>(0);
@@ -335,6 +341,8 @@ class WebView2BrowserBackend::Impl final {
                 return;
             }
         }
+        stopMainFinding(true);
+        clearMainFavicon(generation);
         isClearedBlankSnapshotSuppressed_ = false;
         generation_ = generation;
         navigation_.setCurrentGeneration(generation);
@@ -448,6 +456,38 @@ class WebView2BrowserBackend::Impl final {
                                             static_cast<long>(result));
                     });
             },
+            [this](const std::uint64_t failedTabId,
+                   const std::uint64_t failedGeneration,
+                   const gui::BrowserProcessFailureKind kind) {
+                const std::uint64_t reportedGeneration =
+                    kind == gui::BrowserProcessFailureKind::BrowserProcessExited
+                        ? generation_
+                        : failedGeneration;
+                dispatchTabListener(
+                    [this, failedTabId, failedGeneration, reportedGeneration,
+                     kind](
+                        gui::BrowserEventListener& listener) {
+                        const auto found = tabControllers_.find(failedTabId);
+                        if (found == tabControllers_.end() ||
+                            found->second->generation() != failedGeneration) {
+                            return;
+                        }
+                        if (kind == gui::BrowserProcessFailureKind::BrowserProcessExited) {
+                            if (controller_ == nullptr || webView_ == nullptr ||
+                                generation_ != reportedGeneration ||
+                                hasReportedBrowserProcessFailure_) {
+                                return;
+                            }
+                            hasReportedBrowserProcessFailure_ = true;
+                        }
+                        const std::uint64_t reportedTabId =
+                            kind == gui::BrowserProcessFailureKind::BrowserProcessExited
+                                ? 1
+                                : failedTabId;
+                        listener.onTabProcessFailed(reportedTabId,
+                                                    reportedGeneration, kind);
+                    });
+            },
             [this](ICoreWebView2NewWindowRequestedEventArgs* args) {
                 return handleNewWindowRequest(args);
             },
@@ -466,8 +506,58 @@ class WebView2BrowserBackend::Impl final {
                             gui::BrowserEventListener& listener) {
                             listener.onFullScreenChanged(fullScreenGeneration,
                                                          isFullScreen);
-                        });
+                    });
                 }
+            },
+            [this](const std::uint64_t audioTabId,
+                   const std::uint64_t audioGeneration,
+                   const bool isPlayingAudio) {
+                dispatchTabListener(
+                    [audioTabId, audioGeneration, isPlayingAudio](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabAudioStateChanged(
+                            audioTabId, audioGeneration, isPlayingAudio);
+                    });
+            },
+            [this](const std::uint64_t faviconTabId,
+                   const std::uint64_t faviconGeneration,
+                   const std::uint64_t faviconRequestSerial,
+                   const QByteArray& pngBytes) {
+                dispatchTabListener(
+                    [this, faviconTabId, faviconGeneration,
+                     faviconRequestSerial, pngBytes](
+                        gui::BrowserEventListener& listener) {
+                        const auto found = tabControllers_.find(faviconTabId);
+                        if (found == tabControllers_.end() ||
+                            !found->second->isCurrentFaviconRequest(
+                                faviconGeneration, faviconRequestSerial)) {
+                            return;
+                        }
+                        listener.onTabFaviconChanged(
+                            faviconTabId, faviconGeneration, pngBytes);
+                    });
+            },
+            [this](const std::uint64_t faviconTabId,
+                   const std::uint64_t faviconGeneration,
+                   const HRESULT result) {
+                Q_UNUSED(faviconTabId);
+                Q_UNUSED(faviconGeneration);
+                logOperationFailure("tab_favicon_failed", result);
+            },
+            [this](const std::uint64_t zoomTabId,
+                   const std::uint64_t zoomGeneration,
+                   const double zoomFactor) {
+                dispatchTabListener(
+                    [this, zoomTabId, zoomGeneration, zoomFactor](
+                        gui::BrowserEventListener& listener) {
+                        const auto found = tabControllers_.find(zoomTabId);
+                        if (found == tabControllers_.end() ||
+                            found->second->generation() != zoomGeneration) {
+                            return;
+                        }
+                        listener.onTabZoomFactorChanged(
+                            zoomTabId, zoomGeneration, zoomFactor);
+                    });
             },
             [this](const std::uint64_t acceleratorTabId,
                    const std::uint64_t acceleratorGeneration,
@@ -480,6 +570,44 @@ class WebView2BrowserBackend::Impl final {
                                 acceleratorGeneration, accelerator);
                     });
                 }
+            },
+            [this](const std::uint64_t findTabId,
+                   const std::uint64_t findGeneration,
+                   const std::uint64_t findRequestSerial,
+                   const int activeMatchIndex, const int matchCount) {
+                dispatchTabListener(
+                    [this, findTabId, findGeneration, findRequestSerial,
+                     activeMatchIndex, matchCount](
+                        gui::BrowserEventListener& listener) {
+                        const auto found = tabControllers_.find(findTabId);
+                        if (found == tabControllers_.end() ||
+                            !found->second->isCurrentFindRequest(
+                                findGeneration, findRequestSerial)) {
+                            return;
+                        }
+                        listener.onFindResultChanged(
+                            findTabId, findGeneration, activeMatchIndex,
+                            matchCount);
+                    });
+            },
+            [this](const std::uint64_t findTabId,
+                   const std::uint64_t findGeneration,
+                   const std::uint64_t findRequestSerial,
+                   const HRESULT result) {
+                logOperationFailure("tab_find_failed", result);
+                dispatchTabListener(
+                    [this, findTabId, findGeneration, findRequestSerial,
+                     result](
+                        gui::BrowserEventListener& listener) {
+                        const auto found = tabControllers_.find(findTabId);
+                        if (found == tabControllers_.end() ||
+                            !found->second->isCurrentFindRequest(
+                                findGeneration, findRequestSerial)) {
+                            return;
+                        }
+                        listener.onFindFailed(findTabId, findGeneration,
+                                              static_cast<long>(result));
+                    });
             },
             [this](const std::uint64_t tabId,
                    const std::uint64_t tabGeneration,
@@ -509,7 +637,8 @@ class WebView2BrowserBackend::Impl final {
             });
         tab->setBounds(bounds_);
         tab->setVisible(isVisible_ && activeTabId_ == tabId);
-        tab->setAudioMuted(isAudioMutedDesired_ || activeTabId_ != tabId);
+        tab->setAudioMuted(isAudioMutedDesired_ || isTabAudioMuted(tabId));
+        tab->setZoomFactor(tabZoomFactor(tabId));
         const HRESULT result = tab->create(
             initialUrl, generation,
             pendingNewWindow.has_value() ? pendingNewWindow->args.Get() : nullptr,
@@ -536,12 +665,20 @@ class WebView2BrowserBackend::Impl final {
             screenCaptureStarting_.reset();
             permissionRequested_.reset();
             fullScreenChanged_.reset();
+            processFailed_.reset();
+            releaseMainFindController();
+            static_cast<void>(nextMainFaviconRequestSerial());
+            zoomFactorChanged_.reset();
+            faviconChanged_.reset();
+            documentPlayingAudioChanged_.reset();
             documentTitleChanged_.reset();
             navigationCompleted_.reset();
             navigationStarting_.reset();
             static_cast<void>(controller_->Close());
             webView_.Reset();
             controller_.Reset();
+            tabAudioMuted_.erase(tabId);
+            tabZoomFactors_.erase(tabId);
             navigation_.reset(generation_);
             return;
         }
@@ -549,6 +686,8 @@ class WebView2BrowserBackend::Impl final {
         if (found != tabControllers_.end()) {
             found->second->close();
             tabControllers_.erase(found);
+            tabAudioMuted_.erase(tabId);
+            tabZoomFactors_.erase(tabId);
         }
     }
 
@@ -565,7 +704,6 @@ class WebView2BrowserBackend::Impl final {
         for (auto& [candidateId, controller] : tabControllers_) {
             const bool isActive = candidateId == tabId;
             controller->setVisible(isVisible_ && isActive);
-            controller->setAudioMuted(isAudioMutedDesired_ || !isActive);
         }
     }
 
@@ -608,6 +746,50 @@ class WebView2BrowserBackend::Impl final {
         logOperationFailure(isNavigating ? "stop_failed" : "reload_failed", result);
     }
 
+    // 调用线程：GUI 主线程。渲染进程失败时 WebView2 建议重新加载对应网页实例。
+    [[nodiscard]] bool recoverTab(const std::uint64_t tabId,
+                                  const std::uint64_t generation) noexcept {
+        if (tabId == 1) {
+            if (webView_ == nullptr) {
+                return false;
+            }
+            const HRESULT result = webView_->Reload();
+            logOperationFailure("tab_recovery_failed", result);
+            if (SUCCEEDED(result)) {
+                generation_ = generation;
+                navigation_.acceptNavigate(generation);
+            }
+            return SUCCEEDED(result);
+        }
+        const auto found = tabControllers_.find(tabId);
+        return found != tabControllers_.end() &&
+               found->second->reload(generation);
+    }
+
+    // 调用线程：GUI 主线程。只将查询传给当前标签的 WebView2 原生 Find 对象。
+    void findInPage(const QString& text, const bool forward) noexcept {
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) {
+                found->second->findInPage(text, forward);
+                return;
+            }
+        }
+        findInMainPage(text, forward);
+    }
+
+    // 调用线程：GUI 主线程。
+    void stopFinding(const bool clearSelection) noexcept {
+        if (activeTabId_ != 1) {
+            const auto found = tabControllers_.find(activeTabId_);
+            if (found != tabControllers_.end()) {
+                found->second->stopFinding(clearSelection);
+                return;
+            }
+        }
+        stopMainFinding(clearSelection);
+    }
+
     // 调用线程：GUI 主线程。
     void setBounds(const QRect& pixelBounds) noexcept {
         if (!pixelBounds.isValid() || pixelBounds.width() <= 0 ||
@@ -643,8 +825,56 @@ class WebView2BrowserBackend::Impl final {
         isAudioMutedDesired_ = isMuted;
         applyEffectiveAudioMute();
         for (auto& [tabId, tab] : tabControllers_) {
-            tab->setAudioMuted(isMuted || tabId != activeTabId_);
+            tab->setAudioMuted(isMuted || isTabAudioMuted(tabId));
         }
+    }
+
+    // 调用线程：GUI 主线程。切换标签只改变可见性，不重写独立静音状态。
+    void setTabAudioMuted(const std::uint64_t tabId, const bool isMuted) {
+        if (tabId == 0) {
+            return;
+        }
+        tabAudioMuted_[tabId] = isMuted;
+        if (tabId == 1) {
+            applyEffectiveAudioMute();
+            return;
+        }
+        const auto found = tabControllers_.find(tabId);
+        if (found != tabControllers_.end()) {
+            found->second->setAudioMuted(isAudioMutedDesired_ || isMuted);
+        }
+    }
+
+    [[nodiscard]] bool isTabAudioMuted(const std::uint64_t tabId) const noexcept {
+        const auto found = tabAudioMuted_.find(tabId);
+        return found != tabAudioMuted_.end() && found->second;
+    }
+
+    // 调用线程：GUI 主线程。切换标签不改变已保存的缩放比例。
+    void setTabZoomFactor(const std::uint64_t tabId,
+                          const double zoomFactor) noexcept {
+        if (tabId == 0) {
+            return;
+        }
+        const double clampedZoom = std::clamp(zoomFactor, 0.25, 5.0);
+        tabZoomFactors_[tabId] = clampedZoom;
+        if (tabId == 1) {
+            if (controller_ != nullptr) {
+                logOperationFailure("set_zoom_failed",
+                                    controller_->put_ZoomFactor(clampedZoom));
+            }
+            return;
+        }
+        const auto found = tabControllers_.find(tabId);
+        if (found != tabControllers_.end()) {
+            found->second->setZoomFactor(clampedZoom);
+        }
+    }
+
+    [[nodiscard]] double tabZoomFactor(
+        const std::uint64_t tabId) const noexcept {
+        const auto found = tabZoomFactors_.find(tabId);
+        return found == tabZoomFactors_.end() ? 1.0 : found->second;
     }
 
     // 调用线程：GUI 主线程；挂起期间强制静音，只有确认恢复成功后才解除。
@@ -655,8 +885,8 @@ class WebView2BrowserBackend::Impl final {
         ComPtr<ICoreWebView2_8> webView8;
         HRESULT result = webView_.As(&webView8);
         if (SUCCEEDED(result)) {
-            const bool isMuted = isAudioMutedDesired_ || suspension_.mustMute() ||
-                                 activeTabId_ != 1;
+            const bool isMuted = isAudioMutedDesired_ || isTabAudioMuted(1) ||
+                                 suspension_.mustMute();
             result = webView8->put_IsMuted(isMuted ? TRUE : FALSE);
         }
         logOperationFailure("set_audio_muted_failed", result);
@@ -725,6 +955,9 @@ class WebView2BrowserBackend::Impl final {
 
     // 调用线程：GUI 主线程。清除回调只投递稳定成功或错误事件。
     void clearBrowsingData(const std::uint64_t generation) {
+        if (activeTabId_ == 1) {
+            stopMainFinding(true);
+        }
         generation_ = generation;
         if (activeTabId_ != 1) {
             const auto found = tabControllers_.find(activeTabId_);
@@ -798,7 +1031,8 @@ class WebView2BrowserBackend::Impl final {
                         const HRESULT clearCertificateResult =
                             webView14->ClearServerCertificateErrorActions(
                                 Callback<
-                                    ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler>(
+                                    ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler>
+                                (
                                     [this, weakLifetime, lifecycleSerial,
                                      generation](const HRESULT certificateStatus)
                                         -> HRESULT {
@@ -899,14 +1133,27 @@ class WebView2BrowserBackend::Impl final {
         if (!pending.has_value()) {
             return;
         }
+        const std::int64_t totalBytes = pending->totalBytes;
+        const std::uint64_t generation = pending->generation;
+        const std::uint64_t tabId = pending->tabId;
+        const auto reportRejectedDownload = [this, tabId, requestId, totalBytes,
+                                             generation] {
+            dispatchDownloadListener(
+                generation,
+                [tabId, requestId, totalBytes](gui::BrowserEventListener& listener) {
+                    listener.onTabDownloadUpdated(
+                        tabId, requestId, gui::BrowserDownloadState::Failed,
+                        -1, totalBytes);
+                });
+        };
         if (isShuttingDown_ || pending->lifecycleSerial != lifecycleSerial_ ||
             !isCurrentTabGeneration(pending->generation) ||
             !isSafeDownloadDestination(destination)) {
-            logOperationFailure(
-                "download_destination_rejected",
-                completeDownloadCancellation(pending->args.Get(),
-                                             pending->operation.Get(),
-                                             pending->deferral.Get()));
+            const HRESULT result = completeDownloadCancellation(
+                pending->args.Get(), pending->operation.Get(),
+                pending->deferral.Get());
+            logOperationFailure("download_destination_rejected", result);
+            reportRejectedDownload();
             return;
         }
 
@@ -914,6 +1161,8 @@ class WebView2BrowserBackend::Impl final {
         active.operation = pending->operation;
         active.totalBytes = pending->totalBytes;
         active.lifecycleSerial = pending->lifecycleSerial;
+        active.generation = pending->generation;
+        active.tabId = pending->tabId;
         const HRESULT result = startDownloadTransaction(
             active,
             [this, requestId](ActiveDownload& candidate) {
@@ -936,6 +1185,9 @@ class WebView2BrowserBackend::Impl final {
             },
             [this, requestId] { activeDownloads_.erase(requestId); });
         logOperationFailure("download_start_failed", result);
+        if (FAILED(result)) {
+            reportRejectedDownload();
+        }
     }
 
     // 调用线程：GUI 主线程。待选路径先接入终态订阅，失败后只重试 operation。
@@ -943,11 +1195,14 @@ class WebView2BrowserBackend::Impl final {
         std::optional<PendingDownload> pending = pendingDownloads_.take(requestId);
         if (pending.has_value()) {
             const std::uint64_t generation = pending->generation;
+            const std::uint64_t tabId = pending->tabId;
             const std::int64_t totalBytes = pending->totalBytes;
             ActiveDownload candidate;
             candidate.operation = pending->operation;
             candidate.totalBytes = totalBytes;
             candidate.lifecycleSerial = pending->lifecycleSerial;
+            candidate.generation = generation;
+            candidate.tabId = pending->tabId;
             const PendingDownloadCancelOutcome outcome =
                 cancelPendingDownloadTransaction(
                     candidate,
@@ -974,20 +1229,20 @@ class WebView2BrowserBackend::Impl final {
                                 outcome.result);
             if (outcome.action ==
                 PendingDownloadCancelAction::ReportCancelled) {
-                dispatchListener(
+                dispatchDownloadListener(
                     generation,
-                    [requestId, totalBytes](gui::BrowserEventListener& listener) {
-                        listener.onDownloadUpdated(
-                            requestId, gui::BrowserDownloadState::Cancelled,
+                    [tabId, requestId, totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId, gui::BrowserDownloadState::Cancelled,
                             -1, totalBytes);
                     });
             } else if (outcome.action ==
                        PendingDownloadCancelAction::ReportCancelFailed) {
-                dispatchListener(
+                dispatchDownloadListener(
                     generation,
-                    [requestId, totalBytes](gui::BrowserEventListener& listener) {
-                        listener.onDownloadUpdated(
-                            requestId, gui::BrowserDownloadState::CancelFailed,
+                    [tabId, requestId, totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId, gui::BrowserDownloadState::CancelFailed,
                             -1, totalBytes);
                     });
             }
@@ -996,16 +1251,17 @@ class WebView2BrowserBackend::Impl final {
         const auto retryFound = retryDownloads_.find(requestId);
         if (retryFound != retryDownloads_.end()) {
             ActiveDownload& active = retryFound->second;
-            const std::uint64_t generation = generation_;
+            const std::uint64_t generation = active.generation;
+            const std::uint64_t tabId = active.tabId;
             const HRESULT result = requestActiveDownloadCancellation(
                 active, [&active] { return active.operation->Cancel(); },
-                [this, generation, requestId, totalBytes = active.totalBytes] {
-                    dispatchListener(
+                [this, tabId, generation, requestId, totalBytes = active.totalBytes] {
+                    dispatchDownloadListener(
                         generation,
-                        [requestId, totalBytes](
+                        [tabId, requestId, totalBytes](
                             gui::BrowserEventListener& listener) {
-                            listener.onDownloadUpdated(
-                                requestId,
+                            listener.onTabDownloadUpdated(
+                                tabId, requestId,
                                 gui::BrowserDownloadState::CancelFailed, -1,
                                 totalBytes);
                         });
@@ -1013,15 +1269,50 @@ class WebView2BrowserBackend::Impl final {
             logOperationFailure("download_cancel_failed", result);
             if (SUCCEEDED(result)) {
                 const std::int64_t totalBytes = active.totalBytes;
-                dispatchListener(
+                dispatchDownloadListener(
                     generation,
-                    [requestId, totalBytes](
+                    [tabId, requestId, totalBytes](
                         gui::BrowserEventListener& listener) {
-                        listener.onDownloadUpdated(
-                            requestId, gui::BrowserDownloadState::Cancelled,
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId, gui::BrowserDownloadState::Cancelled,
                             -1, totalBytes);
                     });
                 retryDownloads_.erase(retryFound);
+            }
+            return;
+        }
+
+        const auto resumableFound = resumableDownloads_.find(requestId);
+        if (resumableFound != resumableDownloads_.end()) {
+            ActiveDownload& active = resumableFound->second;
+            const std::uint64_t generation = active.generation;
+            const std::uint64_t tabId = active.tabId;
+            const std::int64_t totalBytes = active.totalBytes;
+            const HRESULT result = requestActiveDownloadCancellation(
+                active, [&active] { return active.operation->Cancel(); },
+                [this, tabId, generation, requestId, totalBytes] {
+                    dispatchDownloadListener(
+                        generation,
+                        [tabId, requestId, totalBytes](
+                            gui::BrowserEventListener& listener) {
+                            listener.onTabDownloadUpdated(
+                                tabId, requestId,
+                                gui::BrowserDownloadState::CancelFailed, -1,
+                                totalBytes);
+                        });
+                });
+            logOperationFailure("download_cancel_failed", result);
+            if (SUCCEEDED(result)) {
+                dispatchDownloadListener(
+                    generation,
+                    [tabId, requestId, totalBytes](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId,
+                            gui::BrowserDownloadState::Cancelled, -1,
+                            totalBytes);
+                    });
+                resumableDownloads_.erase(resumableFound);
             }
             return;
         }
@@ -1031,19 +1322,164 @@ class WebView2BrowserBackend::Impl final {
             return;
         }
         ActiveDownload& active = found->second;
-        const std::uint64_t generation = generation_;
+        const std::uint64_t generation = active.generation;
+        const std::uint64_t tabId = active.tabId;
         const HRESULT result = requestActiveDownloadCancellation(
             active, [&active] { return active.operation->Cancel(); },
-            [this, generation, requestId, totalBytes = active.totalBytes] {
-                dispatchListener(
+            [this, tabId, generation, requestId, totalBytes = active.totalBytes] {
+                dispatchDownloadListener(
                     generation,
-                    [requestId, totalBytes](gui::BrowserEventListener& listener) {
-                        listener.onDownloadUpdated(
-                            requestId, gui::BrowserDownloadState::CancelFailed,
+                    [tabId, requestId, totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId, gui::BrowserDownloadState::CancelFailed,
                             -1, totalBytes);
                     });
             });
         logOperationFailure("download_cancel_failed", result);
+    }
+
+    // 调用线程：GUI 主线程。只恢复 WebView2 明确标记可继续的中断任务。
+    void retryDownload(const std::uint64_t requestId) noexcept {
+        const auto found = resumableDownloads_.find(requestId);
+        if (found == resumableDownloads_.end()) {
+            return;
+        }
+        auto retained = resumableDownloads_.extract(found);
+        ActiveDownload candidate = std::move(retained.mapped());
+        const std::uint64_t generation = candidate.generation;
+        const std::uint64_t tabId = candidate.tabId;
+        const std::int64_t totalBytes = candidate.totalBytes;
+        const std::uint64_t previousUpdateSerial = candidate.updateSerial;
+        if (isShuttingDown_ || candidate.lifecycleSerial != lifecycleSerial_ ||
+            candidate.operation == nullptr) {
+            return;
+        }
+
+        const ComPtr<ICoreWebView2DownloadOperation> operation =
+            candidate.operation;
+        const DownloadResumeOutcome outcome =
+            resumeInterruptedDownloadTransaction(
+                candidate,
+                [](ActiveDownload& active) {
+                    COREWEBVIEW2_DOWNLOAD_STATE state =
+                        COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+                    HRESULT result = active.operation->get_State(&state);
+                    if (FAILED(result)) {
+                        return result;
+                    }
+                    BOOL canResume = FALSE;
+                    result = active.operation->get_CanResume(&canResume);
+                    if (FAILED(result)) {
+                        return result;
+                    }
+                    return state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED &&
+                                   canResume == TRUE
+                               ? S_OK
+                               : S_FALSE;
+                },
+                [this, requestId](ActiveDownload& active) {
+                    return registerActiveDownload(requestId, active);
+                },
+                [this, requestId](ActiveDownload& active) {
+                    return activeDownloads_
+                        .try_emplace(requestId, std::move(active))
+                        .second;
+                },
+                [operation] { return operation->Resume(); },
+                [this, requestId, &candidate] {
+                    const auto active = activeDownloads_.find(requestId);
+                    if (active != activeDownloads_.end()) {
+                        candidate = std::move(active->second);
+                        activeDownloads_.erase(active);
+                        candidate.resetSubscriptions();
+                        return;
+                    }
+                    const auto retryable = resumableDownloads_.find(requestId);
+                    if (retryable != resumableDownloads_.end()) {
+                        candidate = std::move(retryable->second);
+                        resumableDownloads_.erase(retryable);
+                    }
+                });
+        logOperationFailure("download_resume_failed", outcome.result);
+        if (outcome.action == DownloadResumeAction::Resumed) {
+            const auto active = activeDownloads_.find(requestId);
+            if (active != activeDownloads_.end() &&
+                active->second.updateSerial == previousUpdateSerial) {
+                dispatchDownloadListener(
+                    generation,
+                    [tabId, requestId,
+                     totalBytes](gui::BrowserEventListener& listener) {
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId,
+                            gui::BrowserDownloadState::InProgress, -1,
+                            totalBytes);
+                    });
+            }
+            return;
+        }
+        if (outcome.action == DownloadResumeAction::ReportFailed) {
+            dispatchDownloadListener(
+                generation,
+                [tabId, requestId, totalBytes](
+                    gui::BrowserEventListener& listener) {
+                    listener.onTabDownloadUpdated(
+                        tabId, requestId, gui::BrowserDownloadState::Failed,
+                        -1, totalBytes);
+                });
+            return;
+        }
+        const DownloadSnapshot snapshot = readDownloadSnapshot(
+            operation.Get(), totalBytes, candidate.isCancelRequested);
+        const bool didSynchronouslyUpdate =
+            candidate.updateSerial != previousUpdateSerial;
+        if (snapshot.hasState && snapshot.isTerminal && !snapshot.canResume) {
+            if (!didSynchronouslyUpdate) {
+                dispatchDownloadListener(
+                    generation,
+                    [tabId, requestId, snapshot](
+                        gui::BrowserEventListener& listener) {
+                        listener.onTabDownloadUpdated(
+                            tabId, requestId, snapshot.state,
+                            snapshot.receivedBytes, snapshot.totalBytes);
+                    });
+            }
+            return;
+        }
+        if (snapshot.hasState && !snapshot.isTerminal) {
+            const HRESULT registrationResult =
+                registerActiveDownload(requestId, candidate);
+            if (SUCCEEDED(registrationResult) &&
+                activeDownloads_
+                    .try_emplace(requestId, std::move(candidate))
+                    .second) {
+                if (!didSynchronouslyUpdate) {
+                    dispatchDownloadListener(
+                        generation,
+                        [tabId, requestId, snapshot](
+                            gui::BrowserEventListener& listener) {
+                            listener.onTabDownloadUpdated(
+                                tabId, requestId, snapshot.state,
+                                snapshot.receivedBytes, snapshot.totalBytes);
+                        });
+                }
+                return;
+            }
+            candidate.resetSubscriptions();
+            logOperationFailure("download_resume_reactivation_failed",
+                                registrationResult);
+        }
+        resumableDownloads_.insert_or_assign(requestId, std::move(candidate));
+        if (!didSynchronouslyUpdate) {
+            dispatchDownloadListener(
+                generation,
+                [tabId, requestId, totalBytes](
+                    gui::BrowserEventListener& listener) {
+                    listener.onTabDownloadUpdated(
+                        tabId, requestId,
+                        gui::BrowserDownloadState::RetryableFailure, -1,
+                        totalBytes);
+                });
+        }
     }
 
     // 调用线程：GUI 主线程。只有当前存活请求的显式允许会解除 Cancel。
@@ -1144,6 +1580,258 @@ class WebView2BrowserBackend::Impl final {
     }
 
  private:
+    // 调用线程：GUI 主线程。按需取得首标签的原生 Find 对象。
+    [[nodiscard]] HRESULT ensureMainFindController() {
+        if (find_ != nullptr) {
+            return S_OK;
+        }
+        if (webView_ == nullptr) {
+            return E_UNEXPECTED;
+        }
+
+        ComPtr<ICoreWebView2_28> webView28;
+        HRESULT result = webView_.As(&webView28);
+        if (SUCCEEDED(result)) {
+            result = webView28->get_Find(&find_);
+        }
+        if (FAILED(result) || find_ == nullptr) {
+            find_.Reset();
+            return FAILED(result) ? result : E_NOINTERFACE;
+        }
+
+        return S_OK;
+    }
+
+    std::uint64_t nextMainFindRequestSerial() noexcept {
+        ++mainFindRequestSerial_;
+        if (mainFindRequestSerial_ == 0) {
+            ++mainFindRequestSerial_;
+        }
+        return mainFindRequestSerial_;
+    }
+
+    bool isCurrentMainFindRequest(
+        const std::uint64_t generation,
+        const std::uint64_t requestSerial) const noexcept {
+        return !isShuttingDown_ && generation == generation_ &&
+               requestSerial != 0 && requestSerial == mainFindRequestSerial_;
+    }
+
+    [[nodiscard]] HRESULT observeMainFindResults(
+        const std::uint64_t generation,
+        const std::uint64_t requestSerial) {
+        findActiveMatchIndexChanged_.reset();
+        findMatchCountChanged_.reset();
+        if (find_ == nullptr) {
+            return E_UNEXPECTED;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        HRESULT result = find_->add_ActiveMatchIndexChanged(
+            Callback<ICoreWebView2FindActiveMatchIndexChangedEventHandler>(
+                [this, weakLifetime, lifecycleSerial, generation,
+                 requestSerial](ICoreWebView2Find*, IUnknown*) -> HRESULT {
+                    if (!weakLifetime.expired() && !isShuttingDown_ &&
+                        lifecycleSerial == lifecycleSerial_ &&
+                        isCurrentMainFindRequest(generation, requestSerial)) {
+                        emitMainFindResult(generation, requestSerial);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2Find> source = find_;
+            findActiveMatchIndexChanged_.bind(token, [source](const auto value) {
+                return source->remove_ActiveMatchIndexChanged(value);
+            });
+        }
+        if (SUCCEEDED(result)) {
+            result = find_->add_MatchCountChanged(
+                Callback<ICoreWebView2FindMatchCountChangedEventHandler>(
+                    [this, weakLifetime, lifecycleSerial, generation,
+                     requestSerial](ICoreWebView2Find*, IUnknown*) -> HRESULT {
+                        if (!weakLifetime.expired() && !isShuttingDown_ &&
+                            lifecycleSerial == lifecycleSerial_ &&
+                            isCurrentMainFindRequest(generation, requestSerial)) {
+                            emitMainFindResult(generation, requestSerial);
+                        }
+                        return S_OK;
+                    })
+                    .Get(),
+                &token);
+        }
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2Find> source = find_;
+            findMatchCountChanged_.bind(token, [source](const auto value) {
+                return source->remove_MatchCountChanged(value);
+            });
+        }
+        if (FAILED(result)) {
+            findActiveMatchIndexChanged_.reset();
+            findMatchCountChanged_.reset();
+        }
+        return result;
+    }
+
+    void emitMainFindResult(const std::uint64_t generation,
+                            const std::uint64_t requestSerial) {
+        if (!isCurrentMainFindRequest(generation, requestSerial) ||
+            find_ == nullptr) {
+            return;
+        }
+        INT32 activeMatchIndex = -1;
+        INT32 matchCount = 0;
+        HRESULT result = find_->get_ActiveMatchIndex(&activeMatchIndex);
+        if (SUCCEEDED(result)) {
+            result = find_->get_MatchCount(&matchCount);
+        }
+        if (FAILED(result)) {
+            dispatchFindFailure(1, generation, requestSerial, result);
+            return;
+        }
+        dispatchTabListener(
+            [this, generation, requestSerial, activeMatchIndex, matchCount](
+                gui::BrowserEventListener& listener) {
+                if (!isCurrentMainFindRequest(generation, requestSerial)) {
+                    return;
+                }
+                listener.onFindResultChanged(1, generation, activeMatchIndex,
+                                             matchCount);
+            });
+    }
+
+    void dispatchFindFailure(const std::uint64_t tabId,
+                             const std::uint64_t generation,
+                             const std::uint64_t requestSerial,
+                             const HRESULT result) {
+        logOperationFailure("find_failed", result);
+        dispatchTabListener(
+            [this, tabId, generation, requestSerial, result](
+                gui::BrowserEventListener& listener) {
+                if (tabId == 1 &&
+                    !isCurrentMainFindRequest(generation, requestSerial)) {
+                    return;
+                }
+                listener.onFindFailed(tabId, generation,
+                                      static_cast<long>(result));
+            });
+    }
+
+    void findInMainPage(const QString& text, const bool forward) noexcept {
+        if (text.isEmpty()) {
+            stopMainFinding(true);
+            return;
+        }
+        HRESULT result = ensureMainFindController();
+        if (FAILED(result)) {
+            const std::uint64_t requestSerial = nextMainFindRequestSerial();
+            dispatchFindFailure(1, generation_, requestSerial, result);
+            return;
+        }
+        const std::uint64_t generation = generation_;
+        const std::uint64_t requestSerial = nextMainFindRequestSerial();
+        result = observeMainFindResults(generation, requestSerial);
+        if (FAILED(result)) {
+            dispatchFindFailure(1, generation, requestSerial, result);
+            return;
+        }
+        if (mainFindText_ == text) {
+            result = forward ? find_->FindNext() : find_->FindPrevious();
+            if (FAILED(result)) {
+                dispatchFindFailure(1, generation, requestSerial, result);
+            }
+            return;
+        }
+
+        ComPtr<ICoreWebView2Environment15> environment15;
+        ComPtr<ICoreWebView2FindOptions> options;
+        result = environment_.As(&environment15);
+        if (SUCCEEDED(result)) {
+            result = environment15->CreateFindOptions(&options);
+        }
+        const std::wstring term = text.toStdWString();
+        if (SUCCEEDED(result)) {
+            result = options->put_FindTerm(term.c_str());
+        }
+        if (SUCCEEDED(result)) {
+            result = options->put_IsCaseSensitive(FALSE);
+        }
+        if (SUCCEEDED(result)) {
+            result = options->put_ShouldHighlightAllMatches(TRUE);
+        }
+        if (SUCCEEDED(result)) {
+            result = options->put_ShouldMatchWord(FALSE);
+        }
+        if (SUCCEEDED(result)) {
+            result = options->put_SuppressDefaultFindDialog(TRUE);
+        }
+        if (FAILED(result)) {
+            dispatchFindFailure(1, generation, requestSerial, result);
+            return;
+        }
+
+        mainFindText_ = text;
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        result = find_->Start(
+            options.Get(),
+            Callback<ICoreWebView2FindStartCompletedHandler>(
+                [this, weakLifetime, lifecycleSerial, generation, requestSerial,
+                 forward](const HRESULT status) -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_ ||
+                        generation != generation_ ||
+                        requestSerial != mainFindRequestSerial_) {
+                        return S_OK;
+                    }
+                    if (FAILED(status)) {
+                        dispatchFindFailure(1, generation, requestSerial, status);
+                        return S_OK;
+                    }
+                    if (!forward && find_ != nullptr) {
+                        const HRESULT previousResult = find_->FindPrevious();
+                        if (FAILED(previousResult)) {
+                            dispatchFindFailure(1, generation, requestSerial,
+                                                previousResult);
+                        }
+                    }
+                    emitMainFindResult(generation, requestSerial);
+                    return S_OK;
+                })
+                .Get());
+        if (FAILED(result)) {
+            dispatchFindFailure(1, generation, requestSerial, result);
+        }
+    }
+
+    void stopMainFinding(const bool clearSelection) noexcept {
+        Q_UNUSED(clearSelection);
+        const std::uint64_t generation = generation_;
+        const std::uint64_t requestSerial = nextMainFindRequestSerial();
+        findActiveMatchIndexChanged_.reset();
+        findMatchCountChanged_.reset();
+        mainFindText_.clear();
+        if (find_ != nullptr) {
+            const HRESULT result = find_->Stop();
+            if (FAILED(result)) {
+                dispatchFindFailure(1, generation, requestSerial, result);
+            }
+        }
+    }
+
+    void releaseMainFindController() noexcept {
+        static_cast<void>(nextMainFindRequestSerial());
+        findActiveMatchIndexChanged_.reset();
+        findMatchCountChanged_.reset();
+        if (find_ != nullptr) {
+            static_cast<void>(find_->Stop());
+        }
+        find_.Reset();
+        mainFindText_.clear();
+    }
+
     // 调用线程：GUI STA 或待投递到 GUI 的回调线程，只读取生命周期状态。
     bool isActive(const std::weak_ptr<int>& weakLifetime,
                   const std::uint64_t lifecycleSerial,
@@ -1310,15 +1998,19 @@ class WebView2BrowserBackend::Impl final {
             logOperationFailure("download_state_read_failed", snapshot.stateResult);
             return;
         }
-        const std::uint64_t generation = generation_;
-        dispatchListener(
-            generation,
-            [requestId, snapshot](gui::BrowserEventListener& listener) {
-                listener.onDownloadUpdated(
-                    requestId, snapshot.state, snapshot.receivedBytes,
+        ++active.updateSerial;
+        dispatchDownloadListener(
+            active.generation,
+            [tabId = active.tabId, requestId, snapshot](gui::BrowserEventListener& listener) {
+                listener.onTabDownloadUpdated(
+                    tabId, requestId, snapshot.state, snapshot.receivedBytes,
                     snapshot.totalBytes);
             });
-        if (snapshot.isTerminal) {
+        if (snapshot.canResume) {
+            active.resetSubscriptions();
+            resumableDownloads_.insert_or_assign(requestId, std::move(active));
+            activeDownloads_.erase(found);
+        } else if (snapshot.isTerminal) {
             const std::weak_ptr<int> weakLifetime = lifetime_;
             const std::uint64_t lifecycleSerial = lifecycleSerial_;
             QMetaObject::invokeMethod(
@@ -1394,6 +2086,14 @@ class WebView2BrowserBackend::Impl final {
                     active, [&active] { return active.operation->Cancel(); }));
         }
         retryDownloads_.clear();
+        for (auto& [requestId, active] : resumableDownloads_) {
+            static_cast<void>(requestId);
+            logOperationFailure(
+                "download_shutdown_cancel_failed",
+                cancelActiveDownloadForShutdown(
+                    active, [&active] { return active.operation->Cancel(); }));
+        }
+        resumableDownloads_.clear();
     }
 
     // 调用线程：WebView2 Environment 完成回调所在的 GUI STA，禁止操作 Qt 控件。
@@ -1464,6 +2164,8 @@ class WebView2BrowserBackend::Impl final {
         }
         logOperationFailure("initial_visibility_failed",
                             controller_->put_IsVisible(isVisible_ ? TRUE : FALSE));
+        logOperationFailure("initial_zoom_failed",
+                            controller_->put_ZoomFactor(tabZoomFactor(1)));
         isReady_ = true;
         executeSuspensionStep(suspension_.controllerReady());
         dispatchTabListener([generation](gui::BrowserEventListener& listener) {
@@ -1543,10 +2245,72 @@ class WebView2BrowserBackend::Impl final {
             result = registerDocumentTitleChanged();
         }
         if (SUCCEEDED(result)) {
+            result = registerProcessFailed();
+        }
+        if (SUCCEEDED(result)) {
             result = registerFullScreenChanged();
         }
         if (SUCCEEDED(result)) {
+            result = registerDocumentPlayingAudioChanged();
+        }
+        if (SUCCEEDED(result)) {
+            result = registerFaviconChanged();
+        }
+        if (SUCCEEDED(result)) {
+            result = registerZoomFactorChanged();
+        }
+        if (SUCCEEDED(result)) {
             result = registerAcceleratorKeyPressed();
+        }
+        return result;
+    }
+
+    // 调用线程：主 Controller 的 GUI STA；只投递稳定类别并由生命周期门禁排除迟到事件。
+    HRESULT registerProcessFailed() {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        const HRESULT result = webView_->add_ProcessFailed(
+            Callback<ICoreWebView2ProcessFailedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](
+                    ICoreWebView2*,
+                    ICoreWebView2ProcessFailedEventArgs* const args) -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_ || args == nullptr) {
+                        return S_OK;
+                    }
+                    COREWEBVIEW2_PROCESS_FAILED_KIND rawKind =
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+                    if (FAILED(args->get_ProcessFailedKind(&rawKind))) {
+                        return S_OK;
+                    }
+                    const std::uint64_t failedGeneration = generation_;
+                    const gui::BrowserProcessFailureKind kind =
+                        classifyProcessFailureKind(rawKind);
+                    dispatchListener(
+                        failedGeneration,
+                        [this, failedGeneration, kind](
+                            gui::BrowserEventListener& listener) {
+                            if (controller_ == nullptr || webView_ == nullptr) {
+                                return;
+                            }
+                            if (kind == gui::BrowserProcessFailureKind::BrowserProcessExited) {
+                                if (hasReportedBrowserProcessFailure_) {
+                                    return;
+                                }
+                                hasReportedBrowserProcessFailure_ = true;
+                            }
+                            listener.onTabProcessFailed(1, failedGeneration, kind);
+                        });
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2> source = webView_;
+            processFailed_.bind(token, [source](const auto value) {
+                return source->remove_ProcessFailed(value);
+            });
         }
         return result;
     }
@@ -1704,18 +2468,18 @@ class WebView2BrowserBackend::Impl final {
         const std::uint64_t requestId = nextSensitiveRequestId();
         PendingDownload pending{args, operation, deferral,
                                 static_cast<std::int64_t>(totalBytes),
-                                lifecycleSerial_, generation};
+                                lifecycleSerial_, generation, tabId};
         if (!pendingDownloads_.insert(requestId, std::move(pending))) {
             static_cast<void>(completeDownloadCancellation(
                 args, operation.Get(), deferral.Get()));
             return S_OK;
         }
         dispatchTabListener(
-            [requestId, origin, suggestedFileName,
+            [tabId, requestId, origin, suggestedFileName,
              totalBytes = static_cast<std::int64_t>(totalBytes)](
                 gui::BrowserEventListener& listener) {
-                listener.onDownloadRequested(requestId, origin,
-                                             suggestedFileName, totalBytes);
+                listener.onTabDownloadRequested(tabId, requestId, origin,
+                                                suggestedFileName, totalBytes);
             });
         scheduleDownloadTimeout(requestId, lifecycleSerial_);
         return S_OK;
@@ -2120,7 +2884,7 @@ class WebView2BrowserBackend::Impl final {
                     const std::uint64_t requestId = nextSensitiveRequestId();
                     PendingDownload pending{args, operation, deferral,
                                             static_cast<std::int64_t>(rawTotalBytes),
-                                            lifecycleSerial, generation};
+                                            lifecycleSerial, generation, 1};
                     if (!pendingDownloads_.insert(requestId, std::move(pending))) {
                         logOperationFailure(
                             "download_store_failed",
@@ -2128,14 +2892,14 @@ class WebView2BrowserBackend::Impl final {
                                                          deferral.Get()));
                         return S_OK;
                     }
-                    dispatchListener(
+                    dispatchDownloadListener(
                         generation,
                         [requestId, origin, suggestedFileName,
                          totalBytes = static_cast<std::int64_t>(rawTotalBytes)](
                             gui::BrowserEventListener& listener) {
-                            listener.onDownloadRequested(requestId, origin,
-                                                         suggestedFileName,
-                                                         totalBytes);
+                            listener.onTabDownloadRequested(
+                                1, requestId, origin, suggestedFileName,
+                                totalBytes);
                         });
                     scheduleDownloadTimeout(requestId, lifecycleSerial);
                     return S_OK;
@@ -2489,6 +3253,8 @@ class WebView2BrowserBackend::Impl final {
                         lifecycleSerial != lifecycleSerial_) {
                         return S_OK;
                     }
+                    stopMainFinding(true);
+                    clearMainFavicon(generation_);
                     UINT64 navigationId = 0;
                     const HRESULT status =
                         args != nullptr ? args->get_NavigationId(&navigationId) : E_POINTER;
@@ -2715,6 +3481,219 @@ class WebView2BrowserBackend::Impl final {
         return result;
     }
 
+    // 调用线程：GUI STA；事件只上报当前文档是否播放音频，不直接操作 Qt 控件。
+    HRESULT registerDocumentPlayingAudioChanged() {
+        ComPtr<ICoreWebView2_8> webView8;
+        HRESULT result = webView_.As(&webView8);
+        if (FAILED(result)) {
+            return result;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        result = webView8->add_IsDocumentPlayingAudioChanged(
+            Callback<ICoreWebView2IsDocumentPlayingAudioChangedEventHandler>(
+                [this, weakLifetime, lifecycleSerial, webView8](
+                    ICoreWebView2*, IUnknown*) -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_) {
+                        return S_OK;
+                    }
+                    BOOL isPlayingAudio = FALSE;
+                    const HRESULT status =
+                        webView8->get_IsDocumentPlayingAudio(&isPlayingAudio);
+                    if (SUCCEEDED(status)) {
+                        const std::uint64_t generation = generation_;
+                        dispatchTabListener(
+                            [generation, isPlayingAudio](
+                                gui::BrowserEventListener& listener) {
+                                listener.onTabAudioStateChanged(
+                                    1, generation, isPlayingAudio != FALSE);
+                            });
+                    } else {
+                        logOperationFailure("audio_state_failed", status);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            documentPlayingAudioChanged_.bind(
+                token, [webView8](const EventRegistrationToken value) {
+                    return webView8->remove_IsDocumentPlayingAudioChanged(value);
+                });
+        }
+        return result;
+    }
+
+    // 调用线程：主 Controller 的 GUI STA；旧 Runtime 不支持时安全降级。
+    HRESULT registerFaviconChanged() {
+        ComPtr<ICoreWebView2_15> webView15;
+        HRESULT result = webView_.As(&webView15);
+        if (result == E_NOINTERFACE) {
+            return S_OK;
+        }
+        if (FAILED(result)) {
+            return result;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        result = webView15->add_FaviconChanged(
+            Callback<ICoreWebView2FaviconChangedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](ICoreWebView2*, IUnknown*)
+                    -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_) {
+                        return S_OK;
+                    }
+                    requestMainFavicon(generation_);
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            faviconChanged_.bind(token, [webView15](const auto value) {
+                return webView15->remove_FaviconChanged(value);
+            });
+        }
+        return result;
+    }
+
+    // 调用线程：主 Controller 的 GUI STA；事件最终排队投递到监听器。
+    HRESULT registerZoomFactorChanged() {
+        if (controller_ == nullptr) {
+            return E_UNEXPECTED;
+        }
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        EventRegistrationToken token{};
+        const HRESULT result = controller_->add_ZoomFactorChanged(
+            Callback<ICoreWebView2ZoomFactorChangedEventHandler>(
+                [this, weakLifetime, lifecycleSerial](ICoreWebView2Controller*,
+                                                      IUnknown*) -> HRESULT {
+                    if (weakLifetime.expired() || isShuttingDown_ ||
+                        lifecycleSerial != lifecycleSerial_ ||
+                        controller_ == nullptr) {
+                        return S_OK;
+                    }
+                    double zoomFactor = 1.0;
+                    const HRESULT status =
+                        controller_->get_ZoomFactor(&zoomFactor);
+                    if (SUCCEEDED(status)) {
+                        const double clampedZoom =
+                            std::clamp(zoomFactor, 0.25, 5.0);
+                        tabZoomFactors_[1] = clampedZoom;
+                        const std::uint64_t generation = generation_;
+                        dispatchTabListener(
+                            [this, generation, clampedZoom](
+                                gui::BrowserEventListener& listener) {
+                                if (controller_ != nullptr &&
+                                    generation == generation_) {
+                                    listener.onTabZoomFactorChanged(
+                                        1, generation, clampedZoom);
+                                }
+                            });
+                    } else {
+                        logOperationFailure("zoom_state_failed", status);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+        if (SUCCEEDED(result)) {
+            const ComPtr<ICoreWebView2Controller> source = controller_;
+            zoomFactorChanged_.bind(token, [source](const auto value) {
+                return source->remove_ZoomFactorChanged(value);
+            });
+        }
+        return result;
+    }
+
+    // 调用线程：WebView2 Favicon 事件所在 GUI STA；完成回调不直接操作 Qt 控件。
+    void requestMainFavicon(const std::uint64_t generation) noexcept {
+        ComPtr<ICoreWebView2_15> webView15;
+        const HRESULT queryResult = webView_.As(&webView15);
+        if (FAILED(queryResult)) {
+            logOperationFailure("favicon_api_failed", queryResult);
+            return;
+        }
+        const std::uint64_t requestSerial = nextMainFaviconRequestSerial();
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        const HRESULT result = webView15->GetFavicon(
+            COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG,
+            Callback<ICoreWebView2GetFaviconCompletedHandler>(
+                [this, weakLifetime, lifecycleSerial, generation,
+                 requestSerial](const HRESULT status,
+                                IStream* const stream) -> HRESULT {
+                    if (!isCurrentMainFaviconRequest(
+                            weakLifetime, lifecycleSerial, generation,
+                            requestSerial)) {
+                        return S_OK;
+                    }
+                    QByteArray pngBytes;
+                    const HRESULT readResult =
+                        SUCCEEDED(status)
+                            ? readFaviconPngStream(stream, pngBytes)
+                            : status;
+                    if (FAILED(readResult)) {
+                        logOperationFailure("favicon_read_failed", readResult);
+                        return S_OK;
+                    }
+                    if (!isCurrentMainFaviconRequest(
+                            weakLifetime, lifecycleSerial, generation,
+                            requestSerial)) {
+                        return S_OK;
+                    }
+                    dispatchTabListener(
+                        [this, generation, requestSerial, pngBytes](
+                            gui::BrowserEventListener& listener) {
+                            if (controller_ != nullptr &&
+                                generation == generation_ &&
+                                requestSerial == mainFaviconRequestSerial_) {
+                                listener.onTabFaviconChanged(
+                                    1, generation, pngBytes);
+                            }
+                        });
+                    return S_OK;
+                })
+                .Get());
+        logOperationFailure("favicon_request_failed", result);
+    }
+
+    // 调用线程：GUI STA；导航时先清除旧图标并使旧请求失效。
+    void clearMainFavicon(const std::uint64_t generation) noexcept {
+        const std::uint64_t requestSerial = nextMainFaviconRequestSerial();
+        dispatchTabListener(
+            [this, generation, requestSerial](
+                gui::BrowserEventListener& listener) {
+                if (controller_ != nullptr && generation == generation_ &&
+                    requestSerial == mainFaviconRequestSerial_) {
+                    listener.onTabFaviconChanged(1, generation, QByteArray{});
+                }
+            });
+    }
+
+    std::uint64_t nextMainFaviconRequestSerial() noexcept {
+        ++mainFaviconRequestSerial_;
+        if (mainFaviconRequestSerial_ == 0) {
+            ++mainFaviconRequestSerial_;
+        }
+        return mainFaviconRequestSerial_;
+    }
+
+    bool isCurrentMainFaviconRequest(
+        const std::weak_ptr<int>& weakLifetime,
+        const std::uint64_t lifecycleSerial,
+        const std::uint64_t generation,
+        const std::uint64_t requestSerial) const noexcept {
+        return !weakLifetime.expired() && !isShuttingDown_ &&
+               lifecycleSerial == lifecycleSerial_ && controller_ != nullptr &&
+               generation == generation_ && requestSerial != 0 &&
+               requestSerial == mainFaviconRequestSerial_;
+    }
+
     // 调用线程：Controller 的 GUI STA；原生子窗口按键只投递稳定动作。
     HRESULT registerAcceleratorKeyPressed() {
         const std::weak_ptr<int> weakLifetime = lifetime_;
@@ -2857,6 +3836,25 @@ class WebView2BrowserBackend::Impl final {
             Qt::QueuedConnection);
     }
 
+    template <typename CallbackType>
+    // 调用线程：GUI STA 或 WebView2 下载回调线程；任务在所属标签关闭后仍可继续。
+    void dispatchDownloadListener(const std::uint64_t generation,
+                                  CallbackType callback) {
+        const std::weak_ptr<int> weakLifetime = lifetime_;
+        const std::uint64_t lifecycleSerial = lifecycleSerial_;
+        QMetaObject::invokeMethod(
+            QApplication::instance(),
+            [this, weakLifetime, lifecycleSerial, generation,
+             callback = std::move(callback)]() mutable {
+                if (!weakLifetime.expired() && !isShuttingDown_ &&
+                    lifecycleSerial == lifecycleSerial_ && generation != 0 &&
+                    listener_ != nullptr) {
+                    callback(*listener_);
+                }
+            },
+            Qt::QueuedConnection);
+    }
+
     // 调用线程：GUI STA 或 WebView2 回调线程，监听器最终只在 GUI 主线程调用。
     void reportError(const std::uint64_t generation,
                      const gui::BrowserErrorKind kind,
@@ -2892,16 +3890,24 @@ class WebView2BrowserBackend::Impl final {
             tab->close();
         }
         tabControllers_.clear();
+        tabAudioMuted_.clear();
+        tabZoomFactors_.clear();
         activeTabId_ = 1;
         cancelPendingSensitiveRequests();
         newWindowRequested_.reset();
         acceleratorKeyPressed_.reset();
+        releaseMainFindController();
+        static_cast<void>(nextMainFaviconRequestSerial());
+        zoomFactorChanged_.reset();
+        faviconChanged_.reset();
         launchingExternalUriScheme_.reset();
         serverCertificateErrorDetected_.reset();
         downloadStarting_.reset();
         screenCaptureStarting_.reset();
         permissionRequested_.reset();
         fullScreenChanged_.reset();
+        documentPlayingAudioChanged_.reset();
+        processFailed_.reset();
         documentTitleChanged_.reset();
         navigationCompleted_.reset();
         navigationStarting_.reset();
@@ -2936,10 +3942,15 @@ class WebView2BrowserBackend::Impl final {
     ComPtr<ICoreWebView2Profile> profile_;
     ComPtr<ICoreWebView2Controller> controller_;
     ComPtr<ICoreWebView2> webView_;
+    ComPtr<ICoreWebView2Find> find_;
     EventRegistration navigationStarting_;
     EventRegistration navigationCompleted_;
     EventRegistration documentTitleChanged_;
+    EventRegistration processFailed_;
     EventRegistration fullScreenChanged_;
+    EventRegistration documentPlayingAudioChanged_;
+    EventRegistration faviconChanged_;
+    EventRegistration zoomFactorChanged_;
     EventRegistration permissionRequested_;
     EventRegistration screenCaptureStarting_;
     EventRegistration downloadStarting_;
@@ -2947,6 +3958,8 @@ class WebView2BrowserBackend::Impl final {
     EventRegistration launchingExternalUriScheme_;
     EventRegistration newWindowRequested_;
     EventRegistration acceleratorKeyPressed_;
+    EventRegistration findActiveMatchIndexChanged_;
+    EventRegistration findMatchCountChanged_;
     PendingRequestStore<PendingPermission> pendingPermissions_;
     PendingRequestStore<PendingNewWindow> pendingNewWindows_;
     PendingRequestStore<PendingScreenCapture> pendingScreenCaptures_;
@@ -2955,23 +3968,30 @@ class WebView2BrowserBackend::Impl final {
     PendingRequestStore<PendingDownload> pendingDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> activeDownloads_;
     std::unordered_map<std::uint64_t, ActiveDownload> retryDownloads_;
+    std::unordered_map<std::uint64_t, ActiveDownload> resumableDownloads_;
     std::unordered_map<std::uint64_t, std::unique_ptr<WebView2TabController>>
         tabControllers_;
+    std::unordered_map<std::uint64_t, bool> tabAudioMuted_;
+    std::unordered_map<std::uint64_t, double> tabZoomFactors_;
     std::uint64_t activeTabId_{1};
     BrowserLifecycleGate lifecycleGate_;
     std::shared_ptr<int> lifetime_;
     std::uint64_t nextSensitiveRequestId_{1};
     std::uint64_t lifecycleSerial_{0};
     std::uint64_t generation_{0};
+    std::uint64_t mainFindRequestSerial_{0};
+    std::uint64_t mainFaviconRequestSerial_{0};
+    QString mainFindText_;
     NavigationTracker navigation_;
     ClearDataNavigationCoordinator clearDataNavigation_;
     QRect bounds_;
     bool ownsComApartmentReference_{false};
     bool isReady_{false};
     bool isVisible_{false};
-    bool isAudioMutedDesired_{true};
+    bool isAudioMutedDesired_{false};
     bool isWebFullScreen_{false};
     bool isClearedBlankSnapshotSuppressed_{false};
+    bool hasReportedBrowserProcessFailure_{false};
     SuspensionCoordinator suspension_;
     bool isShuttingDown_{true};
 };
@@ -3020,6 +4040,20 @@ void WebView2BrowserBackend::goForward() { impl_->goForward(); }
 
 void WebView2BrowserBackend::reloadOrStop() { impl_->reloadOrStop(); }
 
+bool WebView2BrowserBackend::recoverTab(const std::uint64_t tabId,
+                                        const std::uint64_t generation) {
+    return impl_->recoverTab(tabId, generation);
+}
+
+void WebView2BrowserBackend::findInPage(const QString& text,
+                                        const bool forward) {
+    impl_->findInPage(text, forward);
+}
+
+void WebView2BrowserBackend::stopFinding(const bool clearSelection) {
+    impl_->stopFinding(clearSelection);
+}
+
 void WebView2BrowserBackend::setBounds(const QRect& pixelBounds) {
     impl_->setBounds(pixelBounds);
 }
@@ -3030,6 +4064,16 @@ void WebView2BrowserBackend::setVisible(const bool isVisible) {
 
 void WebView2BrowserBackend::setAudioMuted(const bool isMuted) {
     impl_->setAudioMuted(isMuted);
+}
+
+void WebView2BrowserBackend::setTabAudioMuted(const std::uint64_t tabId,
+                                               const bool isMuted) {
+    impl_->setTabAudioMuted(tabId, isMuted);
+}
+
+void WebView2BrowserBackend::setTabZoomFactor(const std::uint64_t tabId,
+                                              const double zoomFactor) {
+    impl_->setTabZoomFactor(tabId, zoomFactor);
 }
 
 void WebView2BrowserBackend::setSuspended(const bool isSuspended) {
@@ -3053,6 +4097,10 @@ void WebView2BrowserBackend::chooseDownloadPath(
 
 void WebView2BrowserBackend::cancelDownload(const std::uint64_t requestId) {
     impl_->cancelDownload(requestId);
+}
+
+void WebView2BrowserBackend::retryDownload(const std::uint64_t requestId) {
+    impl_->retryDownload(requestId);
 }
 
 void WebView2BrowserBackend::answerExternalProtocol(const std::uint64_t requestId,

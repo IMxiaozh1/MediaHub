@@ -730,8 +730,17 @@ const QString& mainWindowStyleSheet() {
       QLineEdit#browserAddressEdit[responsiveSize="compact"],
       QPushButton#browserGoButton[responsiveSize="compact"],
       QPushButton#browserClearDataButton[responsiveSize="compact"],
-      QFrame#browserToolbar QToolButton[responsiveSize="compact"] {
+      QFrame#browserToolbar QToolButton[responsiveSize="compact"],
+      QFrame#browserToolbar QPushButton[responsiveSize="compact"] {
           font-size: 12px;
+      }
+      QPushButton#browserGoButton[responsiveSize="compact"],
+      QPushButton#browserClearDataButton[responsiveSize="compact"],
+      QFrame#browserToolbar QToolButton[responsiveSize="compact"],
+      QFrame#browserToolbar QPushButton[responsiveSize="compact"] {
+          min-width: 0;
+          font-size: 10px;
+          padding: 2px 1px;
       }
       QLineEdit#browserAddressEdit[responsiveSize="normal"] {
           font-size: 13px;
@@ -741,6 +750,526 @@ const QString& mainWindowStyleSheet() {
       }
       QLineEdit#browserAddressEdit[responsiveSize="extraLarge"] {
           font-size: 17px;
+      }
+  )") + QStringLiteral(R"(
+      QDialog#browserHistoryDialog,
+      QDialog#browserHistoryClearDialog,
+      QDialog#browserFavoritesDialog,
+      QDialog#browserFavoriteImportDialog,
+      QDialog#browserFavoriteEditorDialog,
+      QDialog#browserAudioTabsDialog,
+      QDialog#browserTabSearchDialog,
+      QDialog#browserTabGroupDialog,
+      QDialog#browserPinnedCloseDialog,
+      QDialog#browserPermissionDialog,
+      QDialog#browserPermissionManagementDialog,
+      QDialog#browserStartupSettingsDialog,
+      QDialog#browserActiveDownloadExitDialog,
+      QDialog#browserExternalProtocolDialog,
+      QDialog#browserCertificateDialog,
+      QDialog#browserClearDataDialog {
+          background: #111820;
+          color: #edf3f1;
+          min-width: 360px;
+      }
+      QDialog#browserHistoryDialog QLabel,
+      QDialog#browserHistoryClearDialog QLabel,
+      QDialog#browserFavoritesDialog QLabel,
+      QDialog#browserFavoriteImportDialog QLabel,
+      QDialog#browserFavoriteEditorDialog QLabel,
+      QDialog#browserAudioTabsDialog QLabel,
+      QDialog#browserTabSearchDialog QLabel,
+      QDialog#browserTabGroupDialog QLabel,
+      QDialog#browserPinnedCloseDialog QLabel,
+      QDialog#browserPermissionDialog QLabel,
+      QDialog#browserPermissionManagementDialog QLabel,
+      QDialog#browserStartupSettingsDialog QLabel,
+      QDialog#browserActiveDownloadExitDialog QLabel,
+      QDialog#browserExternalProtocolDialog QLabel,
+      QDialog#browserCertificateDialog QLabel,
+      QDialog#browserClearDataDialog QLabel {
+          background: transparent;
+          color: #c9d2cf;
+          font-size: 12px;
+      }
+      QDialog#browserHistoryDialog QPushButton,
+      QDialog#browserHistoryClearDialog QPushButton,
+      QDialog#browserFavoritesDialog QPushButton,
+      QDialog#browserFavoriteImportDialog QPushButton,
+      QDialog#browserFavoriteEditorDialog QPushButton,
+      QDialog#browserAudioTabsDialog QPushButton,
+      QDialog#browserTabSearchDialog QPushButton,
+      QDialog#browserTabGroupDialog QPushButton,
+      QDialog#browserPinnedCloseDialog QPushButton,
+      QDialog#browserPermissionDialog QPushButton,
+      QDialog#browserPermissionManagementDialog QPushButton,
+      QDialog#browserStartupSettingsDialog QPushButton,
+      QDialog#browserActiveDownloadExitDialog QPushButton,
+      QDialog#browserExternalProtocolDialog QPushButton,
+      QDialog#browserCertificateDialog QPushButton,
+      QDialog#browserClearDataDialog QPushButton {
+          background: #202b35;
+          border: 1px solid #3a4854;
+          color: #dce5e2;
+      }
+      QDialog#browserHistoryDialog QPushButton:hover:enabled,
+      QDialog#browserHistoryClearDialog QPushButton:hover:enabled,
+      QDialog#browserFavoritesDialog QPushButton:hover:enabled,
+      QDialog#browserFavoriteImportDialog QPushButton:hover:enabled,
+      QDialog#browserFavoriteEditorDialog QPushButton:hover:enabled,
+      QDialog#browserAudioTabsDialog QPushButton:hover:enabled,
+      QDialog#browserTabSearchDialog QPushButton:hover:enabled,
+      QDialog#browserTabGroupDialog QPushButton:hover:enabled,
+      QDialog#browserPinnedCloseDialog QPushButton:hover:enabled,
+      QDialog#browserPermissionDialog QPushButton:hover:enabled,
+      QDialog#browserPermissionManagementDialog QPushButton:hover:enabled,
+      QDialog#browserStartupSettingsDialog QPushButton:hover:enabled,
+      QDialog#browserActiveDownloadExitDialog QPushButton:hover:enabled,
+      QDialog#browserExternalProtocolDialog QPushButton:hover:enabled,
+      QDialog#browserCertificateDialog QPushButton:hover:enabled,
+      QDialog#browserClearDataDialog QPushButton:hover:enabled {
+          background: #1d8f62;
+          border-color: #32c98c;
+          color: #ffffff;
+      }
+      QListWidget#browserHistoryList,
+      QListWidget#browserFavoritesList,
+      QListWidget#browserAudioTabsList,
+      QListWidget#browserTabSearchList,
+      QListWidget#browserTabGroupList,
+      QListWidget#browserStartupUrlsList {
+          alternate-background-color: #151e27;
+          background: #0b1016;
+          border: 1px solid #2d3944;
+          border-radius: 8px;
+          color: #dce5e2;
+          outline: none;
+          padding: 5px;
+      }
+      QListWidget#browserHistoryList::item,
+      QListWidget#browserFavoritesList::item,
+      QListWidget#browserAudioTabsList::item,
+      QListWidget#browserTabSearchList::item,
+      QListWidget#browserTabGroupList::item,
+      QListWidget#browserStartupUrlsList::item {
+          border-bottom: 1px solid #202a33;
+          border-radius: 5px;
+          min-height: 38px;
+          padding: 7px 9px;
+      }
+      QListWidget#browserHistoryList::item:hover,
+      QListWidget#browserFavoritesList::item:hover,
+      QListWidget#browserAudioTabsList::item:hover,
+      QListWidget#browserTabSearchList::item:hover,
+      QListWidget#browserTabGroupList::item:hover,
+      QListWidget#browserStartupUrlsList::item:hover {
+          background: #1b332c;
+          color: #f4faf7;
+      }
+      QListWidget#browserHistoryList::item:selected,
+      QListWidget#browserFavoritesList::item:selected,
+      QListWidget#browserAudioTabsList::item:selected,
+      QListWidget#browserTabSearchList::item:selected,
+      QListWidget#browserTabGroupList::item:selected,
+      QListWidget#browserStartupUrlsList::item:selected {
+          background: #197b55;
+          color: #ffffff;
+      }
+      QLineEdit#browserFavoriteTitleEdit,
+      QLineEdit#browserFavoriteUrlEdit,
+      QLineEdit#browserFavoriteNoteEdit,
+      QLineEdit#browserHistorySearchEdit,
+      QLineEdit#browserFavoritesSearchEdit,
+      QLineEdit#browserPermissionSearchEdit,
+      QLineEdit#browserTabSearchEdit,
+      QLineEdit#browserTabGroupNameEdit,
+      QLineEdit#browserHomeUrlEdit,
+      QLineEdit#browserStartupUrlEdit,
+      QLineEdit#browserFindEdit {
+          background: #0b1016;
+          border: 1px solid #34424e;
+          border-radius: 7px;
+          color: #edf3f1;
+          padding: 7px 9px;
+          selection-background-color: #1f9b68;
+      }
+      QLineEdit#browserFavoriteTitleEdit:focus,
+      QLineEdit#browserFavoriteUrlEdit:focus,
+      QLineEdit#browserFavoriteNoteEdit:focus,
+      QLineEdit#browserHistorySearchEdit:focus,
+      QLineEdit#browserFavoritesSearchEdit:focus,
+      QLineEdit#browserPermissionSearchEdit:focus,
+      QLineEdit#browserTabSearchEdit:focus,
+      QLineEdit#browserTabGroupNameEdit:focus,
+      QLineEdit#browserHomeUrlEdit:focus,
+      QLineEdit#browserStartupUrlEdit:focus,
+      QLineEdit#browserFindEdit:focus {
+          background: #0e151c;
+          border-color: #27bd7d;
+      }
+      QLabel#browserPermissionOriginLabel,
+      QLabel#browserPermissionKindLabel,
+      QLabel#browserExternalProtocolOriginLabel,
+      QLabel#browserExternalProtocolTargetLabel,
+      QLabel#browserCertificateOriginLabel {
+          background: #0b1016;
+          border: 1px solid #2c3944;
+          border-left: 3px solid #24b97a;
+          border-radius: 6px;
+          color: #f0f5f3;
+          font-family: "Cascadia Mono";
+          padding: 8px 10px;
+      }
+      QLabel#browserPermissionLimitationLabel,
+      QLabel#browserPermissionStatusLabel,
+      QLabel#browserFavoriteTransferStatusLabel,
+      QLabel#browserStartupSettingsExplanation,
+      QLabel#browserClearDataExplanation {
+          background: #242014;
+          border: 1px solid #514322;
+          border-radius: 7px;
+          color: #e9cf91;
+          padding: 9px 11px;
+      }
+      QLabel#browserCertificateErrorLabel {
+          background: #321d1b;
+          border: 1px solid #6b3731;
+          border-left: 3px solid #dc695b;
+          border-radius: 7px;
+          color: #ffd1ca;
+          padding: 9px 11px;
+      }
+      QDialog QPushButton#browserFavoriteSaveButton,
+      QDialog QPushButton#browserFavoriteImportConfirmButton,
+      QDialog QPushButton#browserPermissionAllowOnceButton,
+      QDialog QPushButton#browserPermissionRememberButton,
+      QDialog QPushButton#browserPermissionSaveButton,
+      QDialog QPushButton#browserTabGroupCreateButton,
+      QDialog QPushButton#browserTabGroupRenameButton,
+      QDialog QPushButton#browserTabGroupRecolorButton,
+      QDialog QPushButton#browserTabGroupToggleCollapsedButton,
+      QDialog QPushButton#browserStartupSaveButton,
+      QDialog QPushButton#browserExternalProtocolConfirmButton,
+      QDialog QPushButton#browserCertificateSafetyButton,
+      QDialog QPushButton#browserFavoriteImportButton,
+      QDialog QPushButton#browserFavoriteExportButton,
+      QPushButton#browserDownloadRetryButton {
+          background: #168a5d;
+          border-color: #29bd80;
+          color: #ffffff;
+      }
+      QDialog QPushButton#browserFavoriteSaveButton:hover:enabled,
+      QDialog QPushButton#browserFavoriteImportConfirmButton:hover:enabled,
+      QDialog QPushButton#browserPermissionAllowOnceButton:hover:enabled,
+      QDialog QPushButton#browserPermissionRememberButton:hover:enabled,
+      QDialog QPushButton#browserPermissionSaveButton:hover:enabled,
+      QDialog QPushButton#browserTabGroupCreateButton:hover:enabled,
+      QDialog QPushButton#browserTabGroupRenameButton:hover:enabled,
+      QDialog QPushButton#browserTabGroupRecolorButton:hover:enabled,
+      QDialog QPushButton#browserTabGroupToggleCollapsedButton:hover:enabled,
+      QDialog QPushButton#browserStartupSaveButton:hover:enabled,
+      QDialog QPushButton#browserExternalProtocolConfirmButton:hover:enabled,
+      QDialog QPushButton#browserCertificateSafetyButton:hover:enabled,
+      QDialog QPushButton#browserFavoriteImportButton:hover:enabled,
+      QDialog QPushButton#browserFavoriteExportButton:hover:enabled,
+      QPushButton#browserDownloadRetryButton:hover:enabled {
+          background: #20aa72;
+          border-color: #42d69a;
+      }
+      QDialog QPushButton#browserFavoriteRemoveButton,
+      QDialog QPushButton#browserHistoryRemoveButton,
+      QDialog QPushButton#browserHistoryClearButton,
+      QDialog QPushButton#browserHistoryClearConfirmButton,
+      QDialog QPushButton#browserPermissionDenyButton,
+      QDialog QPushButton#browserPermissionRemoveButton,
+      QDialog QPushButton#browserTabGroupRemoveButton,
+      QDialog QPushButton#browserStartupRemoveButton,
+      QDialog QPushButton#browserCertificateContinueButton,
+      QDialog QPushButton#browserClearDataConfirmButton,
+      QDialog QPushButton#browserPinnedCloseConfirmButton,
+      QDialog QPushButton#browserActiveDownloadExitButton,
+      QPushButton#browserDownloadCancelButton,
+      QDialog QPushButton#browserAudioTabCloseButton {
+          background: #34201f;
+          border-color: #6c3935;
+          color: #f4b8b0;
+      }
+      QDialog QPushButton#browserFavoriteRemoveButton:hover:enabled,
+      QDialog QPushButton#browserHistoryRemoveButton:hover:enabled,
+      QDialog QPushButton#browserHistoryClearButton:hover:enabled,
+      QDialog QPushButton#browserHistoryClearConfirmButton:hover:enabled,
+      QDialog QPushButton#browserPermissionDenyButton:hover:enabled,
+      QDialog QPushButton#browserPermissionRemoveButton:hover:enabled,
+      QDialog QPushButton#browserTabGroupRemoveButton:hover:enabled,
+      QDialog QPushButton#browserStartupRemoveButton:hover:enabled,
+      QDialog QPushButton#browserClearDataConfirmButton:hover:enabled,
+      QDialog QPushButton#browserPinnedCloseConfirmButton:hover:enabled,
+      QDialog QPushButton#browserActiveDownloadExitButton:hover:enabled,
+      QPushButton#browserDownloadCancelButton:hover:enabled,
+      QDialog QPushButton#browserAudioTabCloseButton:hover:enabled {
+          background: #a84036;
+          border-color: #d96054;
+          color: #ffffff;
+      }
+  )") + QStringLiteral(R"(
+      QTableWidget#browserPermissionTable {
+          alternate-background-color: #151e27;
+          background: #0b1016;
+          border: 1px solid #2d3944;
+          border-radius: 8px;
+          color: #dce5e2;
+          gridline-color: #202a33;
+          outline: none;
+      }
+      QTableWidget#browserPermissionTable::item {
+          min-height: 32px;
+          padding: 5px 8px;
+      }
+      QTableWidget#browserPermissionTable::item:selected {
+          background: #197b55;
+          color: #ffffff;
+      }
+      QTableWidget#browserPermissionTable QHeaderView::section {
+          background: #202b35;
+          border: 0;
+          border-bottom: 1px solid #3a4854;
+          color: #dce5e2;
+          padding: 7px 9px;
+      }
+      QComboBox#browserPermissionStateCombo {
+          background: #0b1016;
+          border: 1px solid #34424e;
+          border-radius: 7px;
+          color: #edf3f1;
+          min-width: 104px;
+          padding: 7px 9px;
+      }
+      QComboBox#browserTabGroupColorCombo,
+      QComboBox#browserStartupModeCombo {
+          background: #0b1016;
+          border: 1px solid #34424e;
+          border-radius: 7px;
+          color: #edf3f1;
+          min-width: 116px;
+          padding: 7px 9px;
+      }
+      QSpinBox#browserMaximumTabCountSpin {
+          background: #0b1016;
+          border: 1px solid #34424e;
+          border-radius: 7px;
+          color: #edf3f1;
+          min-width: 104px;
+          padding: 7px 9px;
+      }
+      QLabel#browserTabGroupStatusLabel[status="success"] {
+          background: #183b30;
+          border: 1px solid #2f7059;
+          border-radius: 7px;
+          color: #8ce6bc;
+          padding: 8px 10px;
+      }
+      QLabel#browserTabGroupStatusLabel[status="error"] {
+          background: #321d1b;
+          border: 1px solid #6b3731;
+          border-radius: 7px;
+          color: #ffd1ca;
+          padding: 8px 10px;
+      }
+      QDialog QPushButton#browserCertificateContinueButton {
+          background: #3a2b18;
+          border-color: #75532a;
+          color: #f6d59d;
+      }
+      QDialog QPushButton#browserCertificateContinueButton:hover:enabled {
+          background: #9c682d;
+          border-color: #d39b50;
+          color: #ffffff;
+      }
+      QFrame#browserFindBar {
+          background: #151d25;
+          border: 1px solid #2d3b46;
+          border-radius: 8px;
+      }
+      QLabel#browserFindResultLabel {
+          color: #8fa29b;
+          font-family: "Cascadia Mono";
+          min-width: 44px;
+      }
+      QFrame#browserFindBar QPushButton,
+      QFrame#browserFindBar QToolButton {
+          min-width: 54px;
+          padding: 6px 9px;
+      }
+      QMenu#browserTabContextMenu {
+          background: #111820;
+          border: 1px solid #34424d;
+          border-radius: 7px;
+          color: #e6eeeb;
+          padding: 6px;
+      }
+      QMenu#browserTabContextMenu::separator {
+          background: #2b3741;
+          height: 1px;
+          margin: 5px 9px;
+      }
+      QMenu#browserTabContextMenu::item {
+          margin: 1px;
+          min-width: 150px;
+          padding: 7px 25px;
+      }
+      QMenu#browserTabContextMenu::item:selected {
+          background: #1d8f62;
+          color: #ffffff;
+      }
+      QWidget#browserDownloadCenter {
+          background: #0f161e;
+          border: 1px solid #2d3b46;
+          border-radius: 10px;
+          color: #dce5e2;
+      }
+      QLabel#browserDownloadCenterTitleLabel {
+          color: #f2f7f5;
+          font-size: 15px;
+          font-weight: 700;
+      }
+      QLabel#browserDownloadCenterSummaryLabel {
+          color: #8fa29b;
+          font-family: "Cascadia Mono";
+      }
+      QPushButton#browserDownloadClearCompletedButton {
+          background: #18242c;
+          border: 1px solid #34454f;
+          border-radius: 7px;
+          color: #b8c8c2;
+          padding: 6px 10px;
+      }
+      QPushButton#browserDownloadClearCompletedButton:hover:enabled {
+          background: #21333c;
+          border-color: #4c6962;
+          color: #ffffff;
+      }
+      QScrollArea#browserDownloadCenterScrollArea,
+      QWidget#browserDownloadCenterContent {
+          background: transparent;
+          border: none;
+      }
+      QLabel#browserDownloadCenterEmptyLabel {
+          background: #111a22;
+          border: 1px dashed #34444f;
+          border-radius: 8px;
+          color: #72867f;
+          padding: 24px;
+      }
+      QWidget#browserDownloadWidget {
+          background: #131c24;
+          border: 1px solid #30404c;
+          border-left: 3px solid #26b879;
+          border-radius: 8px;
+          color: #dce5e2;
+      }
+      QLabel#browserDownloadOriginLabel {
+          color: #7f948d;
+          font-family: "Cascadia Mono";
+      }
+      QLabel#browserDownloadFileNameLabel {
+          color: #f1f6f4;
+          font-weight: 700;
+      }
+      QLabel#browserDownloadSizeLabel {
+          color: #9aaba5;
+      }
+      QLabel#browserDownloadSpeedLabel,
+      QLabel#browserDownloadRemainingLabel {
+          color: #7faaa0;
+          font-size: 10px;
+      }
+      QLabel#browserDownloadStateLabel {
+          background: #183b30;
+          border-radius: 9px;
+          color: #63dca9;
+          font-weight: 700;
+          padding: 3px 8px;
+      }
+      QLabel#browserDownloadErrorLabel {
+          color: #f09487;
+      }
+      QProgressBar#browserDownloadProgressBar {
+          background: #29343d;
+          border: none;
+          border-radius: 4px;
+          color: #ffffff;
+          font-size: 10px;
+          min-height: 8px;
+          text-align: center;
+      }
+      QProgressBar#browserDownloadProgressBar::chunk {
+          background: #20b974;
+          border-radius: 4px;
+      }
+      QDialog#browserHistoryDialog QScrollBar:vertical,
+      QDialog#browserFavoritesDialog QScrollBar:vertical,
+      QDialog#browserAudioTabsDialog QScrollBar:vertical,
+      QDialog#browserTabSearchDialog QScrollBar:vertical,
+      QDialog#browserTabGroupDialog QScrollBar:vertical,
+      QDialog#browserStartupSettingsDialog QScrollBar:vertical,
+      QScrollArea#browserDownloadCenterScrollArea QScrollBar:vertical {
+          background: #0b1016;
+          border: none;
+          margin: 2px;
+          width: 9px;
+      }
+      QDialog#browserHistoryDialog QScrollBar::handle:vertical,
+      QDialog#browserFavoritesDialog QScrollBar::handle:vertical,
+      QDialog#browserAudioTabsDialog QScrollBar::handle:vertical,
+      QDialog#browserTabSearchDialog QScrollBar::handle:vertical,
+      QDialog#browserTabGroupDialog QScrollBar::handle:vertical,
+      QDialog#browserStartupSettingsDialog QScrollBar::handle:vertical,
+      QScrollArea#browserDownloadCenterScrollArea QScrollBar::handle:vertical {
+          background: #3b4a55;
+          border-radius: 4px;
+          min-height: 24px;
+      }
+      QDialog#browserHistoryDialog QScrollBar::add-line:vertical,
+      QDialog#browserHistoryDialog QScrollBar::sub-line:vertical,
+      QDialog#browserFavoritesDialog QScrollBar::add-line:vertical,
+      QDialog#browserFavoritesDialog QScrollBar::sub-line:vertical,
+      QDialog#browserAudioTabsDialog QScrollBar::add-line:vertical,
+      QDialog#browserAudioTabsDialog QScrollBar::sub-line:vertical,
+      QDialog#browserTabSearchDialog QScrollBar::add-line:vertical,
+      QDialog#browserTabSearchDialog QScrollBar::sub-line:vertical,
+      QDialog#browserTabGroupDialog QScrollBar::add-line:vertical,
+      QDialog#browserTabGroupDialog QScrollBar::sub-line:vertical,
+      QDialog#browserStartupSettingsDialog QScrollBar::add-line:vertical,
+      QDialog#browserStartupSettingsDialog QScrollBar::sub-line:vertical,
+      QScrollArea#browserDownloadCenterScrollArea QScrollBar::add-line:vertical,
+      QScrollArea#browserDownloadCenterScrollArea QScrollBar::sub-line:vertical {
+          height: 0;
+      }
+      QWidget#browserPage[responsiveSize="compact"] QDialog {
+          min-width: 300px;
+      }
+      QWidget#browserPage[responsiveSize="compact"] QDialog QListWidget,
+      QFrame#browserFindBar[responsiveSize="compact"] QLineEdit,
+      QFrame#browserFindBar[responsiveSize="compact"] QPushButton,
+      QFrame#browserFindBar[responsiveSize="compact"] QToolButton {
+          font-size: 11px;
+      }
+      QFrame#browserFindBar[responsiveSize="compact"] QPushButton,
+      QFrame#browserFindBar[responsiveSize="compact"] QToolButton {
+          min-width: 44px;
+          padding: 5px 6px;
+      }
+      QWidget#browserPage[responsiveSize="large"] QDialog QListWidget,
+      QWidget#browserPage[responsiveSize="large"] QDialog QLineEdit,
+      QFrame#browserFindBar[responsiveSize="large"] QLineEdit,
+      QFrame#browserFindBar[responsiveSize="large"] QPushButton {
+          font-size: 14px;
+      }
+      QWidget#browserPage[responsiveSize="extraLarge"] QDialog QListWidget,
+      QWidget#browserPage[responsiveSize="extraLarge"] QDialog QLineEdit,
+      QFrame#browserFindBar[responsiveSize="extraLarge"] QLineEdit,
+      QFrame#browserFindBar[responsiveSize="extraLarge"] QPushButton {
+          font-size: 16px;
       }
   )");
   return styleSheet;

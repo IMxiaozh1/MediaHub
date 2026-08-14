@@ -116,6 +116,11 @@ void BrowserDownloadWidget::updateDownload(const std::uint64_t requestId,
         isCancelSent_ = false;
         cancelButton_->setEnabled(true);
         break;
+    case BrowserDownloadState::RetryableFailure:
+        stateLabel_->setText(QStringLiteral("下载中断"));
+        isCancelSent_ = false;
+        cancelButton_->setEnabled(true);
+        break;
     case BrowserDownloadState::Completed:
         stateLabel_->setText(QStringLiteral("下载完成"));
         isTerminal_ = true;

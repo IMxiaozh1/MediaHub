@@ -44,7 +44,7 @@ struct SuspensionStep {
 // 协调异步挂起与同步恢复，避免旧完成回调覆盖最新可见性目标。
 class SuspensionCoordinator final {
  public:
-    explicit SuspensionCoordinator(const bool isSuspended = true) noexcept
+    explicit SuspensionCoordinator(const bool isSuspended = false) noexcept
         : isSuspendedDesired_(isSuspended) {}
 
     // 调用线程：创建 Controller 的 GUI STA。
@@ -145,7 +145,7 @@ class SuspensionCoordinator final {
         return SuspensionStep{action, activeRequestSerial_};
     }
 
-    bool isSuspendedDesired_{true};
+    bool isSuspendedDesired_{false};
     bool isControllerAvailable_{false};
     ActualState actualState_{ActualState::Unavailable};
     InFlight inFlight_{InFlight::None};

@@ -152,13 +152,16 @@ struct GuiHarness {
   test::FakePlayerEngine engine;
   EngineEventBridge eventBridge;
   test::FakeBrowserBackend browserBackend;
-  MainWindow window{&browserBackend, QStringLiteral("C:/temporary-profile")};
+  MainWindow window;
   FakeLyricsService lyricsService;
   FakeLivePlaylistService livePlaylistService;
   PlayerPresenter presenter;
 
-  explicit GuiHarness(AppStateStore *const appStateStore = nullptr)
-      : presenter(engine, eventBridge, window, nullptr, &logger, &lyricsService,
+  explicit GuiHarness(AppStateStore *const appStateStore = nullptr,
+                      const bool supportsConcurrentDownloads = false)
+      : browserBackend(supportsConcurrentDownloads),
+        window(&browserBackend, QStringLiteral("C:/temporary-profile")),
+        presenter(engine, eventBridge, window, nullptr, &logger, &lyricsService,
                   &livePlaylistService, appStateStore) {}
 };
 
@@ -254,6 +257,7 @@ private slots:
   void separatesLocalAndLiveListsWithoutStoppingPlayback();
   void switchesToWebWithoutChangingPlaylistsAndPausesNativePlayback();
   void pausesOnlyActiveNativePlaybackWhenEnteringWeb();
+  void showsAudibleWebTabCountAcrossDisplayModes();
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
@@ -328,6 +332,7 @@ private slots:
   void resizesVideoSurfaceAndTogglesFullScreen();
   void togglesFullScreenWithF11();
   void showsSupportedShortcutsFromHelpMenu();
+  void confirmsBeforeClosingWithActiveWebDownloads();
   void stopsForwardingBeforeWindowCloses();
   void runsShutdownFallbackOnlyAfterTimeout();
   void cancelsShutdownFallbackAfterNormalCleanup();
@@ -363,17 +368,28 @@ void MainWindowTest::switchesToWebWithoutChangingPlaylistsAndPausesNativePlaybac
   QCOMPARE(playlist->model()->rowCount(), originalRows);
   QVERIFY(requiredChild<QWidget>(harness.window, "browserPage")->isVisible());
 
+  const int originalMuteCommands = harness.browserBackend.count(
+      test::FakeBrowserCommandKind::SetAudioMuted);
+  const int originalSuspendCommands = harness.browserBackend.count(
+      test::FakeBrowserCommandKind::SetSuspended);
+  const std::size_t originalBrowserCommandCount =
+      harness.browserBackend.commands.size();
   QTest::mouseClick(requiredChild<QToolButton>(harness.window, "localModeButton"),
                     Qt::LeftButton);
   QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Play),
            originalPlayCommands);
   QCOMPARE(playlist->model()->rowCount(), originalRows);
-  QVERIFY(harness.browserBackend.hasFlagCommand(
-      test::FakeBrowserCommandKind::SetAudioMuted, true));
-  QVERIFY(harness.browserBackend.hasFlagCommand(
-      test::FakeBrowserCommandKind::SetSuspended, true));
-  QVERIFY(harness.browserBackend.hasFlagCommand(
-      test::FakeBrowserCommandKind::SetVisible, false));
+  QCOMPARE(harness.browserBackend.count(
+               test::FakeBrowserCommandKind::SetAudioMuted),
+           originalMuteCommands);
+  QCOMPARE(harness.browserBackend.count(
+               test::FakeBrowserCommandKind::SetSuspended),
+           originalSuspendCommands);
+  QCOMPARE(harness.browserBackend.commands.size(),
+           originalBrowserCommandCount + 1);
+  QCOMPARE(harness.browserBackend.lastCommand().kind,
+           test::FakeBrowserCommandKind::SetVisible);
+  QVERIFY(!harness.browserBackend.lastCommand().flag);
 }
 
 void MainWindowTest::pausesOnlyActiveNativePlaybackWhenEnteringWeb() {
@@ -413,6 +429,48 @@ void MainWindowTest::pausesOnlyActiveNativePlaybackWhenEnteringWeb() {
   verifyPauseCount(core::PlaybackState::Buffering, 1);
   verifyPauseCount(core::PlaybackState::Playing, 1);
   verifyPauseCount(core::PlaybackState::Paused, 0);
+}
+
+void MainWindowTest::showsAudibleWebTabCountAcrossDisplayModes() {
+  GuiHarness harness;
+  auto* const browserPage =
+      requiredChild<QWidget>(harness.window, "browserPage");
+  auto* const localModeButton =
+      requiredChild<QToolButton>(harness.window, "localModeButton");
+  auto* const liveModeButton =
+      requiredChild<QToolButton>(harness.window, "liveModeButton");
+  auto* const webModeButton =
+      requiredChild<QToolButton>(harness.window, "webModeButton");
+  const std::size_t originalEngineCommandCount = harness.engine.commands().size();
+
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页"));
+  QVERIFY(localModeButton->isChecked());
+  QVERIFY(QMetaObject::invokeMethod(browserPage, "audibleTabCountChanged",
+                                    Qt::DirectConnection, Q_ARG(int, 1)));
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页 · 1"));
+  QVERIFY(webModeButton->toolTip().contains(QStringLiteral("1 个网页标签")));
+  QVERIFY(localModeButton->isChecked());
+  QCOMPARE(harness.engine.commands().size(), originalEngineCommandCount);
+
+  harness.window.showDisplayMode(DisplayMode::Live);
+  QVERIFY(liveModeButton->isChecked());
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页 · 1"));
+  QVERIFY(QMetaObject::invokeMethod(browserPage, "audibleTabCountChanged",
+                                    Qt::DirectConnection, Q_ARG(int, 3)));
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页 · 3"));
+  QVERIFY(liveModeButton->isChecked());
+
+  harness.window.showDisplayMode(DisplayMode::Web);
+  QVERIFY(webModeButton->isChecked());
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页 · 3"));
+  harness.window.showDisplayMode(DisplayMode::Local);
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页 · 3"));
+
+  QVERIFY(QMetaObject::invokeMethod(browserPage, "audibleTabCountChanged",
+                                    Qt::DirectConnection, Q_ARG(int, 0)));
+  QCOMPARE(webModeButton->text(), QStringLiteral("网页"));
+  QCOMPARE(webModeButton->toolTip(), QStringLiteral("切换到网页模式"));
+  QVERIFY(localModeButton->isChecked());
 }
 
 void MainWindowTest::loadsReplaceableWindowIconsFromFixedSlots() {
@@ -4819,6 +4877,52 @@ void MainWindowTest::stopsForwardingBeforeWindowCloses() {
   harness.eventBridge.onStateChanged(core::PlaybackState::Opening);
   QCoreApplication::processEvents();
   QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
+}
+
+void MainWindowTest::confirmsBeforeClosingWithActiveWebDownloads() {
+  GuiHarness harness(nullptr, true);
+  harness.window.show();
+  QCoreApplication::processEvents();
+  harness.browserBackend.emitReady(1);
+  harness.browserBackend.emitTabDownloadRequested(
+      1, 501, QStringLiteral("https://download.example"),
+      QStringLiteral("archive.bin"), 1024);
+  harness.browserBackend.emitTabDownloadUpdated(
+      1, 501, BrowserDownloadState::RetryableFailure, 512, 1024);
+
+  harness.window.close();
+  QCoreApplication::processEvents();
+  QVERIFY(harness.window.isVisible());
+  auto* const dialog = requiredChild<QDialog>(
+      harness.window, "browserActiveDownloadExitDialog");
+  QVERIFY(dialog->isVisible());
+  QVERIFY(requiredChild<QLabel>(harness.window, "browserActiveDownloadExitLabel")
+              ->text()
+              .contains(QStringLiteral("1 个网页下载任务")));
+  QCOMPARE(harness.browserBackend.count(
+               test::FakeBrowserCommandKind::Shutdown),
+           0);
+
+  QTest::mouseClick(
+      requiredChild<QPushButton>(harness.window,
+                                 "browserActiveDownloadReturnButton"),
+      Qt::LeftButton);
+  QVERIFY(harness.window.isVisible());
+  QVERIFY(!dialog->isVisible());
+
+  harness.window.close();
+  QCoreApplication::processEvents();
+  QTest::mouseClick(
+      requiredChild<QPushButton>(harness.window,
+                                 "browserActiveDownloadExitButton"),
+      Qt::LeftButton);
+  QTRY_VERIFY(!harness.window.isVisible());
+  QCOMPARE(harness.browserBackend.count(
+               test::FakeBrowserCommandKind::CancelDownload),
+           1);
+  QCOMPARE(harness.browserBackend.count(
+               test::FakeBrowserCommandKind::Shutdown),
+           1);
 }
 
 void MainWindowTest::runsShutdownFallbackOnlyAfterTimeout() {

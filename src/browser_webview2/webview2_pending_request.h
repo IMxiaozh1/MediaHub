@@ -355,6 +355,49 @@ HRESULT requestActiveDownloadCancellation(Active& active, Cancel&& cancel,
     return result;
 }
 
+enum class DownloadResumeAction {
+    Resumed,
+    RemainRetryable,
+    ReportFailed,
+};
+
+struct DownloadResumeOutcome final {
+    DownloadResumeAction action{DownloadResumeAction::ReportFailed};
+    HRESULT result{E_FAIL};
+};
+
+// 可恢复下载只在 WebView2 再次确认中断且允许恢复后重订阅事件。
+template <typename Active, typename Validate, typename Register, typename Store,
+          typename Resume, typename Rollback>
+DownloadResumeOutcome resumeInterruptedDownloadTransaction(
+    Active& active, Validate&& validate, Register&& registerActive,
+    Store&& storeActive, Resume&& resume, Rollback&& rollbackActive) {
+    const HRESULT validationResult = validate(active);
+    if (validationResult == S_FALSE) {
+        return {DownloadResumeAction::ReportFailed, validationResult};
+    }
+    if (FAILED(validationResult)) {
+        return {DownloadResumeAction::RemainRetryable, validationResult};
+    }
+
+    const HRESULT registrationResult = registerActive(active);
+    if (FAILED(registrationResult)) {
+        active.resetSubscriptions();
+        return {DownloadResumeAction::RemainRetryable, registrationResult};
+    }
+    if (!storeActive(active)) {
+        active.resetSubscriptions();
+        return {DownloadResumeAction::RemainRetryable, E_UNEXPECTED};
+    }
+
+    const HRESULT resumeResult = resume();
+    if (SUCCEEDED(resumeResult)) {
+        return {DownloadResumeAction::Resumed, resumeResult};
+    }
+    rollbackActive();
+    return {DownloadResumeAction::RemainRetryable, resumeResult};
+}
+
 // 关闭阶段不信任此前的取消请求结果，始终再次向 operation 提交 Cancel。
 template <typename Active, typename Cancel>
 HRESULT cancelActiveDownloadForShutdown(Active& active, Cancel&& cancel) {
@@ -369,6 +412,7 @@ struct DownloadSnapshot final {
     HRESULT stateResult{E_FAIL};
     bool hasState{false};
     bool isTerminal{false};
+    bool canResume{false};
 };
 
 // 必须先读取终态；进度读取失败只降级数值，不能阻止终态释放活动任务。
@@ -407,12 +451,20 @@ DownloadSnapshot readDownloadSnapshot(Operation* const operation,
         COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason =
             COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
         static_cast<void>(operation->get_InterruptReason(&reason));
-        snapshot.state =
+        const bool isCancelled =
             isCancelRequested ||
-                    reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED ||
-                    reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN
-                ? gui::BrowserDownloadState::Cancelled
-                : gui::BrowserDownloadState::Failed;
+            reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED ||
+            reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN;
+        BOOL canResume = FALSE;
+        if (!isCancelled && SUCCEEDED(operation->get_CanResume(&canResume)) &&
+            canResume == TRUE) {
+            snapshot.state = gui::BrowserDownloadState::RetryableFailure;
+            snapshot.canResume = true;
+        } else {
+            snapshot.state = isCancelled
+                                 ? gui::BrowserDownloadState::Cancelled
+                                 : gui::BrowserDownloadState::Failed;
+        }
         snapshot.isTerminal = true;
     }
     return snapshot;

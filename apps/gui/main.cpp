@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDir>
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QTimer>
@@ -9,6 +10,9 @@
 #include "app_state_store.h"
 #include "browser_profile_directory.h"
 #include "browser_data_store.h"
+#include "browser_permission_store.h"
+#include "browser_session_store.h"
+#include "browser_startup_settings.h"
 #include "engine_event_bridge.h"
 #include "main_window.h"
 #include "mediahub/browser_webview2/webview2_browser_backend.h"
@@ -30,15 +34,27 @@ int main(int argc, char* argv[]) {
       mediahub::engine_vlc::VlcPlayerEngine engine;
       logger.log(mediahub::logging::LogLevel::Info, "engine", "initialized");
       mediahub::browser_webview2::WebView2BrowserBackend browserBackend(&logger);
+      const QString appLocalDataLocation =
+          QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
       const QString browserProfileDirectory =
           mediahub::gui::makeBrowserProfileDirectory(
-              QStandardPaths::writableLocation(
-                  QStandardPaths::AppLocalDataLocation));
+              appLocalDataLocation);
+      mediahub::gui::DpapiBrowserSessionStore browserSessionStore(
+          QDir(appLocalDataLocation)
+              .filePath(QStringLiteral("Browser/session-v1.bin")));
+      mediahub::gui::QSettingsBrowserStartupSettingsStore
+          browserStartupSettingsStore;
+      mediahub::gui::BrowserPermissionStore browserPermissionStore(
+          QDir(appLocalDataLocation)
+              .filePath(QStringLiteral("Browser/permissions-v1.json")));
       mediahub::gui::EngineEventBridge eventBridge;
       mediahub::gui::QSettingsBrowserDataStore browserDataStore;
       mediahub::gui::MainWindow mainWindow(&browserBackend,
                                            browserProfileDirectory, nullptr,
-                                           &browserDataStore);
+                                           &browserDataStore,
+                                           &browserSessionStore,
+                                           &browserStartupSettingsStore,
+                                           &browserPermissionStore);
       mediahub::gui::QSettingsAppStateStore appStateStore;
       QObject::connect(&mainWindow, &mediahub::gui::MainWindow::closing,
                        &mainWindow,
@@ -62,7 +78,7 @@ int main(int argc, char* argv[]) {
     return exitCode;
   } catch (const std::exception& error) {
     logger.log(mediahub::logging::LogLevel::Error, "application",
-               "startup_failed", {{"detail", error.what()}});
+               "startup_failed", {{"detail", "exception"}});
     QMessageBox::critical(nullptr, QStringLiteral("MediaHub 启动失败"),
                           QString::fromUtf8(error.what()));
     return EXIT_FAILURE;

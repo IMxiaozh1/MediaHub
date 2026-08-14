@@ -18,6 +18,7 @@
 class QAbstractItemModel;
 class QAction;
 class QCloseEvent;
+class QDialog;
 class QDragEnterEvent;
 class QDropEvent;
 class QLabel;
@@ -42,6 +43,9 @@ namespace mediahub::gui {
 class BrowserBackend;
 class BrowserDataStore;
 class BrowserPage;
+class BrowserPermissionStore;
+class BrowserSessionStore;
+class BrowserStartupSettingsStore;
 class VideoOutputWidget;
 class LyricsView;
 struct LyricsResult;
@@ -60,7 +64,11 @@ class MainWindow final : public QMainWindow {
   explicit MainWindow(BrowserBackend* browserBackend = nullptr,
                       QString browserProfileDirectory = {},
                       QWidget* parent = nullptr,
-                      BrowserDataStore* browserDataStore = nullptr);
+                      BrowserDataStore* browserDataStore = nullptr,
+                      BrowserSessionStore* browserSessionStore = nullptr,
+                      BrowserStartupSettingsStore* browserStartupSettingsStore =
+                          nullptr,
+                      BrowserPermissionStore* browserPermissionStore = nullptr);
   // 调用线程：GUI 主线程。先销毁网页页，确保后端覆盖其关闭过程。
   ~MainWindow() override;
 
@@ -162,6 +170,8 @@ class MainWindow final : public QMainWindow {
   void toggleFullScreen();
   void exitFullScreen();
   void handleWebFullScreenChanged(bool isFullScreen);
+  // 调用线程：GUI 主线程。只更新网页模式入口，不改变当前播放或显示模式。
+  void updateWebAudibleTabCount(int audibleTabCount);
   void updateFullScreenText();
   void togglePlaylistVisibility();
   void updatePlaylistToggleAppearance();
@@ -172,6 +182,7 @@ class MainWindow final : public QMainWindow {
   void selectPlaylistRow(int row);
   void showPlaylistKind(int kindIndex);
   void applyLivePlaylistFilter();
+  void showActiveDownloadExitConfirmation(int activeDownloadCount);
 
   WindowIconManager windowIconManager_;
   QAction* openAction_{nullptr};
@@ -231,6 +242,8 @@ class MainWindow final : public QMainWindow {
   QStackedLayout* mediaDisplayStack_{nullptr};
   QStackedLayout* displayModeStack_{nullptr};
   BrowserPage* browserPage_{nullptr};
+  QDialog* activeDownloadExitDialog_{nullptr};
+  QLabel* activeDownloadExitLabel_{nullptr};
   QLabel* mediaNameLabel_{nullptr};
   QLabel* statusLabel_{nullptr};
   QLabel* errorLabel_{nullptr};
@@ -257,6 +270,7 @@ class MainWindow final : public QMainWindow {
   std::optional<UiPresentationMode> presentationMode_;
   std::optional<Qt::WindowStates> webFullScreenPreviousWindowState_;
   DisplayMode displayMode_{DisplayMode::Local};
+  int audibleWebTabCount_{0};
   int currentPlaylistIndex_{-1};
   int currentLivePlaybackIndex_{-1};
   bool isPlaylistExpanded_{true};
@@ -269,6 +283,7 @@ class MainWindow final : public QMainWindow {
   bool isCurrentPlaybackInActivePlaylist_{false};
   bool isRightKeyPressed_{false};
   bool isRightKeyHoldActive_{false};
+  bool isDownloadExitConfirmed_{false};
   std::unique_ptr<BrowserBackend> ownedBrowserBackend_;
   BrowserBackend* browserBackend_{nullptr};
 };

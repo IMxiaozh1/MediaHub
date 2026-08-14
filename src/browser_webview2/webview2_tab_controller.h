@@ -8,6 +8,7 @@
 #include <WebView2.h>
 #include <wrl.h>
 
+#include <QByteArray>
 #include <QRect>
 #include <QString>
 
@@ -21,6 +22,14 @@
 
 namespace mediahub::browser_webview2 {
 
+// 调用线程：WebView2 Favicon 完成回调所在的 GUI STA；只接受不超过 1 MiB 的 PNG。
+[[nodiscard]] HRESULT readFaviconPngStream(IStream* stream,
+                                           QByteArray& pngBytes) noexcept;
+
+// 将 WebView2 进程类别收敛为 GUI 可长期依赖的稳定语义。
+[[nodiscard]] gui::BrowserProcessFailureKind classifyProcessFailureKind(
+    COREWEBVIEW2_PROCESS_FAILED_KIND kind) noexcept;
+
 // 在现有网页宿主内承载一个独立 WebView，并与其他标签共享 Environment/Profile。
 class WebView2TabController final {
  public:
@@ -33,13 +42,27 @@ class WebView2TabController final {
     using NavigationStoppedCallback = NavigationCompletedCallback;
     using ErrorCallback = std::function<void(std::uint64_t, std::uint64_t,
                                              gui::BrowserErrorKind, HRESULT)>;
+    using ProcessFailedCallback = std::function<void(
+        std::uint64_t, std::uint64_t, gui::BrowserProcessFailureKind)>;
     using NewWindowCallback =
         std::function<HRESULT(ICoreWebView2NewWindowRequestedEventArgs*)>;
     using ClosedCallback = std::function<void(std::uint64_t)>;
     using FullScreenCallback =
         std::function<void(std::uint64_t, std::uint64_t, bool)>;
+    using AudioStateCallback =
+        std::function<void(std::uint64_t, std::uint64_t, bool)>;
+    using FaviconCallback = std::function<void(
+        std::uint64_t, std::uint64_t, std::uint64_t, const QByteArray&)>;
+    using FaviconFailedCallback =
+        std::function<void(std::uint64_t, std::uint64_t, HRESULT)>;
+    using ZoomFactorCallback =
+        std::function<void(std::uint64_t, std::uint64_t, double)>;
     using AcceleratorCallback = std::function<void(
         std::uint64_t, std::uint64_t, gui::BrowserAccelerator)>;
+    using FindResultCallback = std::function<void(
+        std::uint64_t, std::uint64_t, std::uint64_t, int, int)>;
+    using FindFailedCallback = std::function<void(
+        std::uint64_t, std::uint64_t, std::uint64_t, HRESULT)>;
     using PermissionCallback = std::function<HRESULT(
         std::uint64_t, std::uint64_t,
         ICoreWebView2PermissionRequestedEventArgs*)>;
@@ -65,10 +88,14 @@ class WebView2TabController final {
         NavigationCompletedCallback navigationCompletedCallback,
         DocumentStateChangedCallback documentStateChangedCallback,
         NavigationStoppedCallback navigationStoppedCallback,
-        ErrorCallback errorCallback,
+        ErrorCallback errorCallback, ProcessFailedCallback processFailedCallback,
         NewWindowCallback newWindowCallback, ClosedCallback closedCallback,
-        FullScreenCallback fullScreenCallback,
-        AcceleratorCallback acceleratorCallback,
+        FullScreenCallback fullScreenCallback, AudioStateCallback audioStateCallback,
+        FaviconCallback faviconCallback,
+        FaviconFailedCallback faviconFailedCallback,
+        ZoomFactorCallback zoomFactorCallback,
+        AcceleratorCallback acceleratorCallback, FindResultCallback findResultCallback,
+        FindFailedCallback findFailedCallback,
         PermissionCallback permissionCallback,
         ScreenCaptureCallback screenCaptureCallback,
         DownloadCallback downloadCallback,
@@ -91,20 +118,46 @@ class WebView2TabController final {
     void goBack() noexcept;
     void goForward() noexcept;
     void reloadOrStop() noexcept;
+    // 调用线程：GUI 主线程。恢复崩溃标签时始终重新加载，不受导航状态影响。
+    [[nodiscard]] bool reload(std::uint64_t generation) noexcept;
+    // 调用线程：GUI 主线程。查询文本只交给当前 WebView2 Find 对象。
+    void findInPage(const QString& text, bool forward) noexcept;
+    // 调用线程：GUI 主线程。WebView2 Stop 会清除查找高亮；参数保留统一后端语义。
+    void stopFinding(bool clearSelection) noexcept;
     void setBounds(const QRect& bounds) noexcept;
     void setVisible(bool isVisible) noexcept;
     void setAudioMuted(bool isMuted) noexcept;
+    // 调用线程：GUI 主线程。比例会限制在 25% 至 500%。
+    void setZoomFactor(double zoomFactor) noexcept;
     void exitFullScreen() noexcept;
     void close() noexcept;
     [[nodiscard]] std::uint64_t generation() const noexcept {
         return generation_;
     }
+    // 调用线程：GUI 主线程。供排队事件在交付前复核查找请求身份。
+    [[nodiscard]] bool isCurrentFindRequest(
+        std::uint64_t generation, std::uint64_t requestSerial) const noexcept;
+    // 调用线程：GUI 主线程。供排队事件在交付前复核图标请求身份。
+    [[nodiscard]] bool isCurrentFaviconRequest(
+        std::uint64_t generation, std::uint64_t requestSerial) const noexcept;
 
  private:
     [[nodiscard]] HRESULT createController();
     void finishController(HRESULT status, ICoreWebView2Controller* controller);
     [[nodiscard]] HRESULT configureSettings();
     [[nodiscard]] HRESULT registerEvents();
+    [[nodiscard]] HRESULT registerFaviconChanged();
+    [[nodiscard]] HRESULT registerZoomFactorChanged();
+    void requestFavicon(std::uint64_t generation) noexcept;
+    void clearFavicon(std::uint64_t generation) noexcept;
+    [[nodiscard]] std::uint64_t nextFaviconRequestSerial() noexcept;
+    [[nodiscard]] HRESULT ensureFindController();
+    [[nodiscard]] HRESULT observeFindResults(
+        std::uint64_t generation, std::uint64_t requestSerial);
+    void emitFindResult(std::uint64_t generation,
+                        std::uint64_t requestSerial);
+    [[nodiscard]] std::uint64_t nextFindRequestSerial() noexcept;
+    void releaseFindController() noexcept;
     enum class SnapshotKind {
         NavigationCompleted,
         NavigationStopped,
@@ -125,10 +178,16 @@ class WebView2TabController final {
     EventRegistration navigationStarting_;
     EventRegistration navigationCompleted_;
     EventRegistration documentTitleChanged_;
+    EventRegistration processFailed_;
     EventRegistration newWindowRequested_;
     EventRegistration windowCloseRequested_;
     EventRegistration fullScreenChanged_;
+    EventRegistration documentPlayingAudioChanged_;
+    EventRegistration faviconChanged_;
+    EventRegistration zoomFactorChanged_;
     EventRegistration acceleratorKeyPressed_;
+    EventRegistration findActiveMatchIndexChanged_;
+    EventRegistration findMatchCountChanged_;
     EventRegistration permissionRequested_;
     EventRegistration screenCaptureStarting_;
     EventRegistration downloadStarting_;
@@ -140,16 +199,27 @@ class WebView2TabController final {
     std::uint64_t generation_{0};
     QRect bounds_;
     QString initialUrl_;
+    QString findText_;
+    Microsoft::WRL::ComPtr<ICoreWebView2Find> find_;
+    std::uint64_t findRequestSerial_{0};
+    std::uint64_t faviconRequestSerial_{0};
     ReadyCallback readyCallback_;
     NavigationStartedCallback navigationStartedCallback_;
     NavigationCompletedCallback navigationCompletedCallback_;
     DocumentStateChangedCallback documentStateChangedCallback_;
     NavigationStoppedCallback navigationStoppedCallback_;
     ErrorCallback errorCallback_;
+    ProcessFailedCallback processFailedCallback_;
     NewWindowCallback newWindowCallback_;
     ClosedCallback closedCallback_;
     FullScreenCallback fullScreenCallback_;
+    AudioStateCallback audioStateCallback_;
+    FaviconCallback faviconCallback_;
+    FaviconFailedCallback faviconFailedCallback_;
+    ZoomFactorCallback zoomFactorCallback_;
     AcceleratorCallback acceleratorCallback_;
+    FindResultCallback findResultCallback_;
+    FindFailedCallback findFailedCallback_;
     PermissionCallback permissionCallback_;
     ScreenCaptureCallback screenCaptureCallback_;
     DownloadCallback downloadCallback_;
@@ -159,7 +229,8 @@ class WebView2TabController final {
     NavigationTracker navigation_;
     ClearDataNavigationCoordinator clearDataNavigation_;
     bool isVisible_{false};
-    bool isAudioMuted_{true};
+    bool isAudioMuted_{false};
+    double zoomFactor_{1.0};
     bool isFullScreen_{false};
     bool isPopupRequest_{false};
     bool isClearedBlankSnapshotSuppressed_{false};

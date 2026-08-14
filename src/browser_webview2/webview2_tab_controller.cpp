@@ -1,5 +1,7 @@
 #include "webview2_tab_controller.h"
 
+#include <algorithm>
+#include <cstring>
 #include <utility>
 
 #include "webview2_accelerator.h"
@@ -24,6 +26,58 @@ RECT toNativeRect(const QRect& bounds) noexcept {
 
 }  // namespace
 
+gui::BrowserProcessFailureKind classifyProcessFailureKind(
+    const COREWEBVIEW2_PROCESS_FAILED_KIND kind) noexcept {
+    switch (kind) {
+    case COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED:
+        return gui::BrowserProcessFailureKind::BrowserProcessExited;
+    case COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE:
+        return gui::BrowserProcessFailureKind::RenderProcessUnresponsive;
+    case COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED:
+    case COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED:
+        return gui::BrowserProcessFailureKind::RenderProcessExited;
+    default:
+        return gui::BrowserProcessFailureKind::OtherProcessExited;
+    }
+}
+
+HRESULT readFaviconPngStream(IStream* const stream,
+                             QByteArray& pngBytes) noexcept {
+    constexpr ULONG kMaxFaviconBytes = 1024U * 1024U;
+    constexpr ULONG kChunkBytes = 16U * 1024U;
+    pngBytes.clear();
+    if (stream == nullptr) {
+        return E_POINTER;
+    }
+    QByteArray result;
+    result.reserve(static_cast<int>(kChunkBytes));
+    char buffer[kChunkBytes];
+    for (;;) {
+        ULONG bytesRead = 0;
+        const HRESULT status = stream->Read(buffer, kChunkBytes, &bytesRead);
+        if (FAILED(status)) {
+            return status;
+        }
+        if (bytesRead == 0) {
+            break;
+        }
+        if (result.size() > static_cast<int>(kMaxFaviconBytes - bytesRead)) {
+            return E_INVALIDARG;
+        }
+        result.append(buffer, static_cast<int>(bytesRead));
+        if (status == S_FALSE) {
+            break;
+        }
+    }
+    static constexpr char kPngSignature[] = "\x89PNG\r\n\x1a\n";
+    if (result.size() < 8 ||
+        std::memcmp(result.constData(), kPngSignature, 8) != 0) {
+        return E_INVALIDARG;
+    }
+    pngBytes = std::move(result);
+    return S_OK;
+}
+
 WebView2TabController::WebView2TabController(
     ComPtr<ICoreWebView2Environment> environment,
     ComPtr<ICoreWebView2Profile> profile, const HWND parentWindow,
@@ -32,10 +86,13 @@ WebView2TabController::WebView2TabController(
     NavigationCompletedCallback navigationCompletedCallback,
     DocumentStateChangedCallback documentStateChangedCallback,
     NavigationStoppedCallback navigationStoppedCallback,
-    ErrorCallback errorCallback,
+    ErrorCallback errorCallback, ProcessFailedCallback processFailedCallback,
     NewWindowCallback newWindowCallback, ClosedCallback closedCallback,
-    FullScreenCallback fullScreenCallback,
-    AcceleratorCallback acceleratorCallback,
+    FullScreenCallback fullScreenCallback, AudioStateCallback audioStateCallback,
+    FaviconCallback faviconCallback, FaviconFailedCallback faviconFailedCallback,
+    ZoomFactorCallback zoomFactorCallback,
+    AcceleratorCallback acceleratorCallback, FindResultCallback findResultCallback,
+    FindFailedCallback findFailedCallback,
     PermissionCallback permissionCallback,
     ScreenCaptureCallback screenCaptureCallback,
     DownloadCallback downloadCallback,
@@ -52,10 +109,17 @@ WebView2TabController::WebView2TabController(
       documentStateChangedCallback_(std::move(documentStateChangedCallback)),
       navigationStoppedCallback_(std::move(navigationStoppedCallback)),
       errorCallback_(std::move(errorCallback)),
+      processFailedCallback_(std::move(processFailedCallback)),
       newWindowCallback_(std::move(newWindowCallback)),
       closedCallback_(std::move(closedCallback)),
       fullScreenCallback_(std::move(fullScreenCallback)),
+      audioStateCallback_(std::move(audioStateCallback)),
+      faviconCallback_(std::move(faviconCallback)),
+      faviconFailedCallback_(std::move(faviconFailedCallback)),
+      zoomFactorCallback_(std::move(zoomFactorCallback)),
       acceleratorCallback_(std::move(acceleratorCallback)),
+      findResultCallback_(std::move(findResultCallback)),
+      findFailedCallback_(std::move(findFailedCallback)),
       permissionCallback_(std::move(permissionCallback)),
       screenCaptureCallback_(std::move(screenCaptureCallback)),
       downloadCallback_(std::move(downloadCallback)),
@@ -161,6 +225,9 @@ void WebView2TabController::finishController(
         result = controller_->put_IsVisible(isVisible_ ? TRUE : FALSE);
     }
     if (SUCCEEDED(result)) {
+        result = controller_->put_ZoomFactor(zoomFactor_);
+    }
+    if (SUCCEEDED(result)) {
         setAudioMuted(isAudioMuted_);
         result = completePendingRequest(true);
     }
@@ -216,6 +283,8 @@ HRESULT WebView2TabController::registerEvents() {
             [this, weakLifetime](ICoreWebView2*,
                                  ICoreWebView2NavigationStartingEventArgs* args) {
                 if (!weakLifetime.expired()) {
+                    stopFinding(true);
+                    clearFavicon(generation_);
                     if (args == nullptr) {
                         if (clearDataNavigation_.isBusy()) {
                             completeClearData(E_POINTER);
@@ -273,6 +342,33 @@ HRESULT WebView2TabController::registerEvents() {
         const ComPtr<ICoreWebView2> source = webView_;
         navigationStarting_.bind(token, [source](const auto value) {
             return source->remove_NavigationStarting(value);
+        });
+    }
+    if (SUCCEEDED(result)) {
+        result = webView_->add_ProcessFailed(
+            Callback<ICoreWebView2ProcessFailedEventHandler>(
+                [this, weakLifetime](
+                    ICoreWebView2*,
+                    ICoreWebView2ProcessFailedEventArgs* const args) -> HRESULT {
+                    if (weakLifetime.expired() || args == nullptr ||
+                        !processFailedCallback_) {
+                        return S_OK;
+                    }
+                    COREWEBVIEW2_PROCESS_FAILED_KIND rawKind =
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+                    if (SUCCEEDED(args->get_ProcessFailedKind(&rawKind))) {
+                        processFailedCallback_(tabId_, generation_,
+                                               classifyProcessFailureKind(rawKind));
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+    }
+    if (SUCCEEDED(result)) {
+        const ComPtr<ICoreWebView2> source = webView_;
+        processFailed_.bind(token, [source](const auto value) {
+            return source->remove_ProcessFailed(value);
         });
     }
     if (SUCCEEDED(result)) {
@@ -445,6 +541,40 @@ HRESULT WebView2TabController::registerEvents() {
             return source->remove_ContainsFullScreenElementChanged(value);
         });
     }
+    ComPtr<ICoreWebView2_8> webView8;
+    if (SUCCEEDED(result)) {
+        result = webView_.As(&webView8);
+    }
+    if (SUCCEEDED(result)) {
+        result = webView8->add_IsDocumentPlayingAudioChanged(
+            Callback<ICoreWebView2IsDocumentPlayingAudioChangedEventHandler>(
+                [this, weakLifetime, webView8](ICoreWebView2*, IUnknown*) {
+                    if (weakLifetime.expired()) {
+                        return S_OK;
+                    }
+                    BOOL isPlayingAudio = FALSE;
+                    const HRESULT status =
+                        webView8->get_IsDocumentPlayingAudio(&isPlayingAudio);
+                    if (SUCCEEDED(status) && audioStateCallback_) {
+                        audioStateCallback_(tabId_, generation_,
+                                            isPlayingAudio != FALSE);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+    }
+    if (SUCCEEDED(result)) {
+        documentPlayingAudioChanged_.bind(token, [webView8](const auto value) {
+            return webView8->remove_IsDocumentPlayingAudioChanged(value);
+        });
+    }
+    if (SUCCEEDED(result)) {
+        result = registerFaviconChanged();
+    }
+    if (SUCCEEDED(result)) {
+        result = registerZoomFactorChanged();
+    }
     if (SUCCEEDED(result)) {
         result = controller_->add_AcceleratorKeyPressed(
             Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
@@ -596,6 +726,135 @@ HRESULT WebView2TabController::registerEvents() {
     return result;
 }
 
+// 调用线程：创建次级 Controller 的 GUI STA；旧 Runtime 不支持时安全降级。
+HRESULT WebView2TabController::registerFaviconChanged() {
+    ComPtr<ICoreWebView2_15> webView15;
+    HRESULT result = webView_.As(&webView15);
+    if (result == E_NOINTERFACE) {
+        return S_OK;
+    }
+    if (FAILED(result)) {
+        return result;
+    }
+    const std::weak_ptr<int> weakLifetime = lifetime_;
+    EventRegistrationToken token{};
+    result = webView15->add_FaviconChanged(
+        Callback<ICoreWebView2FaviconChangedEventHandler>(
+            [this, weakLifetime](ICoreWebView2*, IUnknown*) -> HRESULT {
+                if (!weakLifetime.expired()) {
+                    requestFavicon(generation_);
+                }
+                return S_OK;
+            })
+            .Get(),
+        &token);
+    if (SUCCEEDED(result)) {
+        faviconChanged_.bind(token, [webView15](const auto value) {
+            return webView15->remove_FaviconChanged(value);
+        });
+    }
+    return result;
+}
+
+// 调用线程：创建次级 Controller 的 GUI STA；事件只上报稳定缩放比例。
+HRESULT WebView2TabController::registerZoomFactorChanged() {
+    if (controller_ == nullptr) {
+        return E_UNEXPECTED;
+    }
+    const std::weak_ptr<int> weakLifetime = lifetime_;
+    EventRegistrationToken token{};
+    const HRESULT result = controller_->add_ZoomFactorChanged(
+        Callback<ICoreWebView2ZoomFactorChangedEventHandler>(
+            [this, weakLifetime](ICoreWebView2Controller*, IUnknown*) -> HRESULT {
+                if (weakLifetime.expired() || controller_ == nullptr) {
+                    return S_OK;
+                }
+                double zoomFactor = 1.0;
+                if (SUCCEEDED(controller_->get_ZoomFactor(&zoomFactor))) {
+                    zoomFactor_ = std::clamp(zoomFactor, 0.25, 5.0);
+                    if (zoomFactorCallback_) {
+                        zoomFactorCallback_(tabId_, generation_, zoomFactor_);
+                    }
+                }
+                return S_OK;
+            })
+            .Get(),
+        &token);
+    if (SUCCEEDED(result)) {
+        const ComPtr<ICoreWebView2Controller> source = controller_;
+        zoomFactorChanged_.bind(token, [source](const auto value) {
+            return source->remove_ZoomFactorChanged(value);
+        });
+    }
+    return result;
+}
+
+// 调用线程：WebView2 Favicon 事件所在 GUI STA；完成回调不直接操作 Qt 控件。
+void WebView2TabController::requestFavicon(
+    const std::uint64_t generation) noexcept {
+    ComPtr<ICoreWebView2_15> webView15;
+    const HRESULT queryResult = webView_.As(&webView15);
+    if (FAILED(queryResult)) {
+        if (faviconFailedCallback_) {
+            faviconFailedCallback_(tabId_, generation, queryResult);
+        }
+        return;
+    }
+    const std::uint64_t requestSerial = nextFaviconRequestSerial();
+    const std::weak_ptr<int> weakLifetime = lifetime_;
+    const HRESULT result = webView15->GetFavicon(
+        COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG,
+        Callback<ICoreWebView2GetFaviconCompletedHandler>(
+            [this, weakLifetime, generation, requestSerial](
+                const HRESULT status, IStream* const stream) -> HRESULT {
+                if (weakLifetime.expired() ||
+                    !isCurrentFaviconRequest(generation, requestSerial)) {
+                    return S_OK;
+                }
+                QByteArray pngBytes;
+                const HRESULT readResult =
+                    SUCCEEDED(status)
+                        ? readFaviconPngStream(stream, pngBytes)
+                        : status;
+                if (SUCCEEDED(readResult) && faviconCallback_) {
+                    faviconCallback_(tabId_, generation, requestSerial,
+                                     pngBytes);
+                } else if (FAILED(readResult) && faviconFailedCallback_) {
+                    faviconFailedCallback_(tabId_, generation, readResult);
+                }
+                return S_OK;
+            })
+            .Get());
+    if (FAILED(result) && faviconFailedCallback_ &&
+        isCurrentFaviconRequest(generation, requestSerial)) {
+        faviconFailedCallback_(tabId_, generation, result);
+    }
+}
+
+// 调用线程：WebView2 导航事件所在 GUI STA；先清除旧图标并使旧请求失效。
+void WebView2TabController::clearFavicon(
+    const std::uint64_t generation) noexcept {
+    const std::uint64_t requestSerial = nextFaviconRequestSerial();
+    if (faviconCallback_) {
+        faviconCallback_(tabId_, generation, requestSerial, QByteArray{});
+    }
+}
+
+std::uint64_t WebView2TabController::nextFaviconRequestSerial() noexcept {
+    ++faviconRequestSerial_;
+    if (faviconRequestSerial_ == 0) {
+        ++faviconRequestSerial_;
+    }
+    return faviconRequestSerial_;
+}
+
+bool WebView2TabController::isCurrentFaviconRequest(
+    const std::uint64_t generation,
+    const std::uint64_t requestSerial) const noexcept {
+    return !isClosed_ && generation == generation_ && requestSerial != 0 &&
+           requestSerial == faviconRequestSerial_;
+}
+
 void WebView2TabController::emitNavigationSnapshot(
     const std::uint64_t generation, const SnapshotKind kind) {
     const NavigationCompletedCallback& callback =
@@ -642,6 +901,7 @@ void WebView2TabController::navigate(const QString& url,
     if (clearDataNavigation_.isBusy()) {
         return;
     }
+    stopFinding(true);
     isClearedBlankSnapshotSuppressed_ = false;
     generation_ = generation;
     navigation_.setCurrentGeneration(generation);
@@ -659,6 +919,7 @@ void WebView2TabController::navigate(const QString& url,
 
 void WebView2TabController::clearBrowsingData(
     const std::uint64_t generation, ClearDataCallback callback) {
+    stopFinding(true);
     generation_ = generation;
     navigation_.reset(generation);
     clearDataCallback_ = std::move(callback);
@@ -758,6 +1019,250 @@ void WebView2TabController::reloadOrStop() noexcept {
     }
 }
 
+bool WebView2TabController::reload(const std::uint64_t generation) noexcept {
+    if (webView_ == nullptr) {
+        return false;
+    }
+    const HRESULT result = webView_->Reload();
+    if (SUCCEEDED(result)) {
+        generation_ = generation;
+        navigation_.acceptNavigate(generation);
+    }
+    return SUCCEEDED(result);
+}
+
+HRESULT WebView2TabController::ensureFindController() {
+    if (find_ != nullptr) {
+        return S_OK;
+    }
+    if (webView_ == nullptr) {
+        return E_UNEXPECTED;
+    }
+
+    ComPtr<ICoreWebView2_28> webView28;
+    HRESULT result = webView_.As(&webView28);
+    if (SUCCEEDED(result)) {
+        result = webView28->get_Find(&find_);
+    }
+    if (FAILED(result) || find_ == nullptr) {
+        find_.Reset();
+        return FAILED(result) ? result : E_NOINTERFACE;
+    }
+
+    return S_OK;
+}
+
+HRESULT WebView2TabController::observeFindResults(
+    const std::uint64_t generation, const std::uint64_t requestSerial) {
+    findActiveMatchIndexChanged_.reset();
+    findMatchCountChanged_.reset();
+    if (find_ == nullptr) {
+        return E_UNEXPECTED;
+    }
+
+    const std::weak_ptr<int> weakLifetime = lifetime_;
+    EventRegistrationToken token{};
+    HRESULT result = find_->add_ActiveMatchIndexChanged(
+        Callback<ICoreWebView2FindActiveMatchIndexChangedEventHandler>(
+            [this, weakLifetime, generation,
+             requestSerial](ICoreWebView2Find*, IUnknown*) -> HRESULT {
+                if (!weakLifetime.expired() &&
+                    isCurrentFindRequest(generation, requestSerial)) {
+                    emitFindResult(generation, requestSerial);
+                }
+                return S_OK;
+            })
+            .Get(),
+        &token);
+    if (SUCCEEDED(result)) {
+        const ComPtr<ICoreWebView2Find> source = find_;
+        findActiveMatchIndexChanged_.bind(token, [source](const auto value) {
+            return source->remove_ActiveMatchIndexChanged(value);
+        });
+    }
+    if (SUCCEEDED(result)) {
+        result = find_->add_MatchCountChanged(
+            Callback<ICoreWebView2FindMatchCountChangedEventHandler>(
+                [this, weakLifetime, generation,
+                 requestSerial](ICoreWebView2Find*, IUnknown*) -> HRESULT {
+                    if (!weakLifetime.expired() &&
+                        isCurrentFindRequest(generation, requestSerial)) {
+                        emitFindResult(generation, requestSerial);
+                    }
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+    }
+    if (SUCCEEDED(result)) {
+        const ComPtr<ICoreWebView2Find> source = find_;
+        findMatchCountChanged_.bind(token, [source](const auto value) {
+            return source->remove_MatchCountChanged(value);
+        });
+    }
+    if (FAILED(result)) {
+        findActiveMatchIndexChanged_.reset();
+        findMatchCountChanged_.reset();
+    }
+    return result;
+}
+
+void WebView2TabController::emitFindResult(
+    const std::uint64_t generation, const std::uint64_t requestSerial) {
+    if (!isCurrentFindRequest(generation, requestSerial) || find_ == nullptr ||
+        !findResultCallback_) {
+        return;
+    }
+    INT32 activeMatchIndex = -1;
+    INT32 matchCount = 0;
+    HRESULT result = find_->get_ActiveMatchIndex(&activeMatchIndex);
+    if (SUCCEEDED(result)) {
+        result = find_->get_MatchCount(&matchCount);
+    }
+    if (SUCCEEDED(result)) {
+        findResultCallback_(tabId_, generation, requestSerial, activeMatchIndex,
+                            matchCount);
+    } else if (findFailedCallback_) {
+        findFailedCallback_(tabId_, generation, requestSerial, result);
+    }
+}
+
+std::uint64_t WebView2TabController::nextFindRequestSerial() noexcept {
+    ++findRequestSerial_;
+    if (findRequestSerial_ == 0) {
+        ++findRequestSerial_;
+    }
+    return findRequestSerial_;
+}
+
+bool WebView2TabController::isCurrentFindRequest(
+    const std::uint64_t generation,
+    const std::uint64_t requestSerial) const noexcept {
+    return !isClosed_ && generation == generation_ && requestSerial != 0 &&
+           requestSerial == findRequestSerial_;
+}
+
+void WebView2TabController::findInPage(const QString& text,
+                                       const bool forward) noexcept {
+    if (text.isEmpty()) {
+        stopFinding(true);
+        return;
+    }
+    HRESULT result = ensureFindController();
+    if (FAILED(result)) {
+        const std::uint64_t requestSerial = nextFindRequestSerial();
+        if (findFailedCallback_) {
+            findFailedCallback_(tabId_, generation_, requestSerial, result);
+        }
+        return;
+    }
+    const std::uint64_t generation = generation_;
+    const std::uint64_t requestSerial = nextFindRequestSerial();
+    result = observeFindResults(generation, requestSerial);
+    if (FAILED(result)) {
+        if (findFailedCallback_) {
+            findFailedCallback_(tabId_, generation, requestSerial, result);
+        }
+        return;
+    }
+    if (findText_ == text) {
+        result = forward ? find_->FindNext() : find_->FindPrevious();
+        if (FAILED(result) && findFailedCallback_) {
+            findFailedCallback_(tabId_, generation, requestSerial, result);
+        }
+        return;
+    }
+
+    ComPtr<ICoreWebView2Environment15> environment15;
+    ComPtr<ICoreWebView2FindOptions> options;
+    result = environment_.As(&environment15);
+    if (SUCCEEDED(result)) {
+        result = environment15->CreateFindOptions(&options);
+    }
+    const std::wstring term = text.toStdWString();
+    if (SUCCEEDED(result)) {
+        result = options->put_FindTerm(term.c_str());
+    }
+    if (SUCCEEDED(result)) {
+        result = options->put_IsCaseSensitive(FALSE);
+    }
+    if (SUCCEEDED(result)) {
+        result = options->put_ShouldHighlightAllMatches(TRUE);
+    }
+    if (SUCCEEDED(result)) {
+        result = options->put_ShouldMatchWord(FALSE);
+    }
+    if (SUCCEEDED(result)) {
+        result = options->put_SuppressDefaultFindDialog(TRUE);
+    }
+    if (FAILED(result)) {
+        if (findFailedCallback_) {
+            findFailedCallback_(tabId_, generation, requestSerial, result);
+        }
+        return;
+    }
+
+    findText_ = text;
+    const std::weak_ptr<int> weakLifetime = lifetime_;
+    result = find_->Start(
+        options.Get(),
+        Callback<ICoreWebView2FindStartCompletedHandler>(
+            [this, weakLifetime, generation, requestSerial,
+             forward](const HRESULT status) -> HRESULT {
+                if (weakLifetime.expired() || isClosed_ ||
+                    generation != generation_ ||
+                    requestSerial != findRequestSerial_) {
+                    return S_OK;
+                }
+                if (FAILED(status)) {
+                    if (findFailedCallback_) {
+                        findFailedCallback_(tabId_, generation, requestSerial,
+                                            status);
+                    }
+                    return S_OK;
+                }
+                if (!forward && find_ != nullptr) {
+                    const HRESULT previousResult = find_->FindPrevious();
+                    if (FAILED(previousResult) && findFailedCallback_) {
+                        findFailedCallback_(tabId_, generation, requestSerial,
+                                            previousResult);
+                    }
+                }
+                emitFindResult(generation, requestSerial);
+                return S_OK;
+            })
+            .Get());
+    if (FAILED(result) && findFailedCallback_) {
+        findFailedCallback_(tabId_, generation, requestSerial, result);
+    }
+}
+
+void WebView2TabController::stopFinding(const bool clearSelection) noexcept {
+    Q_UNUSED(clearSelection);
+    const std::uint64_t generation = generation_;
+    const std::uint64_t requestSerial = nextFindRequestSerial();
+    findActiveMatchIndexChanged_.reset();
+    findMatchCountChanged_.reset();
+    findText_.clear();
+    if (find_ != nullptr) {
+        const HRESULT result = find_->Stop();
+        if (FAILED(result) && findFailedCallback_) {
+            findFailedCallback_(tabId_, generation, requestSerial, result);
+        }
+    }
+}
+
+void WebView2TabController::releaseFindController() noexcept {
+    static_cast<void>(nextFindRequestSerial());
+    findActiveMatchIndexChanged_.reset();
+    findMatchCountChanged_.reset();
+    if (find_ != nullptr) {
+        static_cast<void>(find_->Stop());
+    }
+    find_.Reset();
+    findText_.clear();
+}
+
 void WebView2TabController::setBounds(const QRect& bounds) noexcept {
     bounds_ = bounds;
     if (controller_ != nullptr && bounds_.isValid()) {
@@ -778,6 +1283,13 @@ void WebView2TabController::setAudioMuted(const bool isMuted) noexcept {
     ComPtr<ICoreWebView2_8> webView8;
     if (SUCCEEDED(webView_.As(&webView8))) {
         static_cast<void>(webView8->put_IsMuted(isMuted ? TRUE : FALSE));
+    }
+}
+
+void WebView2TabController::setZoomFactor(const double zoomFactor) noexcept {
+    zoomFactor_ = std::clamp(zoomFactor, 0.25, 5.0);
+    if (controller_ != nullptr) {
+        static_cast<void>(controller_->put_ZoomFactor(zoomFactor_));
     }
 }
 
@@ -815,9 +1327,15 @@ void WebView2TabController::close() noexcept {
     screenCaptureStarting_.reset();
     permissionRequested_.reset();
     acceleratorKeyPressed_.reset();
+    releaseFindController();
+    static_cast<void>(nextFaviconRequestSerial());
+    zoomFactorChanged_.reset();
+    faviconChanged_.reset();
+    documentPlayingAudioChanged_.reset();
     fullScreenChanged_.reset();
     windowCloseRequested_.reset();
     newWindowRequested_.reset();
+    processFailed_.reset();
     documentTitleChanged_.reset();
     navigationCompleted_.reset();
     navigationStarting_.reset();

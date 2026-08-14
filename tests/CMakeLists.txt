@@ -101,6 +101,156 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_tests_properties(gui.browser_page PROPERTIES TIMEOUT 30)
 
+    add_executable(mediahub_browser_permission_tests
+        gui/browser_permission_test.cpp
+    )
+    set_target_properties(mediahub_browser_permission_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_browser_permission_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_permission_tests)
+    mediahub_deploy_qt(mediahub_browser_permission_tests)
+    add_test(NAME gui.browser_permission
+        COMMAND mediahub_browser_permission_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_permission PROPERTIES TIMEOUT 20)
+
+    add_executable(mediahub_browser_bookmark_html_tests
+        gui/browser_bookmark_html_test.cpp
+    )
+    set_target_properties(mediahub_browser_bookmark_html_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_browser_bookmark_html_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_bookmark_html_tests)
+    mediahub_deploy_qt(mediahub_browser_bookmark_html_tests)
+    add_test(NAME gui.browser_bookmark_html
+        COMMAND mediahub_browser_bookmark_html_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_bookmark_html PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_favicon_cache_tests
+        gui/browser_favicon_cache_test.cpp
+    )
+    set_target_properties(mediahub_browser_favicon_cache_tests
+        PROPERTIES AUTOMOC ON
+    )
+    target_link_libraries(mediahub_browser_favicon_cache_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_favicon_cache_tests)
+    mediahub_deploy_qt(mediahub_browser_favicon_cache_tests)
+    add_test(NAME gui.browser_favicon_cache
+        COMMAND mediahub_browser_favicon_cache_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_favicon_cache PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_session_store_tests
+        gui/browser_session_store_test.cpp
+    )
+    set_target_properties(mediahub_browser_session_store_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_browser_session_store_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_session_store_tests)
+    mediahub_deploy_qt(mediahub_browser_session_store_tests)
+    add_test(NAME gui.browser_session_store
+        COMMAND mediahub_browser_session_store_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_session_store PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_tab_group_model_tests
+        gui/browser_tab_group_model_test.cpp
+    )
+    set_target_properties(mediahub_browser_tab_group_model_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_browser_tab_group_model_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_tab_group_model_tests)
+    mediahub_deploy_qt(mediahub_browser_tab_group_model_tests)
+    add_test(NAME gui.browser_tab_group_model
+        COMMAND mediahub_browser_tab_group_model_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_tab_group_model PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_tab_group_dialog_tests
+        gui/browser_tab_group_dialog_test.cpp
+    )
+    set_target_properties(mediahub_browser_tab_group_dialog_tests
+        PROPERTIES AUTOMOC ON
+    )
+    target_link_libraries(mediahub_browser_tab_group_dialog_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_tab_group_dialog_tests)
+    mediahub_deploy_qt(mediahub_browser_tab_group_dialog_tests)
+    add_test(NAME gui.browser_tab_group_dialog
+        COMMAND mediahub_browser_tab_group_dialog_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_tab_group_dialog PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_startup_settings_tests
+        gui/browser_startup_settings_test.cpp
+    )
+    set_target_properties(mediahub_browser_startup_settings_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_browser_startup_settings_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_startup_settings_tests)
+    mediahub_deploy_qt(mediahub_browser_startup_settings_tests)
+    add_test(NAME gui.browser_startup_settings
+        COMMAND mediahub_browser_startup_settings_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_startup_settings PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_startup_settings_dialog_tests
+        gui/browser_startup_settings_dialog_test.cpp
+    )
+    set_target_properties(mediahub_browser_startup_settings_dialog_tests
+        PROPERTIES AUTOMOC ON
+    )
+    target_link_libraries(mediahub_browser_startup_settings_dialog_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_startup_settings_dialog_tests)
+    mediahub_deploy_qt(mediahub_browser_startup_settings_dialog_tests)
+    add_test(NAME gui.browser_startup_settings_dialog
+        COMMAND mediahub_browser_startup_settings_dialog_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_startup_settings_dialog PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_browser_download_center_tests
+        gui/browser_download_center_test.cpp
+        ../apps/gui/browser_download_center.cpp
+        ../apps/gui/browser_download_center.h
+    )
+    set_target_properties(mediahub_browser_download_center_tests
+        PROPERTIES AUTOMOC ON
+    )
+    target_link_libraries(mediahub_browser_download_center_tests
+        PRIVATE Qt5::Test Qt5::Widgets
+    )
+    mediahub_enable_warnings(mediahub_browser_download_center_tests)
+    mediahub_deploy_qt(mediahub_browser_download_center_tests)
+    add_test(NAME gui.browser_download_center
+        COMMAND mediahub_browser_download_center_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_download_center PROPERTIES TIMEOUT 10)
+
+    add_executable(mediahub_ui_theme_tests
+        gui/ui_theme_test.cpp
+    )
+    set_target_properties(mediahub_ui_theme_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(mediahub_ui_theme_tests
+        PRIVATE mediahub_gui_support Qt5::Test
+    )
+    mediahub_enable_warnings(mediahub_ui_theme_tests)
+    mediahub_deploy_qt(mediahub_ui_theme_tests)
+    add_test(NAME gui.ui_theme
+        COMMAND mediahub_ui_theme_tests -platform offscreen
+    )
+    set_tests_properties(gui.ui_theme PROPERTIES TIMEOUT 10)
+
     add_executable(mediahub_live_playlist_tests
         gui/live_playlist_service_test.cpp
     )

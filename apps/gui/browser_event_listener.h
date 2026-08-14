@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QString>
 
 #include <cstdint>
@@ -51,6 +52,24 @@ class BrowserEventListener {
     // 调用线程：GUI 主线程。原生网页子窗口按键只携带稳定动作和当前代次。
     virtual void onAcceleratorRequested(std::uint64_t generation,
                                         BrowserAccelerator accelerator) = 0;
+    // 调用线程：GUI 主线程。索引从 0 开始，无活动匹配时为 -1。
+    virtual void onFindResultChanged(std::uint64_t tabId,
+                                     std::uint64_t generation,
+                                     int activeMatchIndex,
+                                     int matchCount) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        Q_UNUSED(activeMatchIndex);
+        Q_UNUSED(matchCount);
+    }
+    // 调用线程：GUI 主线程。原生查找不可用或执行失败时通知当前标签。
+    virtual void onFindFailed(std::uint64_t tabId,
+                              std::uint64_t generation,
+                              long errorCode) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        Q_UNUSED(errorCode);
+    }
     // 调用线程：GUI 主线程。来源必须是无查询参数的规范化站点来源。
     virtual void onPermissionRequested(std::uint64_t requestId,
                                        const QString& origin,
@@ -68,11 +87,28 @@ class BrowserEventListener {
                                      const QString& origin,
                                      const QString& suggestedFileName,
                                      std::int64_t totalBytes) = 0;
+    // 调用线程：GUI 主线程。并发后端必须携带稳定标签 ID，供危险批量操作保护。
+    virtual void onTabDownloadRequested(std::uint64_t tabId,
+                                        std::uint64_t requestId,
+                                        const QString& origin,
+                                        const QString& suggestedFileName,
+                                        std::int64_t totalBytes) {
+        Q_UNUSED(tabId);
+        onDownloadRequested(requestId, origin, suggestedFileName, totalBytes);
+    }
     // 调用线程：GUI 主线程。下载状态只对应一个已由用户确认的目标。
     virtual void onDownloadUpdated(std::uint64_t requestId,
                                    BrowserDownloadState state,
                                    std::int64_t receivedBytes,
                                    std::int64_t totalBytes) = 0;
+    virtual void onTabDownloadUpdated(std::uint64_t tabId,
+                                      std::uint64_t requestId,
+                                      BrowserDownloadState state,
+                                      std::int64_t receivedBytes,
+                                      std::int64_t totalBytes) {
+        Q_UNUSED(tabId);
+        onDownloadUpdated(requestId, state, receivedBytes, totalBytes);
+    }
     // 调用线程：GUI 主线程。通知当前代次的网页资料已经清除。
     virtual void onBrowsingDataCleared(std::uint64_t generation) = 0;
     // 调用线程：GUI 主线程。通知弹窗因数量或关闭状态被拒绝。
@@ -130,6 +166,38 @@ class BrowserEventListener {
                             BrowserErrorKind kind, long errorCode) {
         Q_UNUSED(tabId);
         onBrowserError(generation, kind, errorCode);
+    }
+    // 调用线程：GUI 主线程。事件不携带 COM 参数、网页地址或进程敏感信息。
+    virtual void onTabProcessFailed(std::uint64_t tabId,
+                                    std::uint64_t generation,
+                                    BrowserProcessFailureKind kind) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        Q_UNUSED(kind);
+    }
+    // 调用线程：GUI 主线程。状态表示网页文档是否正在播放音频，与静音设置无关。
+    virtual void onTabAudioStateChanged(std::uint64_t tabId,
+                                        std::uint64_t generation,
+                                        bool isPlayingAudio) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        Q_UNUSED(isPlayingAudio);
+    }
+    // 调用线程：GUI 主线程。pngBytes 为空表示清除旧图标并显示通用图标。
+    virtual void onTabFaviconChanged(std::uint64_t tabId,
+                                     std::uint64_t generation,
+                                     const QByteArray& pngBytes) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        Q_UNUSED(pngBytes);
+    }
+    // 调用线程：GUI 主线程。比例已经限制在 0.25 至 5.0。
+    virtual void onTabZoomFactorChanged(std::uint64_t tabId,
+                                        std::uint64_t generation,
+                                        double zoomFactor) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        Q_UNUSED(zoomFactor);
     }
     virtual void onTabCloseRequested(std::uint64_t tabId) { Q_UNUSED(tabId); }
 };

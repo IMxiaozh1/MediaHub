@@ -21,14 +21,20 @@ enum class FakeBrowserCommandKind {
     GoBack,
     GoForward,
     ReloadOrStop,
+    RecoverTab,
+    FindInPage,
+    StopFinding,
     SetBounds,
     SetVisible,
     SetAudioMuted,
+    SetTabAudioMuted,
+    SetTabZoomFactor,
     SetSuspended,
     ClearBrowsingData,
     AnswerPermission,
     ChooseDownloadPath,
     CancelDownload,
+    RetryDownload,
     AnswerExternalProtocol,
     AnswerCertificateError,
     ExitFullScreen,
@@ -43,6 +49,7 @@ struct FakeBrowserCommand {
     std::uint64_t newWindowRequestId{0};
     std::uint64_t generation{0};
     bool flag{false};
+    double number{0.0};
     gui::BrowserPermissionDecision permissionDecision{
         gui::BrowserPermissionDecision::Deny};
     gui::BrowserCertificateDecision certificateDecision{
@@ -52,6 +59,9 @@ struct FakeBrowserCommand {
 // 假后端只记录 GUI 主线程命令，并由测试显式触发事件。
 class FakeBrowserBackend final : public gui::BrowserBackend {
  public:
+    explicit FakeBrowserBackend(const bool supportsConcurrentDownloads = false)
+        : supportsConcurrentDownloadsFlag(supportsConcurrentDownloads) {}
+
     void setEventListener(gui::BrowserEventListener* listener) override {
         listener_ = listener;
         commands.push_back({FakeBrowserCommandKind::SetEventListener});
@@ -102,6 +112,26 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         commands.push_back({FakeBrowserCommandKind::ReloadOrStop});
     }
 
+    [[nodiscard]] bool recoverTab(const std::uint64_t tabId,
+                                  const std::uint64_t generation) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::RecoverTab};
+        command.requestId = tabId;
+        command.generation = generation;
+        commands.push_back(command);
+        return canRecoverTab;
+    }
+
+    void findInPage(const QString& text, const bool forward) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::FindInPage};
+        command.text = text;
+        command.flag = forward;
+        commands.push_back(command);
+    }
+
+    void stopFinding(const bool clearSelection) override {
+        recordFlag(FakeBrowserCommandKind::StopFinding, clearSelection);
+    }
+
     void setBounds(const QRect& bounds) override {
         FakeBrowserCommand command{FakeBrowserCommandKind::SetBounds};
         command.bounds = bounds;
@@ -114,6 +144,22 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
 
     void setAudioMuted(bool isMuted) override {
         recordFlag(FakeBrowserCommandKind::SetAudioMuted, isMuted);
+    }
+
+    void setTabAudioMuted(const std::uint64_t tabId,
+                          const bool isMuted) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::SetTabAudioMuted};
+        command.requestId = tabId;
+        command.flag = isMuted;
+        commands.push_back(command);
+    }
+
+    void setTabZoomFactor(const std::uint64_t tabId,
+                          const double zoomFactor) override {
+        FakeBrowserCommand command{FakeBrowserCommandKind::SetTabZoomFactor};
+        command.requestId = tabId;
+        command.number = zoomFactor;
+        commands.push_back(command);
     }
 
     void setSuspended(bool isSuspended) override {
@@ -144,6 +190,14 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
 
     void cancelDownload(std::uint64_t requestId) override {
         recordRequest(FakeBrowserCommandKind::CancelDownload, requestId);
+    }
+
+    void retryDownload(std::uint64_t requestId) override {
+        recordRequest(FakeBrowserCommandKind::RetryDownload, requestId);
+    }
+
+    [[nodiscard]] bool supportsConcurrentDownloads() const noexcept override {
+        return supportsConcurrentDownloadsFlag;
     }
 
     void answerExternalProtocol(std::uint64_t requestId, bool isAllowed) override {
@@ -259,10 +313,61 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         }
     }
 
+    void emitTabAudioStateChanged(const std::uint64_t tabId,
+                                  const std::uint64_t generation,
+                                  const bool isPlayingAudio) {
+        if (listener_ != nullptr) {
+            listener_->onTabAudioStateChanged(tabId, generation,
+                                              isPlayingAudio);
+        }
+    }
+
+    void emitTabProcessFailed(
+        const std::uint64_t tabId, const std::uint64_t generation,
+        const gui::BrowserProcessFailureKind kind) {
+        if (listener_ != nullptr) {
+            listener_->onTabProcessFailed(tabId, generation, kind);
+        }
+    }
+
+    void emitTabFaviconChanged(const std::uint64_t tabId,
+                               const std::uint64_t generation,
+                               const QByteArray& pngBytes) {
+        if (listener_ != nullptr) {
+            listener_->onTabFaviconChanged(tabId, generation, pngBytes);
+        }
+    }
+
+    void emitTabZoomFactorChanged(const std::uint64_t tabId,
+                                  const std::uint64_t generation,
+                                  const double zoomFactor) {
+        if (listener_ != nullptr) {
+            listener_->onTabZoomFactorChanged(tabId, generation, zoomFactor);
+        }
+    }
+
     void emitAcceleratorRequested(std::uint64_t generation,
                                   gui::BrowserAccelerator accelerator) {
         if (listener_ != nullptr) {
             listener_->onAcceleratorRequested(generation, accelerator);
+        }
+    }
+
+    void emitFindResultChanged(const std::uint64_t tabId,
+                               const std::uint64_t generation,
+                               const int activeMatchIndex,
+                               const int matchCount) {
+        if (listener_ != nullptr) {
+            listener_->onFindResultChanged(tabId, generation,
+                                           activeMatchIndex, matchCount);
+        }
+    }
+
+    void emitFindFailed(const std::uint64_t tabId,
+                        const std::uint64_t generation,
+                        const long errorCode) {
+        if (listener_ != nullptr) {
+            listener_->onFindFailed(tabId, generation, errorCode);
         }
     }
 
@@ -305,12 +410,35 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         }
     }
 
+    void emitTabDownloadRequested(std::uint64_t tabId,
+                                  std::uint64_t requestId,
+                                  const QString& origin,
+                                  const QString& suggestedFileName,
+                                  std::int64_t totalBytes) {
+        if (listener_ != nullptr) {
+            listener_->onTabDownloadRequested(tabId, requestId, origin,
+                                              suggestedFileName, totalBytes);
+        }
+    }
+
     void emitDownloadUpdated(std::uint64_t requestId,
                              gui::BrowserDownloadState state,
                              std::int64_t receivedBytes,
                              std::int64_t totalBytes) {
         if (listener_ != nullptr) {
             listener_->onDownloadUpdated(requestId, state, receivedBytes, totalBytes);
+        }
+    }
+
+
+    void emitTabDownloadUpdated(std::uint64_t tabId,
+                                std::uint64_t requestId,
+                                gui::BrowserDownloadState state,
+                                std::int64_t receivedBytes,
+                                std::int64_t totalBytes) {
+        if (listener_ != nullptr) {
+            listener_->onTabDownloadUpdated(tabId, requestId, state,
+                                            receivedBytes, totalBytes);
         }
     }
 
@@ -350,6 +478,8 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
 
     std::vector<FakeBrowserCommand> commands;
     bool canCreateTab{true};
+    bool canRecoverTab{true};
+    bool supportsConcurrentDownloadsFlag{false};
 
  private:
     void recordFlag(FakeBrowserCommandKind kind, bool flag) {

@@ -6,6 +6,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QEvent>
@@ -88,9 +89,13 @@ class UnavailableBrowserBackend final : public BrowserBackend {
   void goBack() override {}
   void goForward() override {}
   void reloadOrStop() override {}
+  void findInPage(const QString&, bool) override {}
+  void stopFinding(bool) override {}
   void setBounds(const QRect&) override {}
   void setVisible(bool) override {}
   void setAudioMuted(bool) override {}
+  void setTabAudioMuted(std::uint64_t, bool) override {}
+  void setTabZoomFactor(std::uint64_t, double) override {}
   void setSuspended(bool) override {}
   void clearBrowsingData(std::uint64_t) override {}
   void answerPermission(std::uint64_t, BrowserPermissionDecision) override {}
@@ -569,7 +574,10 @@ void setNativeDarkTitleBar(QWidget* const window, const bool isDark) {
 
 MainWindow::MainWindow(BrowserBackend* const browserBackend,
                        QString browserProfileDirectory, QWidget* const parent,
-                       BrowserDataStore* const browserDataStore)
+                       BrowserDataStore* const browserDataStore,
+                       BrowserSessionStore* const browserSessionStore,
+                       BrowserStartupSettingsStore* const browserStartupSettingsStore,
+                       BrowserPermissionStore* const browserPermissionStore)
     : QMainWindow(parent), windowIconManager_(this) {
   if (browserBackend == nullptr) {
     ownedBrowserBackend_ = std::make_unique<UnavailableBrowserBackend>();
@@ -713,6 +721,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
       makeModeButton(QStringLiteral("liveModeButton"), QStringLiteral("直播"));
   webModeButton_ =
       makeModeButton(QStringLiteral("webModeButton"), QStringLiteral("网页"));
+  updateWebAudibleTabCount(0);
   displayModeLayout->addWidget(localModeButton_);
   displayModeLayout->addWidget(liveModeButton_);
   displayModeLayout->addWidget(webModeButton_);
@@ -1179,9 +1188,14 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
 
   browserPage_ = new BrowserPage(*browserBackend_,
                                  std::move(browserProfileDirectory),
-                                 displayModeContainer, browserDataStore);
+                                 displayModeContainer, browserDataStore,
+                                 browserSessionStore,
+                                 browserStartupSettingsStore,
+                                 browserPermissionStore);
   connect(browserPage_, &BrowserPage::fullScreenChanged, this,
           &MainWindow::handleWebFullScreenChanged);
+  connect(browserPage_, &BrowserPage::audibleTabCountChanged, this,
+          &MainWindow::updateWebAudibleTabCount);
   displayModeStack_->addWidget(nativePlaybackPage_);
   displayModeStack_->addWidget(browserPage_);
   displayModeStack_->setCurrentWidget(nativePlaybackPage_);
@@ -1435,6 +1449,21 @@ void MainWindow::showDisplayMode(const DisplayMode mode) {
   } else {
     showPlaylistKind(mode == DisplayMode::Live ? 1 : 0);
   }
+}
+
+void MainWindow::updateWebAudibleTabCount(const int audibleTabCount) {
+  audibleWebTabCount_ = std::max(0, audibleTabCount);
+  if (audibleWebTabCount_ == 0) {
+    webModeButton_->setText(QStringLiteral("网页"));
+    webModeButton_->setToolTip(QStringLiteral("切换到网页模式"));
+    return;
+  }
+
+  webModeButton_->setText(
+      QStringLiteral("网页 · %1").arg(audibleWebTabCount_));
+  webModeButton_->setToolTip(
+      QStringLiteral("有 %1 个网页标签正在播放声音，点击切换到网页模式")
+          .arg(audibleWebTabCount_));
 }
 
 void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
@@ -1798,11 +1827,66 @@ void MainWindow::applyLivePlaylistFilter() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* const event) {
+  if (!isDownloadExitConfirmed_ && browserPage_ != nullptr) {
+    const int activeDownloadCount = browserPage_->activeDownloadCount();
+    if (activeDownloadCount > 0) {
+      event->ignore();
+      showActiveDownloadExitConfirmation(activeDownloadCount);
+      return;
+    }
+  }
+  if (activeDownloadExitDialog_ != nullptr) {
+    activeDownloadExitDialog_->hide();
+  }
   if (browserPage_ != nullptr) {
     browserPage_->shutdown();
   }
   emit closing();
   QMainWindow::closeEvent(event);
+}
+
+void MainWindow::showActiveDownloadExitConfirmation(
+    const int activeDownloadCount) {
+  if (activeDownloadExitDialog_ == nullptr) {
+    activeDownloadExitDialog_ = new QDialog(this);
+    activeDownloadExitDialog_->setObjectName(
+        QStringLiteral("browserActiveDownloadExitDialog"));
+    activeDownloadExitDialog_->setWindowTitle(QStringLiteral("下载仍在进行"));
+    activeDownloadExitDialog_->setModal(false);
+    auto* const layout = new QVBoxLayout(activeDownloadExitDialog_);
+    activeDownloadExitLabel_ = new QLabel(activeDownloadExitDialog_);
+    activeDownloadExitLabel_->setObjectName(
+        QStringLiteral("browserActiveDownloadExitLabel"));
+    activeDownloadExitLabel_->setWordWrap(true);
+    layout->addWidget(activeDownloadExitLabel_);
+    auto* const buttons = new QHBoxLayout();
+    auto* const returnButton = new QPushButton(
+        QStringLiteral("返回应用"), activeDownloadExitDialog_);
+    returnButton->setObjectName(
+        QStringLiteral("browserActiveDownloadReturnButton"));
+    auto* const exitButton = new QPushButton(
+        QStringLiteral("取消下载并退出"), activeDownloadExitDialog_);
+    exitButton->setObjectName(
+        QStringLiteral("browserActiveDownloadExitButton"));
+    buttons->addStretch();
+    buttons->addWidget(returnButton);
+    buttons->addWidget(exitButton);
+    layout->addLayout(buttons);
+    connect(returnButton, &QPushButton::clicked, activeDownloadExitDialog_,
+            &QDialog::hide);
+    connect(exitButton, &QPushButton::clicked, this, [this] {
+      isDownloadExitConfirmed_ = true;
+      activeDownloadExitDialog_->hide();
+      QTimer::singleShot(0, this, &MainWindow::close);
+    });
+  }
+  activeDownloadExitLabel_->setText(
+      QStringLiteral("仍有 %1 个网页下载任务未完成。现在退出会取消这些下载，"
+                     "已下载的临时内容由 WebView2 清理。")
+          .arg(activeDownloadCount));
+  activeDownloadExitDialog_->show();
+  activeDownloadExitDialog_->raise();
+  activeDownloadExitDialog_->activateWindow();
 }
 
 void MainWindow::changeEvent(QEvent* const event) {

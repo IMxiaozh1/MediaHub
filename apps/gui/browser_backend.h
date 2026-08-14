@@ -48,12 +48,31 @@ class BrowserBackend {
     virtual void goForward() = 0;
     // 调用线程：GUI 主线程。载入中停止，否则刷新。
     virtual void reloadOrStop() = 0;
+    // 调用线程：GUI 主线程。返回恢复请求是否已成功提交；失败时界面保留恢复入口。
+    [[nodiscard]] virtual bool recoverTab(std::uint64_t tabId,
+                                          std::uint64_t generation) {
+        Q_UNUSED(tabId);
+        Q_UNUSED(generation);
+        reloadOrStop();
+        return true;
+    }
+    // 调用线程：GUI 主线程。只在当前标签中查找，不记录查询文本。
+    virtual void findInPage(const QString& text, bool forward) {
+        Q_UNUSED(text);
+        Q_UNUSED(forward);
+    }
+    // 调用线程：GUI 主线程。clearSelection 表示关闭查找条时清除网页中的匹配选择。
+    virtual void stopFinding(bool clearSelection) { Q_UNUSED(clearSelection); }
     // 调用线程：GUI 主线程。坐标为宿主控件的物理像素客户区。
     virtual void setBounds(const QRect& pixelBounds) = 0;
     // 调用线程：GUI 主线程。
     virtual void setVisible(bool isVisible) = 0;
     // 调用线程：GUI 主线程。
     virtual void setAudioMuted(bool isMuted) = 0;
+    // 调用线程：GUI 主线程。标签静音与全局静音叠加，切换标签不得改变此状态。
+    virtual void setTabAudioMuted(std::uint64_t tabId, bool isMuted) = 0;
+    // 调用线程：GUI 主线程。缩放属于指定标签，后端会限制在 25% 至 500%。
+    virtual void setTabZoomFactor(std::uint64_t tabId, double zoomFactor) = 0;
     // 调用线程：GUI 主线程。挂起失败时仍必须维持静音。
     virtual void setSuspended(bool isSuspended) = 0;
     // 调用线程：GUI 主线程。异步清除专用 Profile 中的网站数据。
@@ -66,6 +85,14 @@ class BrowserBackend {
                                     const QString& destination) = 0;
     // 调用线程：GUI 主线程。
     virtual void cancelDownload(std::uint64_t requestId) = 0;
+    // 调用线程：GUI 主线程。仅恢复后端明确标记为可恢复中断的下载。
+    virtual void retryDownload(std::uint64_t requestId) {
+        Q_UNUSED(requestId);
+    }
+    // 调用线程：GUI 主线程。真实后端支持多个独立下载任务时返回 true。
+    [[nodiscard]] virtual bool supportsConcurrentDownloads() const noexcept {
+        return false;
+    }
     // 调用线程：GUI 主线程。外部协议只有用户确认后才允许。
     virtual void answerExternalProtocol(std::uint64_t requestId, bool isAllowed) = 0;
     // 调用线程：GUI 主线程。证书继续决定只作用于当前会话。
