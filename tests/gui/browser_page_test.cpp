@@ -128,6 +128,7 @@ class BrowserPageTest final : public QObject {
     void persistsAndNormalizesBrowserFavorites();
     void limitsPersistedBrowserRecords();
     void cachesBrowserDataAndSkipsUnchangedListRebuilds();
+    void coalescesHistoryAndFavoriteSearchInput();
     void opensHistoryInCurrentOrNewTabFromMouseGesture();
     void opensFavoritesInCurrentOrNewTabFromMouseGesture();
     void addsEditsDeduplicatesAndRemovesFavorites();
@@ -514,6 +515,99 @@ void BrowserPageTest::cachesBrowserDataAndSkipsUnchangedListRebuilds() {
     QCOMPARE(favoriteModelReset.count(), 0);
 }
 
+void BrowserPageTest::coalescesHistoryAndFavoriteSearchInput() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    dataStore.history.reserve(500);
+    for (int index = 0; index < 500; ++index) {
+        dataStore.history.append(
+            {QStringLiteral("https://history-%1.example/page").arg(index),
+             QStringLiteral("History %1").arg(index), index});
+    }
+    dataStore.favorites = {
+        {QStringLiteral("https://one.example/page"), QStringLiteral("One"),
+         QStringLiteral("first note")},
+        {QStringLiteral("https://two.example/page"), QStringLiteral("Two"),
+         QStringLiteral("second note")},
+        {QStringLiteral("https://three.example/page"), QStringLiteral("Three"),
+         QStringLiteral("third note")},
+    };
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+
+    QTest::mouseClick(
+        page.findChild<QToolButton*>(QStringLiteral("browserHistoryButton")),
+        Qt::LeftButton);
+    auto* const historySearch = page.findChild<QLineEdit*>(
+        QStringLiteral("browserHistorySearchEdit"));
+    auto* const historyTimer = page.findChild<QTimer*>(
+        QStringLiteral("browserHistorySearchTimer"));
+    auto* const historyList = page.findChild<QListWidget*>(
+        QStringLiteral("browserHistoryList"));
+    QVERIFY(historySearch != nullptr);
+    QVERIFY(historyTimer != nullptr);
+    QVERIFY(historyList != nullptr);
+    QCOMPARE(historyList->count(), 500);
+
+    QSignalSpy historyRowsInserted(historyList->model(),
+                                   &QAbstractItemModel::rowsInserted);
+    QSignalSpy historyRowsRemoved(historyList->model(),
+                                  &QAbstractItemModel::rowsRemoved);
+    QSignalSpy historyModelReset(historyList->model(),
+                                 &QAbstractItemModel::modelReset);
+    historySearch->setText(QStringLiteral("history"));
+    historySearch->setText(QStringLiteral("history-4"));
+    historySearch->setText(QStringLiteral("history-499.example"));
+    QVERIFY(historyTimer->isActive());
+    QCOMPARE(historyRowsInserted.count(), 0);
+    QCOMPARE(historyRowsRemoved.count(), 0);
+    QCOMPARE(historyModelReset.count(), 0);
+    QTRY_COMPARE(historyList->count(), 1);
+    QVERIFY(!historyTimer->isActive());
+    QVERIFY(historyList->item(0)->text().contains(
+        QStringLiteral("history-499.example")));
+    QVERIFY(historyRowsInserted.count() + historyRowsRemoved.count() +
+                historyModelReset.count() >
+            0);
+
+    QTest::mouseClick(
+        page.findChild<QToolButton*>(QStringLiteral("browserFavoritesButton")),
+        Qt::LeftButton);
+    auto* const favoritesSearch = page.findChild<QLineEdit*>(
+        QStringLiteral("browserFavoritesSearchEdit"));
+    auto* const favoritesTimer = page.findChild<QTimer*>(
+        QStringLiteral("browserFavoritesSearchTimer"));
+    auto* const favoritesList = page.findChild<QListWidget*>(
+        QStringLiteral("browserFavoritesList"));
+    QVERIFY(favoritesSearch != nullptr);
+    QVERIFY(favoritesTimer != nullptr);
+    QVERIFY(favoritesList != nullptr);
+    QCOMPARE(favoritesList->count(), 3);
+
+    QSignalSpy favoriteRowsInserted(favoritesList->model(),
+                                    &QAbstractItemModel::rowsInserted);
+    QSignalSpy favoriteRowsRemoved(favoritesList->model(),
+                                   &QAbstractItemModel::rowsRemoved);
+    QSignalSpy favoriteModelReset(favoritesList->model(),
+                                  &QAbstractItemModel::modelReset);
+    favoritesSearch->setText(QStringLiteral("note"));
+    favoritesSearch->setText(QStringLiteral("third"));
+    favoritesSearch->setText(QStringLiteral("third note"));
+    QVERIFY(favoritesTimer->isActive());
+    QCOMPARE(favoriteRowsInserted.count(), 0);
+    QCOMPARE(favoriteRowsRemoved.count(), 0);
+    QCOMPARE(favoriteModelReset.count(), 0);
+    QTRY_COMPARE(favoritesList->count(), 1);
+    QVERIFY(!favoritesTimer->isActive());
+    QVERIFY(favoritesList->item(0)->text().contains(
+        QStringLiteral("third note")));
+    QVERIFY(favoriteRowsInserted.count() + favoriteRowsRemoved.count() +
+                favoriteModelReset.count() >
+            0);
+}
+
 void BrowserPageTest::opensHistoryInCurrentOrNewTabFromMouseGesture() {
     test::FakeBrowserBackend backend;
     MemoryBrowserDataStore dataStore;
@@ -713,7 +807,7 @@ void BrowserPageTest::searchesDeletesAndClearsHistoryWithConfirmation() {
     QVERIFY(removeButton != nullptr);
 
     search->setText(QStringLiteral("two.example"));
-    QCOMPARE(list->count(), 1);
+    QTRY_COMPARE(list->count(), 1);
     QCOMPARE(list->item(0)->text(),
              QStringLiteral("Beta\nhttps://two.example/page"));
     list->setCurrentRow(0);
@@ -767,7 +861,7 @@ void BrowserPageTest::searchesEditsDeletesAndReordersFavorites() {
     QVERIFY(list != nullptr);
 
     search->setText(QStringLiteral("SECOND NOTE"));
-    QCOMPARE(list->count(), 1);
+    QTRY_COMPARE(list->count(), 1);
     QVERIFY(!list->dragEnabled());
     list->setCurrentRow(0);
     QTest::mouseClick(
@@ -783,7 +877,7 @@ void BrowserPageTest::searchesEditsDeletesAndReordersFavorites() {
     QCOMPARE(dataStore.favorites.at(1).title, QStringLiteral("Two edited"));
 
     search->setText(QStringLiteral("three.example"));
-    QCOMPARE(list->count(), 1);
+    QTRY_COMPARE(list->count(), 1);
     list->setCurrentRow(0);
     QTest::mouseClick(
         page.findChild<QPushButton*>(QStringLiteral("browserFavoriteRemoveButton")),
@@ -793,7 +887,7 @@ void BrowserPageTest::searchesEditsDeletesAndReordersFavorites() {
     QCOMPARE(dataStore.favorites.at(1).title, QStringLiteral("Two edited"));
 
     search->clear();
-    QCOMPARE(list->count(), 2);
+    QTRY_COMPARE(list->count(), 2);
     QVERIFY(list->dragEnabled());
     QListWidgetItem* const moved = list->takeItem(1);
     QVERIFY(moved != nullptr);

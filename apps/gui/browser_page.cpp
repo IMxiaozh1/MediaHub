@@ -65,6 +65,7 @@ constexpr int kDefaultMaximumTabCount = 20;
 constexpr int kMaximumClosedTabCount = 20;
 constexpr qint64 kRecoveryCooldownMilliseconds = 30000;
 constexpr int kSessionCheckpointMilliseconds = 30000;
+constexpr int kListSearchDebounceMilliseconds = 150;
 constexpr int kMaximumRecoveryAttemptsPerWindow = 3;
 
 QToolButton* createToolButton(const QString& objectName, const QString& text,
@@ -3024,6 +3025,11 @@ void BrowserPage::showHistory() {
             QStringLiteral("搜索标题或网址"));
         historySearchEdit_->setClearButtonEnabled(true);
         layout->addWidget(historySearchEdit_);
+        historySearchTimer_ = new QTimer(historyDialog_);
+        historySearchTimer_->setObjectName(
+            QStringLiteral("browserHistorySearchTimer"));
+        historySearchTimer_->setSingleShot(true);
+        historySearchTimer_->setInterval(kListSearchDebounceMilliseconds);
         auto* list = new BrowserLinkListWidget(historyDialog_);
         historyList_ = list;
         historyList_->setObjectName(QStringLiteral("browserHistoryList"));
@@ -3049,8 +3055,11 @@ void BrowserPage::showHistory() {
         layout->addLayout(buttons);
         connect(historySearchEdit_, &QLineEdit::textChanged, this, [this] {
             isHistoryListDirty_ = true;
-            refreshHistoryList();
+            historyList_->setCurrentRow(-1);
+            historySearchTimer_->start();
         });
+        connect(historySearchTimer_, &QTimer::timeout, this,
+                &BrowserPage::refreshHistoryList);
         connect(removeButton, &QPushButton::clicked, this,
                 &BrowserPage::removeSelectedHistoryEntry);
         connect(clearButton, &QPushButton::clicked, this,
@@ -3083,6 +3092,11 @@ void BrowserPage::showFavorites() {
             QStringLiteral("搜索标题、网址或备注"));
         favoritesSearchEdit_->setClearButtonEnabled(true);
         layout->addWidget(favoritesSearchEdit_);
+        favoritesSearchTimer_ = new QTimer(favoritesDialog_);
+        favoritesSearchTimer_->setObjectName(
+            QStringLiteral("browserFavoritesSearchTimer"));
+        favoritesSearchTimer_->setSingleShot(true);
+        favoritesSearchTimer_->setInterval(kListSearchDebounceMilliseconds);
         auto* list = new BrowserLinkListWidget(favoritesDialog_);
         favoritesList_ = list;
         favoritesList_->setObjectName(QStringLiteral("browserFavoritesList"));
@@ -3149,8 +3163,11 @@ void BrowserPage::showFavorites() {
                 });
         connect(favoritesSearchEdit_, &QLineEdit::textChanged, this, [this] {
             isFavoritesListDirty_ = true;
-            refreshFavoritesList();
+            favoritesList_->setCurrentRow(-1);
+            favoritesSearchTimer_->start();
         });
+        connect(favoritesSearchTimer_, &QTimer::timeout, this,
+                &BrowserPage::refreshFavoritesList);
         connect(importButton, &QPushButton::clicked, this,
                 &BrowserPage::chooseFavoriteImportFile);
         connect(exportButton, &QPushButton::clicked, this,

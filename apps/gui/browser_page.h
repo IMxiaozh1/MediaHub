@@ -372,11 +372,13 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QDialog* clearDataDialog_{nullptr};
     QDialog* historyDialog_{nullptr};
     QLineEdit* historySearchEdit_{nullptr};
+    QTimer* historySearchTimer_{nullptr};
     QListWidget* historyList_{nullptr};
     bool isHistoryListDirty_{true};
     QDialog* historyClearDialog_{nullptr};
     QDialog* favoritesDialog_{nullptr};
     QLineEdit* favoritesSearchEdit_{nullptr};
+    QTimer* favoritesSearchTimer_{nullptr};
     QListWidget* favoritesList_{nullptr};
     bool isFavoritesListDirty_{true};
     QLabel* favoriteTransferStatusLabel_{nullptr};
