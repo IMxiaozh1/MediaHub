@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -180,7 +181,10 @@ BrowserPermissionManagementDialog::BrowserPermissionManagementDialog(
     layout->addWidget(statusLabel_);
 
     connect(searchEdit_, &QLineEdit::textChanged, this,
-            &BrowserPermissionManagementDialog::applyFilter);
+            [this](const QString& text) {
+                exactOriginFilter_.clear();
+                applyFilter(text);
+            });
     connect(table_, &QTableWidget::itemSelectionChanged, this,
             &BrowserPermissionManagementDialog::updateActions);
     connect(saveButton_, &QPushButton::clicked, this,
@@ -224,14 +228,29 @@ void BrowserPermissionManagementDialog::reloadEntries() {
     updateActions();
 }
 
+void BrowserPermissionManagementDialog::setOriginFilter(
+    const QString& origin) {
+    exactOriginFilter_ = BrowserPermissionStore::normalizeOrigin(origin);
+    const QSignalBlocker blocker(searchEdit_);
+    searchEdit_->setText(exactOriginFilter_);
+    applyFilter(exactOriginFilter_);
+}
+
 void BrowserPermissionManagementDialog::applyFilter(const QString& text) {
     const QString query = text.trimmed();
     for (int row = 0; row < table_->rowCount(); ++row) {
         bool matches = query.isEmpty();
-        for (int column = 0; !matches && column < table_->columnCount(); ++column) {
-            const QTableWidgetItem* const item = table_->item(row, column);
-            matches = item != nullptr && item->text().contains(query,
-                                                               Qt::CaseInsensitive);
+        if (!exactOriginFilter_.isEmpty()) {
+            const QTableWidgetItem* const originItem = table_->item(row, 0);
+            matches = originItem != nullptr &&
+                      originItem->text() == exactOriginFilter_;
+        } else {
+            for (int column = 0;
+                 !matches && column < table_->columnCount(); ++column) {
+                const QTableWidgetItem* const item = table_->item(row, column);
+                matches = item != nullptr && item->text().contains(
+                                               query, Qt::CaseInsensitive);
+            }
         }
         table_->setRowHidden(row, !matches);
     }

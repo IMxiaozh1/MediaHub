@@ -176,6 +176,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/app_state_store.cpp
         apps/gui/app_state_store.h
         apps/gui/browser_backend.h
+        apps/gui/browser_chrome.cpp
+        apps/gui/browser_chrome.h
         apps/gui/browser_bookmark_html.cpp
         apps/gui/browser_bookmark_html.h
         apps/gui/browser_data_model.cpp
@@ -189,6 +191,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/browser_event_listener.h
         apps/gui/browser_favicon_cache.cpp
         apps/gui/browser_favicon_cache.h
+        apps/gui/browser_icon_provider.cpp
+        apps/gui/browser_icon_provider.h
         apps/gui/browser_navigation_policy.cpp
         apps/gui/browser_navigation_policy.h
         apps/gui/browser_page.cpp
@@ -201,6 +205,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/browser_profile_directory.h
         apps/gui/browser_session_store.cpp
         apps/gui/browser_session_store.h
+        apps/gui/browser_side_panel.cpp
+        apps/gui/browser_side_panel.h
         apps/gui/browser_startup_settings.cpp
         apps/gui/browser_startup_settings.h
         apps/gui/browser_startup_settings_dialog.cpp

@@ -57,6 +57,8 @@ class BrowserPermissionManagementDialog final : public QDialog {
     [[nodiscard]] QString statusText() const;
     // 调用线程：GUI 主线程。每次显示前重新读取持久化权限。
     void reloadEntries();
+    // 调用线程：GUI 主线程。空来源显示全部，否则只显示规范化来源。
+    void setOriginFilter(const QString& origin);
 
  signals:
     void permissionsChanged();
@@ -75,6 +77,7 @@ class BrowserPermissionManagementDialog final : public QDialog {
     QPushButton* saveButton_{nullptr};
     QPushButton* removeButton_{nullptr};
     QLabel* statusLabel_{nullptr};
+    QString exactOriginFilter_;
 };
 
 }  // namespace mediahub::gui

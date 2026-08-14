@@ -54,6 +54,7 @@ enum class BrowserProcessFailureKind {
 // WebView2 原生子窗口只向 GUI 投递稳定快捷键语义，不暴露 Windows 消息或虚拟键值。
 enum class BrowserAccelerator {
     FocusAddress,
+    FocusCycle,
     NewTab,
     CloseTab,
     NextTab,
@@ -66,6 +67,9 @@ enum class BrowserAccelerator {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+    ShowHistory,
+    ShowFavorites,
+    ShowDownloads,
     ExitFullScreen,
 };
 
