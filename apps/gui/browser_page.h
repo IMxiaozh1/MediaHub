@@ -290,9 +290,13 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void findNext(bool forward);
     void showTabSearch();
     void refreshTabSearch();
+    // 调用线程：GUI 主线程。窗口隐藏时只记录待刷新状态。
+    void updateTabSearchPresentation();
     void activateSelectedSearchTab();
     void showTabContextMenu(const QPoint& position);
     void showTabGroups();
+    // 调用线程：GUI 主线程。窗口隐藏时不重建分组列表。
+    void updateTabGroupDialogPresentation();
     void removeGroupFromTabs(const QString& groupId);
     void updateTabGroupPresentation();
     void setTabPinned(std::uint64_t tabId, bool isPinned);
@@ -330,6 +334,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QLineEdit* tabSearchEdit_{nullptr};
     QListWidget* tabSearchList_{nullptr};
     QPushButton* tabSearchSwitchButton_{nullptr};
+    bool isTabSearchDirty_{true};
     QDialog* pinnedCloseDialog_{nullptr};
     std::optional<std::uint64_t> pendingPinnedCloseTabId_;
     QWidget* findBar_{nullptr};
@@ -393,6 +398,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     BrowserPermissionManagementDialog* permissionSettingsDialog_{nullptr};
     BrowserTabGroupDialog* tabGroupDialog_{nullptr};
     BrowserTabGroupModel tabGroupModel_;
+    bool isTabGroupDialogDirty_{true};
     BrowserPermissionDialog* permissionDialog_{nullptr};
     std::optional<std::uint64_t> pendingPermissionId_;
     BrowserPermissionKind pendingPermissionKind_{BrowserPermissionKind::Other};

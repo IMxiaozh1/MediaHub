@@ -138,6 +138,7 @@ class BrowserPageTest final : public QObject {
     void findsWithinCurrentTabAndStopsOnContextChanges();
     void tabContextMenuTargetsStableTab();
     void searchesOpenTabsByTitleAndDomain();
+    void skipsHiddenTabSearchAndGroupListRebuilds();
     void pinsTabsAndProtectsBulkClose();
     void protectsAudibleAndDownloadingTabsFromBulkClose();
     void enforcesConfiguredMaximumTabCount();
@@ -1131,6 +1132,133 @@ void BrowserPageTest::searchesOpenTabsByTitleAndDomain() {
     QTest::keyClick(&page, Qt::Key_A,
                     Qt::ControlModifier | Qt::ShiftModifier);
     QVERIFY(dialog->isVisible());
+}
+
+void BrowserPageTest::skipsHiddenTabSearchAndGroupListRebuilds() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://one.example/page"), QStringLiteral("One"),
+        false, false);
+    QVERIFY(backend.emitNewTabRequested(QStringLiteral("https://two.example")));
+    backend.emitTabReady(2, 2);
+    backend.emitTabNavigationCompleted(
+        2, 2, QStringLiteral("https://two.example/page"), QStringLiteral("Two"),
+        false, false);
+
+    auto* const searchButton = page.findChild<QToolButton*>(
+        QStringLiteral("browserTabSearchButton"));
+    auto* const groupButton = page.findChild<QToolButton*>(
+        QStringLiteral("browserTabGroupButton"));
+    QVERIFY(searchButton != nullptr);
+    QVERIFY(groupButton != nullptr);
+
+    QTest::mouseClick(groupButton, Qt::LeftButton);
+    auto* const groupDialog = page.findChild<BrowserTabGroupDialog*>(
+        QStringLiteral("browserTabGroupDialog"));
+    auto* const groupName = page.findChild<QLineEdit*>(
+        QStringLiteral("browserTabGroupNameEdit"));
+    auto* const groupCreateButton = page.findChild<QPushButton*>(
+        QStringLiteral("browserTabGroupCreateButton"));
+    auto* const groupList = page.findChild<QListWidget*>(
+        QStringLiteral("browserTabGroupList"));
+    QVERIFY(groupDialog != nullptr);
+    QVERIFY(groupName != nullptr);
+    QVERIFY(groupCreateButton != nullptr);
+    QVERIFY(groupList != nullptr);
+    groupName->setText(QStringLiteral("工作"));
+    QTest::mouseClick(groupCreateButton, Qt::LeftButton);
+    QCOMPARE(groupList->count(), 1);
+    groupDialog->hide();
+
+    QTest::mouseClick(searchButton, Qt::LeftButton);
+    auto* const searchDialog = page.findChild<QDialog*>(
+        QStringLiteral("browserTabSearchDialog"));
+    auto* const searchList = page.findChild<QListWidget*>(
+        QStringLiteral("browserTabSearchList"));
+    QVERIFY(searchDialog != nullptr);
+    QVERIFY(searchList != nullptr);
+    QCOMPARE(searchList->count(), 2);
+    searchDialog->hide();
+
+    QSignalSpy searchRowsInserted(searchList->model(),
+                                  &QAbstractItemModel::rowsInserted);
+    QSignalSpy searchRowsRemoved(searchList->model(),
+                                 &QAbstractItemModel::rowsRemoved);
+    QSignalSpy searchModelReset(searchList->model(),
+                                &QAbstractItemModel::modelReset);
+    QSignalSpy groupRowsInserted(groupList->model(),
+                                 &QAbstractItemModel::rowsInserted);
+    QSignalSpy groupRowsRemoved(groupList->model(),
+                                &QAbstractItemModel::rowsRemoved);
+    QSignalSpy groupModelReset(groupList->model(),
+                               &QAbstractItemModel::modelReset);
+
+    QTest::mouseClick(searchButton, Qt::LeftButton);
+    QCOMPARE(searchRowsInserted.count(), 0);
+    QCOMPARE(searchRowsRemoved.count(), 0);
+    QCOMPARE(searchModelReset.count(), 0);
+    searchDialog->hide();
+    QTest::mouseClick(groupButton, Qt::LeftButton);
+    QCOMPARE(groupRowsInserted.count(), 0);
+    QCOMPARE(groupRowsRemoved.count(), 0);
+    QCOMPARE(groupModelReset.count(), 0);
+    groupDialog->hide();
+
+    QVERIFY(backend.emitNewTabRequested(
+        QStringLiteral("https://three.example/page")));
+    backend.emitTabReady(3, 3);
+    backend.emitTabNavigationCompleted(
+        3, 3, QStringLiteral("https://three.example/page"),
+        QStringLiteral("Three"), false, false);
+    QCOMPARE(searchRowsInserted.count(), 0);
+    QCOMPARE(searchRowsRemoved.count(), 0);
+    QCOMPARE(searchModelReset.count(), 0);
+    QCOMPARE(groupRowsInserted.count(), 0);
+    QCOMPARE(groupRowsRemoved.count(), 0);
+    QCOMPARE(groupModelReset.count(), 0);
+
+    QTest::mouseClick(searchButton, Qt::LeftButton);
+    QCOMPARE(searchList->count(), 3);
+    QVERIFY(searchRowsInserted.count() + searchRowsRemoved.count() +
+                searchModelReset.count() >
+            0);
+    searchDialog->hide();
+    searchRowsInserted.clear();
+    searchRowsRemoved.clear();
+    searchModelReset.clear();
+
+    QTest::mouseClick(
+        page.findChild<QPushButton*>(QStringLiteral("browserClearDataButton")),
+        Qt::LeftButton);
+    auto* const clearDialog = page.findChild<QDialog*>(
+        QStringLiteral("browserClearDataDialog"));
+    QVERIFY(clearDialog != nullptr);
+    QTest::mouseClick(
+        clearDialog->findChild<QPushButton*>(
+            QStringLiteral("browserClearDataConfirmButton")),
+        Qt::LeftButton);
+    QCOMPARE(searchRowsInserted.count(), 0);
+    QCOMPARE(searchRowsRemoved.count(), 0);
+    QCOMPARE(searchModelReset.count(), 0);
+    QCOMPARE(groupRowsInserted.count(), 0);
+    QCOMPARE(groupRowsRemoved.count(), 0);
+    QCOMPARE(groupModelReset.count(), 0);
+
+    QTest::mouseClick(groupButton, Qt::LeftButton);
+    QCOMPARE(groupList->count(), 0);
+    QVERIFY(groupRowsInserted.count() + groupRowsRemoved.count() +
+                groupModelReset.count() >
+            0);
+    groupDialog->hide();
+    QTest::mouseClick(searchButton, Qt::LeftButton);
+    QCOMPARE(searchList->count(), 1);
+    QVERIFY(searchRowsInserted.count() + searchRowsRemoved.count() +
+                searchModelReset.count() >
+            0);
 }
 
 void BrowserPageTest::pinsTabsAndProtectsBulkClose() {

@@ -957,6 +957,7 @@ bool BrowserPage::onNewTabRequested(const std::uint64_t newWindowRequestId,
     updateTabCloseButtons();
     backend_.activateTab(tabId);
     updateTabPresentation();
+    updateTabSearchPresentation();
     return true;
 }
 
@@ -1082,9 +1083,6 @@ void BrowserPage::applyTabDocumentState(
         recordSuccessfulNavigation(visibleUrl, title);
     } else if (!didFinishNavigation) {
         updateRecordedNavigationTitle(visibleUrl, title);
-    }
-    if (tabSearchDialog_ != nullptr && tabSearchDialog_->isVisible()) {
-        refreshTabSearch();
     }
     updateTabGroupPresentation();
 }
@@ -1851,6 +1849,7 @@ void BrowserPage::openInitialTabs() {
             }
         } else if (!restored->tabs.isEmpty()) {
             tabGroupModel_.replace(restored->groups);
+            updateTabGroupDialogPresentation();
             const int savedCurrentIndex = std::clamp(
                 restored->currentIndex, 0, restored->tabs.size() - 1);
             const QString savedCurrentUrl =
@@ -2080,7 +2079,7 @@ void BrowserPage::showTabSearch() {
         buttons->addWidget(closeButton);
         layout->addLayout(buttons);
         connect(tabSearchEdit_, &QLineEdit::textChanged, this,
-                [this] { refreshTabSearch(); });
+                [this] { updateTabSearchPresentation(); });
         connect(tabSearchList_, &QListWidget::currentRowChanged,
                 tabSearchDialog_, [this](int) {
                     tabSearchSwitchButton_->setEnabled(
@@ -2097,7 +2096,9 @@ void BrowserPage::showTabSearch() {
         connect(closeButton, &QPushButton::clicked, tabSearchDialog_,
                 &QDialog::hide);
     }
-    refreshTabSearch();
+    if (isTabSearchDirty_) {
+        refreshTabSearch();
+    }
     tabSearchDialog_->show();
     tabSearchDialog_->raise();
     tabSearchDialog_->activateWindow();
@@ -2139,6 +2140,15 @@ void BrowserPage::refreshTabSearch() {
     tabSearchList_->setCurrentRow(tabSearchList_->count() > 0 ? 0 : -1);
     if (tabSearchSwitchButton_ != nullptr) {
         tabSearchSwitchButton_->setEnabled(tabSearchList_->count() > 0);
+    }
+    isTabSearchDirty_ = false;
+}
+
+void BrowserPage::updateTabSearchPresentation() {
+    if (tabSearchDialog_ != nullptr && tabSearchDialog_->isVisible()) {
+        refreshTabSearch();
+    } else {
+        isTabSearchDirty_ = true;
     }
 }
 
@@ -2306,14 +2316,29 @@ void BrowserPage::showTabGroups() {
     if (tabGroupDialog_ == nullptr) {
         tabGroupDialog_ = new BrowserTabGroupDialog(tabGroupModel_, this);
         connect(tabGroupDialog_, &BrowserTabGroupDialog::groupsChanged, this,
-                &BrowserPage::updateTabGroupPresentation);
+                [this] {
+                    isTabGroupDialogDirty_ = false;
+                    updateTabGroupPresentation();
+                });
         connect(tabGroupDialog_, &BrowserTabGroupDialog::groupRemoved, this,
                 &BrowserPage::removeGroupFromTabs);
+        isTabGroupDialogDirty_ = false;
+    } else if (isTabGroupDialogDirty_) {
+        tabGroupDialog_->reload();
+        isTabGroupDialogDirty_ = false;
     }
-    tabGroupDialog_->reload();
     tabGroupDialog_->show();
     tabGroupDialog_->raise();
     tabGroupDialog_->activateWindow();
+}
+
+void BrowserPage::updateTabGroupDialogPresentation() {
+    if (tabGroupDialog_ != nullptr && tabGroupDialog_->isVisible()) {
+        tabGroupDialog_->reload();
+        isTabGroupDialogDirty_ = false;
+    } else {
+        isTabGroupDialogDirty_ = true;
+    }
 }
 
 void BrowserPage::moveTabToGroup(const std::uint64_t tabId,
@@ -2381,9 +2406,7 @@ void BrowserPage::updateTabGroupPresentation() {
         tabBar_->setTabToolTip(index, toolTip);
     }
     static_cast<BrowserTabBar*>(tabBar_)->setCollapsedTabIds(collapsedTabIds);
-    if (tabSearchDialog_ != nullptr && tabSearchDialog_->isVisible()) {
-        refreshTabSearch();
-    }
+    updateTabSearchPresentation();
 }
 
 void BrowserPage::closeCurrentTab() {
@@ -2408,9 +2431,7 @@ void BrowserPage::setTabPinned(const std::uint64_t tabId,
     tabs_[index].isPinned = isPinned;
     normalizePinnedTabOrder();
     updateTabCloseButtons();
-    if (tabSearchDialog_ != nullptr && tabSearchDialog_->isVisible()) {
-        refreshTabSearch();
-    }
+    updateTabSearchPresentation();
 }
 
 void BrowserPage::normalizePinnedTabOrder() {
@@ -3646,9 +3667,7 @@ void BrowserPage::confirmClearBrowsingData() {
         downloadWidget_->completeDestinationSelection(QString{});
     }
     tabGroupModel_.replace({});
-    if (tabGroupDialog_ != nullptr) {
-        tabGroupDialog_->reload();
-    }
+    updateTabGroupDialogPresentation();
     ++generation_;
     const BrowserTabRecord survivingTab = tabs_.at(currentTabIndex_);
     for (const BrowserTabRecord& tab : tabs_) {
@@ -3671,6 +3690,7 @@ void BrowserPage::confirmClearBrowsingData() {
                         QVariant::fromValue<qulonglong>(survivingTab.tabId));
     tabBar_->setCurrentIndex(0);
     tabBar_->blockSignals(false);
+    updateTabSearchPresentation();
     state_ = BrowserPageState::ClearingData;
     statusLabel_->setText(QStringLiteral("正在清除网页数据..."));
     updateControls();
