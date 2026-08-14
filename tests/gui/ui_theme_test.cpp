@@ -27,6 +27,17 @@ class UiThemeTest final : public QObject {
 void UiThemeTest::coversBrowserAuxiliarySurfaces() {
     const QString& styleSheet = mainWindowStyleSheet();
     const QStringList requiredSelectors{
+        QStringLiteral("#browserChrome"),
+        QStringLiteral("#displayModeRail"),
+        QStringLiteral("#browserTabStrip"),
+        QStringLiteral("#browserToolbar"),
+        QStringLiteral("#browserNavigationBar"),
+        QStringLiteral("#browserAddressContainer"),
+        QStringLiteral("#browserSidePanel"),
+        QStringLiteral("#browserSidePanelTitleBar"),
+        QStringLiteral("#browserSidePanelStack"),
+        QStringLiteral("#browserMoreMenu"),
+        QStringLiteral("#browserDownloadButton"),
         QStringLiteral("#browserHistoryDialog"),
         QStringLiteral("#browserHistoryClearDialog"),
         QStringLiteral("#browserFavoritesDialog"),
@@ -95,8 +106,8 @@ void UiThemeTest::distinguishesPrimaryWarningAndDestructiveActions() {
     QVERIFY(styleSheet.contains(
         QStringLiteral("QDialog QPushButton#browserCertificateContinueButton")));
     QVERIFY(styleSheet.contains(QStringLiteral("background: #168a5d")));
-    QVERIFY(styleSheet.contains(QStringLiteral("background: #34201f")));
-    QVERIFY(styleSheet.contains(QStringLiteral("background: #3a2b18")));
+    QVERIFY(styleSheet.contains(QStringLiteral("background: #fff0ee")));
+    QVERIFY(styleSheet.contains(QStringLiteral("background: #fff4df")));
 }
 
 void UiThemeTest::appliesRepresentativeBrowserSurfaceColors() {
@@ -108,17 +119,17 @@ void UiThemeTest::appliesRepresentativeBrowserSurfaceColors() {
     historyDialog.ensurePolished();
     historyList->ensurePolished();
 
-    QCOMPARE(historyDialog.palette().color(QPalette::Window), QColor("#111820"));
+    QCOMPARE(historyDialog.palette().color(QPalette::Window), QColor("#f7f9fb"));
     QCOMPARE(historyDialog.palette().color(QPalette::WindowText),
-             QColor("#edf3f1"));
-    QCOMPARE(historyList->palette().color(QPalette::Base), QColor("#0b1016"));
-    QCOMPARE(historyList->palette().color(QPalette::Text), QColor("#dce5e2"));
+             QColor("#1f2d3a"));
+    QCOMPARE(historyList->palette().color(QPalette::Base), QColor("#ffffff"));
+    QCOMPARE(historyList->palette().color(QPalette::Text), QColor("#293847"));
 
     QMenu tabMenu;
     tabMenu.setObjectName(QStringLiteral("browserTabContextMenu"));
     tabMenu.setStyleSheet(mainWindowStyleSheet());
     tabMenu.ensurePolished();
-    QCOMPARE(tabMenu.palette().color(QPalette::Window), QColor("#111820"));
+    QCOMPARE(tabMenu.palette().color(QPalette::Window), QColor("#ffffff"));
 
     QWidget downloadWidget;
     downloadWidget.setObjectName(QStringLiteral("browserDownloadWidget"));
@@ -128,15 +139,39 @@ void UiThemeTest::appliesRepresentativeBrowserSurfaceColors() {
     downloadWidget.ensurePolished();
     progressBar->ensurePolished();
     QCOMPARE(downloadWidget.palette().color(QPalette::Window),
-             QColor("#131c24"));
-    QCOMPARE(progressBar->palette().color(QPalette::Base), QColor("#29343d"));
+             QColor("#ffffff"));
+    QCOMPARE(progressBar->palette().color(QPalette::Base), QColor("#dce4eb"));
 
     QWidget downloadCenter;
     downloadCenter.setObjectName(QStringLiteral("browserDownloadCenter"));
     downloadCenter.setStyleSheet(mainWindowStyleSheet());
     downloadCenter.ensurePolished();
     QCOMPARE(downloadCenter.palette().color(QPalette::Window),
-             QColor("#0f161e"));
+             QColor("#f7f9fb"));
+
+    QFrame browserChrome;
+    browserChrome.setObjectName(QStringLiteral("browserChrome"));
+    browserChrome.setStyleSheet(mainWindowStyleSheet());
+    browserChrome.ensurePolished();
+    QCOMPARE(browserChrome.palette().color(QPalette::Window),
+             QColor("#f4f6f8"));
+    QCOMPARE(browserChrome.palette().color(QPalette::WindowText),
+             QColor("#24313d"));
+
+    QFrame browserSidePanel;
+    browserSidePanel.setObjectName(QStringLiteral("browserSidePanel"));
+    browserSidePanel.setStyleSheet(mainWindowStyleSheet());
+    browserSidePanel.ensurePolished();
+    QCOMPARE(browserSidePanel.palette().color(QPalette::Window),
+             QColor("#f7f9fb"));
+
+    QFrame browserSidePanelTitleBar;
+    browserSidePanelTitleBar.setObjectName(
+        QStringLiteral("browserSidePanelTitleBar"));
+    browserSidePanelTitleBar.setStyleSheet(mainWindowStyleSheet());
+    browserSidePanelTitleBar.ensurePolished();
+    QCOMPARE(browserSidePanelTitleBar.palette().color(QPalette::Window),
+             QColor("#dce4eb"));
 }
 
 void UiThemeTest::keepsBrowserAuxiliarySurfacesResponsive() {

@@ -103,6 +103,51 @@ const QString& mainWindowStyleSheet() {
           color: #f2f5f4;
           padding: 5px 8px;
       }
+      QWidget#centralSurface {
+          border: 1px solid #596977;
+      }
+      QWidget#centralSurface[themeMode="audio"] {
+          border-color: #b9ccc4;
+      }
+      QFrame#displayModePanel {
+          background: #0d131a;
+          border: none;
+          border-bottom: 1px solid #4d5c69;
+      }
+      QFrame#displayModeRail {
+          background: #f4f7fa;
+          border: 1px solid #788794;
+          border-radius: 8px;
+      }
+      QFrame#displayModeRail QToolButton[modeSegment="true"] {
+          background: transparent;
+          border: 1px solid transparent;
+          border-radius: 6px;
+          color: #405161;
+          font-size: 14px;
+          font-weight: 700;
+          padding: 0 14px;
+      }
+      QFrame#displayModeRail QToolButton[modeSegment="true"]:hover:!checked {
+          background: #e2e8ee;
+          border-color: #aab6c0;
+          color: #172735;
+      }
+      QToolButton#localModeButton:checked {
+          background: #e7f6ef;
+          border-color: #58bd8d;
+          color: #145c3f;
+      }
+      QToolButton#liveModeButton:checked {
+          background: #fff3df;
+          border-color: #dda451;
+          color: #704511;
+      }
+      QToolButton#webModeButton:checked {
+          background: #e8f2fc;
+          border-color: #68a3d2;
+          color: #174f7c;
+      }
       QFrame#headerPanel {
           border: none;
           border-radius: 12px;
@@ -383,6 +428,140 @@ const QString& mainWindowStyleSheet() {
           background: transparent;
       }
   )") + QStringLiteral(R"(
+      QWidget#browserPage {
+          background: #f2f5f8;
+          border: 1px solid #8796a4;
+          border-top: none;
+          color: #24313d;
+      }
+      QFrame#browserChrome {
+          background: #f4f6f8;
+          border-bottom: 1px solid #8796a4;
+          color: #24313d;
+      }
+      QFrame#browserTabStrip {
+          background: #dce3ea;
+          border-bottom: 1px solid #9ba8b4;
+      }
+      QFrame#browserToolbar,
+      QFrame#browserNavigationBar {
+          background: #ffffff;
+      }
+      QFrame#browserAddressContainer {
+          background: #f6f8fa;
+          border: 1px solid #b8c3ce;
+          border-radius: 8px;
+      }
+      QFrame#browserAddressContainer:focus-within {
+          border-color: #2a76ad;
+      }
+      QFrame#browserChrome QLineEdit#browserAddressEdit {
+          background: transparent;
+          border: none;
+          color: #1d2b38;
+          padding: 0 6px;
+          selection-background-color: #2a76ad;
+      }
+      QFrame#browserChrome QToolButton,
+      QFrame#browserChrome QPushButton {
+          background: transparent;
+          border: 1px solid transparent;
+          border-radius: 6px;
+          color: #344454;
+          min-width: 30px;
+          max-width: 30px;
+          min-height: 30px;
+          max-height: 30px;
+          padding: 0;
+      }
+      QFrame#browserChrome QToolButton:hover:enabled,
+      QFrame#browserChrome QPushButton:hover:enabled {
+          background: #e5ebf0;
+          border-color: #bdc8d2;
+      }
+      QFrame#browserChrome QToolButton:pressed:enabled,
+      QFrame#browserChrome QPushButton:pressed:enabled {
+          background: #d2e6f5;
+          border-color: #5d99c7;
+      }
+      QFrame#browserChrome QToolButton:focus,
+      QFrame#browserChrome QPushButton:focus {
+          border-color: #2a76ad;
+      }
+      QFrame#browserChrome QToolButton:disabled,
+      QFrame#browserChrome QPushButton:disabled {
+          background: transparent;
+          border-color: transparent;
+          color: #a5afb9;
+      }
+      QTabBar#browserTabBar {
+          background: transparent;
+          qproperty-drawBase: 0;
+      }
+      QTabBar#browserTabBar::tab {
+          background: #d9e0e7;
+          border: 1px solid transparent;
+          border-radius: 7px 7px 0 0;
+          color: #536272;
+          height: 32px;
+          margin-right: 2px;
+          padding: 0 8px;
+      }
+      QTabBar#browserTabBar::tab:selected {
+          background: #ffffff;
+          border-color: #9eabb7;
+          border-bottom-color: #ffffff;
+          border-top-color: #2a76ad;
+          color: #182633;
+          font-weight: 700;
+      }
+      QTabBar#browserTabBar::tab:hover:!selected {
+          background: #edf1f5;
+          color: #263746;
+      }
+      QFrame#browserSidePanel {
+          background: #f7f9fb;
+          border-left: 2px solid #8796a4;
+      }
+      QFrame#browserSidePanelTitleBar {
+          background: #dce4eb;
+          border-bottom: 1px solid #9ba8b4;
+          min-height: 42px;
+      }
+      QStackedWidget#browserSidePanelStack {
+          background: #f7f9fb;
+          border: none;
+      }
+      QLabel#browserSidePanelTitle {
+          border-left: 3px solid #2a76ad;
+          color: #102331;
+          font-size: 15px;
+          font-weight: 700;
+          padding-left: 9px;
+      }
+      QFrame#browserSidePanel QDialog {
+          background: transparent;
+          color: #273747;
+          min-width: 0;
+      }
+      QMenu#browserMoreMenu {
+          background: #ffffff;
+          border: 1px solid #aeb9c4;
+          color: #263746;
+          padding: 4px;
+      }
+      QMenu#browserMoreMenu::item {
+          border-radius: 5px;
+          padding: 7px 28px 7px 10px;
+      }
+      QMenu#browserMoreMenu::item:selected {
+          background: #2a76ad;
+          color: #ffffff;
+      }
+      QToolButton#browserDownloadButton[hasActivity="true"] {
+          color: #1676ad;
+          border-bottom-color: #1676ad;
+      }
       QFrame#mediaCard, QFrame#transportPanel {
           border-radius: 10px;
       }
@@ -768,8 +947,8 @@ const QString& mainWindowStyleSheet() {
       QDialog#browserExternalProtocolDialog,
       QDialog#browserCertificateDialog,
       QDialog#browserClearDataDialog {
-          background: #111820;
-          color: #edf3f1;
+          background: #f7f9fb;
+          color: #1f2d3a;
           min-width: 360px;
       }
       QDialog#browserHistoryDialog QLabel,
@@ -789,7 +968,7 @@ const QString& mainWindowStyleSheet() {
       QDialog#browserCertificateDialog QLabel,
       QDialog#browserClearDataDialog QLabel {
           background: transparent;
-          color: #c9d2cf;
+          color: #526171;
           font-size: 12px;
       }
       QDialog#browserHistoryDialog QPushButton,
@@ -808,9 +987,9 @@ const QString& mainWindowStyleSheet() {
       QDialog#browserExternalProtocolDialog QPushButton,
       QDialog#browserCertificateDialog QPushButton,
       QDialog#browserClearDataDialog QPushButton {
-          background: #202b35;
-          border: 1px solid #3a4854;
-          color: #dce5e2;
+          background: #ffffff;
+          border: 1px solid #c0cbd5;
+          color: #263746;
       }
       QDialog#browserHistoryDialog QPushButton:hover:enabled,
       QDialog#browserHistoryClearDialog QPushButton:hover:enabled,
@@ -828,9 +1007,9 @@ const QString& mainWindowStyleSheet() {
       QDialog#browserExternalProtocolDialog QPushButton:hover:enabled,
       QDialog#browserCertificateDialog QPushButton:hover:enabled,
       QDialog#browserClearDataDialog QPushButton:hover:enabled {
-          background: #1d8f62;
-          border-color: #32c98c;
-          color: #ffffff;
+          background: #e7f1f9;
+          border-color: #68a3d2;
+          color: #174f7c;
       }
       QListWidget#browserHistoryList,
       QListWidget#browserFavoritesList,
@@ -838,11 +1017,11 @@ const QString& mainWindowStyleSheet() {
       QListWidget#browserTabSearchList,
       QListWidget#browserTabGroupList,
       QListWidget#browserStartupUrlsList {
-          alternate-background-color: #151e27;
-          background: #0b1016;
-          border: 1px solid #2d3944;
+          alternate-background-color: #f4f7fa;
+          background: #ffffff;
+          border: 1px solid #c4ced8;
           border-radius: 8px;
-          color: #dce5e2;
+          color: #293847;
           outline: none;
           padding: 5px;
       }
@@ -852,7 +1031,7 @@ const QString& mainWindowStyleSheet() {
       QListWidget#browserTabSearchList::item,
       QListWidget#browserTabGroupList::item,
       QListWidget#browserStartupUrlsList::item {
-          border-bottom: 1px solid #202a33;
+          border-bottom: 1px solid #e1e7ec;
           border-radius: 5px;
           min-height: 38px;
           padding: 7px 9px;
@@ -863,8 +1042,8 @@ const QString& mainWindowStyleSheet() {
       QListWidget#browserTabSearchList::item:hover,
       QListWidget#browserTabGroupList::item:hover,
       QListWidget#browserStartupUrlsList::item:hover {
-          background: #1b332c;
-          color: #f4faf7;
+          background: #e8f2fa;
+          color: #173a56;
       }
       QListWidget#browserHistoryList::item:selected,
       QListWidget#browserFavoritesList::item:selected,
@@ -872,7 +1051,7 @@ const QString& mainWindowStyleSheet() {
       QListWidget#browserTabSearchList::item:selected,
       QListWidget#browserTabGroupList::item:selected,
       QListWidget#browserStartupUrlsList::item:selected {
-          background: #197b55;
+          background: #2a76ad;
           color: #ffffff;
       }
       QLineEdit#browserFavoriteTitleEdit,
@@ -886,12 +1065,12 @@ const QString& mainWindowStyleSheet() {
       QLineEdit#browserHomeUrlEdit,
       QLineEdit#browserStartupUrlEdit,
       QLineEdit#browserFindEdit {
-          background: #0b1016;
-          border: 1px solid #34424e;
+          background: #ffffff;
+          border: 1px solid #bdc8d2;
           border-radius: 7px;
-          color: #edf3f1;
+          color: #21313f;
           padding: 7px 9px;
-          selection-background-color: #1f9b68;
+          selection-background-color: #2a76ad;
       }
       QLineEdit#browserFavoriteTitleEdit:focus,
       QLineEdit#browserFavoriteUrlEdit:focus,
@@ -904,19 +1083,19 @@ const QString& mainWindowStyleSheet() {
       QLineEdit#browserHomeUrlEdit:focus,
       QLineEdit#browserStartupUrlEdit:focus,
       QLineEdit#browserFindEdit:focus {
-          background: #0e151c;
-          border-color: #27bd7d;
+          background: #ffffff;
+          border-color: #2a76ad;
       }
       QLabel#browserPermissionOriginLabel,
       QLabel#browserPermissionKindLabel,
       QLabel#browserExternalProtocolOriginLabel,
       QLabel#browserExternalProtocolTargetLabel,
       QLabel#browserCertificateOriginLabel {
-          background: #0b1016;
-          border: 1px solid #2c3944;
-          border-left: 3px solid #24b97a;
+          background: #f0f4f7;
+          border: 1px solid #c2ccd6;
+          border-left: 3px solid #2a76ad;
           border-radius: 6px;
-          color: #f0f5f3;
+          color: #263746;
           font-family: "Cascadia Mono";
           padding: 8px 10px;
       }
@@ -925,18 +1104,18 @@ const QString& mainWindowStyleSheet() {
       QLabel#browserFavoriteTransferStatusLabel,
       QLabel#browserStartupSettingsExplanation,
       QLabel#browserClearDataExplanation {
-          background: #242014;
-          border: 1px solid #514322;
+          background: #fff6dc;
+          border: 1px solid #e2c26b;
           border-radius: 7px;
-          color: #e9cf91;
+          color: #684908;
           padding: 9px 11px;
       }
       QLabel#browserCertificateErrorLabel {
-          background: #321d1b;
-          border: 1px solid #6b3731;
-          border-left: 3px solid #dc695b;
+          background: #fff0ed;
+          border: 1px solid #e2aaa2;
+          border-left: 3px solid #c84d40;
           border-radius: 7px;
-          color: #ffd1ca;
+          color: #8e2f26;
           padding: 9px 11px;
       }
       QDialog QPushButton#browserFavoriteSaveButton,
@@ -990,9 +1169,9 @@ const QString& mainWindowStyleSheet() {
       QDialog QPushButton#browserActiveDownloadExitButton,
       QPushButton#browserDownloadCancelButton,
       QDialog QPushButton#browserAudioTabCloseButton {
-          background: #34201f;
-          border-color: #6c3935;
-          color: #f4b8b0;
+          background: #fff0ee;
+          border-color: #d89992;
+          color: #922f27;
       }
       QDialog QPushButton#browserFavoriteRemoveButton:hover:enabled,
       QDialog QPushButton#browserHistoryRemoveButton:hover:enabled,
@@ -1013,12 +1192,12 @@ const QString& mainWindowStyleSheet() {
       }
   )") + QStringLiteral(R"(
       QTableWidget#browserPermissionTable {
-          alternate-background-color: #151e27;
-          background: #0b1016;
-          border: 1px solid #2d3944;
+          alternate-background-color: #f4f7fa;
+          background: #ffffff;
+          border: 1px solid #c4ced8;
           border-radius: 8px;
-          color: #dce5e2;
-          gridline-color: #202a33;
+          color: #293847;
+          gridline-color: #e1e7ec;
           outline: none;
       }
       QTableWidget#browserPermissionTable::item {
@@ -1026,59 +1205,59 @@ const QString& mainWindowStyleSheet() {
           padding: 5px 8px;
       }
       QTableWidget#browserPermissionTable::item:selected {
-          background: #197b55;
+          background: #2a76ad;
           color: #ffffff;
       }
       QTableWidget#browserPermissionTable QHeaderView::section {
-          background: #202b35;
+          background: #e8edf2;
           border: 0;
-          border-bottom: 1px solid #3a4854;
-          color: #dce5e2;
+          border-bottom: 1px solid #bcc7d1;
+          color: #263746;
           padding: 7px 9px;
       }
       QComboBox#browserPermissionStateCombo {
-          background: #0b1016;
-          border: 1px solid #34424e;
+          background: #ffffff;
+          border: 1px solid #bdc8d2;
           border-radius: 7px;
-          color: #edf3f1;
+          color: #21313f;
           min-width: 104px;
           padding: 7px 9px;
       }
       QComboBox#browserTabGroupColorCombo,
       QComboBox#browserStartupModeCombo {
-          background: #0b1016;
-          border: 1px solid #34424e;
+          background: #ffffff;
+          border: 1px solid #bdc8d2;
           border-radius: 7px;
-          color: #edf3f1;
+          color: #21313f;
           min-width: 116px;
           padding: 7px 9px;
       }
       QSpinBox#browserMaximumTabCountSpin {
-          background: #0b1016;
-          border: 1px solid #34424e;
+          background: #ffffff;
+          border: 1px solid #bdc8d2;
           border-radius: 7px;
-          color: #edf3f1;
+          color: #21313f;
           min-width: 104px;
           padding: 7px 9px;
       }
       QLabel#browserTabGroupStatusLabel[status="success"] {
-          background: #183b30;
-          border: 1px solid #2f7059;
+          background: #e6f6ee;
+          border: 1px solid #83c3a3;
           border-radius: 7px;
-          color: #8ce6bc;
+          color: #1e6b47;
           padding: 8px 10px;
       }
       QLabel#browserTabGroupStatusLabel[status="error"] {
-          background: #321d1b;
-          border: 1px solid #6b3731;
+          background: #fff0ed;
+          border: 1px solid #e2aaa2;
           border-radius: 7px;
-          color: #ffd1ca;
+          color: #8e2f26;
           padding: 8px 10px;
       }
       QDialog QPushButton#browserCertificateContinueButton {
-          background: #3a2b18;
-          border-color: #75532a;
-          color: #f6d59d;
+          background: #fff4df;
+          border-color: #d8ad62;
+          color: #724b0d;
       }
       QDialog QPushButton#browserCertificateContinueButton:hover:enabled {
           background: #9c682d;
@@ -1086,12 +1265,12 @@ const QString& mainWindowStyleSheet() {
           color: #ffffff;
       }
       QFrame#browserFindBar {
-          background: #151d25;
-          border: 1px solid #2d3b46;
+          background: #ffffff;
+          border: 1px solid #b8c3ce;
           border-radius: 8px;
       }
       QLabel#browserFindResultLabel {
-          color: #8fa29b;
+          color: #647484;
           font-family: "Cascadia Mono";
           min-width: 44px;
       }
@@ -1101,14 +1280,14 @@ const QString& mainWindowStyleSheet() {
           padding: 6px 9px;
       }
       QMenu#browserTabContextMenu {
-          background: #111820;
-          border: 1px solid #34424d;
+          background: #ffffff;
+          border: 1px solid #aeb9c4;
           border-radius: 7px;
-          color: #e6eeeb;
+          color: #263746;
           padding: 6px;
       }
       QMenu#browserTabContextMenu::separator {
-          background: #2b3741;
+          background: #d8dfe5;
           height: 1px;
           margin: 5px 9px;
       }
@@ -1118,35 +1297,35 @@ const QString& mainWindowStyleSheet() {
           padding: 7px 25px;
       }
       QMenu#browserTabContextMenu::item:selected {
-          background: #1d8f62;
+          background: #2a76ad;
           color: #ffffff;
       }
       QWidget#browserDownloadCenter {
-          background: #0f161e;
-          border: 1px solid #2d3b46;
+          background: #f7f9fb;
+          border: 1px solid #c2ccd6;
           border-radius: 10px;
-          color: #dce5e2;
+          color: #293847;
       }
       QLabel#browserDownloadCenterTitleLabel {
-          color: #f2f7f5;
+          color: #1f2d3a;
           font-size: 15px;
           font-weight: 700;
       }
       QLabel#browserDownloadCenterSummaryLabel {
-          color: #8fa29b;
+          color: #647484;
           font-family: "Cascadia Mono";
       }
       QPushButton#browserDownloadClearCompletedButton {
-          background: #18242c;
-          border: 1px solid #34454f;
+          background: #ffffff;
+          border: 1px solid #c0cbd5;
           border-radius: 7px;
-          color: #b8c8c2;
+          color: #394b5b;
           padding: 6px 10px;
       }
       QPushButton#browserDownloadClearCompletedButton:hover:enabled {
-          background: #21333c;
-          border-color: #4c6962;
-          color: #ffffff;
+          background: #e7f1f9;
+          border-color: #68a3d2;
+          color: #174f7c;
       }
       QScrollArea#browserDownloadCenterScrollArea,
       QWidget#browserDownloadCenterContent {
@@ -1154,50 +1333,50 @@ const QString& mainWindowStyleSheet() {
           border: none;
       }
       QLabel#browserDownloadCenterEmptyLabel {
-          background: #111a22;
-          border: 1px dashed #34444f;
+          background: #ffffff;
+          border: 1px dashed #b8c3ce;
           border-radius: 8px;
-          color: #72867f;
+          color: #71808e;
           padding: 24px;
       }
       QWidget#browserDownloadWidget {
-          background: #131c24;
-          border: 1px solid #30404c;
-          border-left: 3px solid #26b879;
+          background: #ffffff;
+          border: 1px solid #c2ccd6;
+          border-left: 3px solid #2a76ad;
           border-radius: 8px;
-          color: #dce5e2;
+          color: #293847;
       }
       QLabel#browserDownloadOriginLabel {
-          color: #7f948d;
+          color: #71808e;
           font-family: "Cascadia Mono";
       }
       QLabel#browserDownloadFileNameLabel {
-          color: #f1f6f4;
+          color: #1f2d3a;
           font-weight: 700;
       }
       QLabel#browserDownloadSizeLabel {
-          color: #9aaba5;
+          color: #647484;
       }
       QLabel#browserDownloadSpeedLabel,
       QLabel#browserDownloadRemainingLabel {
-          color: #7faaa0;
+          color: #4f7387;
           font-size: 10px;
       }
       QLabel#browserDownloadStateLabel {
-          background: #183b30;
+          background: #e5f5ed;
           border-radius: 9px;
-          color: #63dca9;
+          color: #1e6b47;
           font-weight: 700;
           padding: 3px 8px;
       }
       QLabel#browserDownloadErrorLabel {
-          color: #f09487;
+          color: #a43d32;
       }
       QProgressBar#browserDownloadProgressBar {
-          background: #29343d;
+          background: #dce4eb;
           border: none;
           border-radius: 4px;
-          color: #ffffff;
+          color: #21313f;
           font-size: 10px;
           min-height: 8px;
           text-align: center;
@@ -1213,7 +1392,7 @@ const QString& mainWindowStyleSheet() {
       QDialog#browserTabGroupDialog QScrollBar:vertical,
       QDialog#browserStartupSettingsDialog QScrollBar:vertical,
       QScrollArea#browserDownloadCenterScrollArea QScrollBar:vertical {
-          background: #0b1016;
+          background: #eef2f5;
           border: none;
           margin: 2px;
           width: 9px;
@@ -1225,7 +1404,7 @@ const QString& mainWindowStyleSheet() {
       QDialog#browserTabGroupDialog QScrollBar::handle:vertical,
       QDialog#browserStartupSettingsDialog QScrollBar::handle:vertical,
       QScrollArea#browserDownloadCenterScrollArea QScrollBar::handle:vertical {
-          background: #3b4a55;
+          background: #a5b2be;
           border-radius: 4px;
           min-height: 24px;
       }
@@ -1270,6 +1449,12 @@ const QString& mainWindowStyleSheet() {
       QFrame#browserFindBar[responsiveSize="extraLarge"] QLineEdit,
       QFrame#browserFindBar[responsiveSize="extraLarge"] QPushButton {
           font-size: 16px;
+      }
+      QFrame#browserSidePanel QDialog {
+          background: transparent;
+          color: #273747;
+          min-width: 0;
+          min-height: 0;
       }
   )");
   return styleSheet;

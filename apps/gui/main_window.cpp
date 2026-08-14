@@ -701,18 +701,27 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
 
   displayModePanel_ = new QFrame(centralSurface_);
   displayModePanel_->setObjectName(QStringLiteral("displayModePanel"));
+  displayModePanel_->setFixedHeight(64);
   auto* const displayModeLayout = new QHBoxLayout(displayModePanel_);
-  displayModeLayout->setContentsMargins(22, 12, 22, 8);
-  displayModeLayout->setSpacing(8);
-  const auto makeModeButton = [this](const QString& objectName,
-                                     const QString& text) {
-    auto* const button = new QToolButton(displayModePanel_);
+  displayModeLayout->setContentsMargins(22, 11, 22, 11);
+  displayModeLayout->setSpacing(0);
+  auto* const displayModeRail = new QFrame(displayModePanel_);
+  displayModeRail->setObjectName(QStringLiteral("displayModeRail"));
+  auto* const displayModeRailLayout = new QHBoxLayout(displayModeRail);
+  displayModeRailLayout->setContentsMargins(3, 3, 3, 3);
+  displayModeRailLayout->setSpacing(3);
+  const auto makeModeButton = [displayModeRail](const QString& objectName,
+                                                const QString& text) {
+    auto* const button = new QToolButton(displayModeRail);
     button->setObjectName(objectName);
     button->setText(text);
     button->setCheckable(true);
     button->setAutoExclusive(true);
     button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    button->setMinimumSize(116, 34);
+    button->setProperty("modeSegment", true);
+    button->setAccessibleName(QStringLiteral("%1模式").arg(text));
+    button->setToolTip(QStringLiteral("切换到%1模式").arg(text));
+    button->setFixedSize(128, 36);
     return button;
   };
   localModeButton_ =
@@ -722,9 +731,11 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   webModeButton_ =
       makeModeButton(QStringLiteral("webModeButton"), QStringLiteral("网页"));
   updateWebAudibleTabCount(0);
-  displayModeLayout->addWidget(localModeButton_);
-  displayModeLayout->addWidget(liveModeButton_);
-  displayModeLayout->addWidget(webModeButton_);
+  displayModeRailLayout->addWidget(localModeButton_);
+  displayModeRailLayout->addWidget(liveModeButton_);
+  displayModeRailLayout->addWidget(webModeButton_);
+  displayModeLayout->addStretch(1);
+  displayModeLayout->addWidget(displayModeRail);
   displayModeLayout->addStretch(1);
   outerLayout->addWidget(displayModePanel_);
 

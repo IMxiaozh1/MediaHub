@@ -258,6 +258,7 @@ private slots:
   void switchesToWebWithoutChangingPlaylistsAndPausesNativePlayback();
   void pausesOnlyActiveNativePlaybackWhenEnteringWeb();
   void showsAudibleWebTabCountAcrossDisplayModes();
+  void stylesDisplayModesAsStableSegmentedControl();
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
@@ -471,6 +472,35 @@ void MainWindowTest::showsAudibleWebTabCountAcrossDisplayModes() {
   QCOMPARE(webModeButton->text(), QStringLiteral("网页"));
   QCOMPARE(webModeButton->toolTip(), QStringLiteral("切换到网页模式"));
   QVERIFY(localModeButton->isChecked());
+}
+
+void MainWindowTest::stylesDisplayModesAsStableSegmentedControl() {
+  GuiHarness harness;
+  auto* const rail = requiredChild<QFrame>(harness.window, "displayModeRail");
+  auto* const local =
+      requiredChild<QToolButton>(harness.window, "localModeButton");
+  auto* const live =
+      requiredChild<QToolButton>(harness.window, "liveModeButton");
+  auto* const web =
+      requiredChild<QToolButton>(harness.window, "webModeButton");
+
+  const QList<QToolButton*> segments{local, live, web};
+  for (QToolButton* const segment : segments) {
+    QCOMPARE(segment->parentWidget(), rail);
+    QCOMPARE(segment->size(), QSize(128, 36));
+    QCOMPARE(segment->property("modeSegment").toBool(), true);
+    QVERIFY(!segment->accessibleName().isEmpty());
+    QVERIFY(!segment->toolTip().isEmpty());
+  }
+  QCOMPARE(local->accessibleName(), QStringLiteral("本地模式"));
+  QCOMPARE(live->accessibleName(), QStringLiteral("直播模式"));
+  QCOMPARE(web->accessibleName(), QStringLiteral("网页模式"));
+
+  const QString& styleSheet = mainWindowStyleSheet();
+  QVERIFY(styleSheet.contains(QStringLiteral("QFrame#displayModeRail")));
+  QVERIFY(styleSheet.contains(QStringLiteral("QToolButton#localModeButton:checked")));
+  QVERIFY(styleSheet.contains(QStringLiteral("QToolButton#liveModeButton:checked")));
+  QVERIFY(styleSheet.contains(QStringLiteral("QToolButton#webModeButton:checked")));
 }
 
 void MainWindowTest::loadsReplaceableWindowIconsFromFixedSlots() {
