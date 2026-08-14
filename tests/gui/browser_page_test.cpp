@@ -916,6 +916,7 @@ void BrowserPageTest::searchesEditsDeletesAndReordersFavorites() {
 
     search->setText(QStringLiteral("three.example"));
     QTRY_COMPARE(list->count(), 1);
+    QTRY_VERIFY(list->item(0)->text().contains(QStringLiteral("Three")));
     list->setCurrentRow(0);
     QTest::mouseClick(
         page.findChild<QPushButton*>(QStringLiteral("browserFavoriteRemoveButton")),

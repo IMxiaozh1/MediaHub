@@ -3114,6 +3114,7 @@ void BrowserPage::showHistory() {
         connect(historySearchEdit_, &QLineEdit::textChanged, this, [this] {
             isHistoryListDirty_ = true;
             historyList_->setCurrentRow(-1);
+            historyList_->setEnabled(false);
             historySearchTimer_->start();
         });
         connect(historySearchTimer_, &QTimer::timeout, this,
@@ -3222,6 +3223,7 @@ void BrowserPage::showFavorites() {
         connect(favoritesSearchEdit_, &QLineEdit::textChanged, this, [this] {
             isFavoritesListDirty_ = true;
             favoritesList_->setCurrentRow(-1);
+            favoritesList_->setEnabled(false);
             favoritesSearchTimer_->start();
         });
         connect(favoritesSearchTimer_, &QTimer::timeout, this,
@@ -3267,6 +3269,7 @@ void BrowserPage::refreshHistoryList() {
         item->setToolTip(entry.url);
     }
     historyList_->setCurrentRow(-1);
+    historyList_->setEnabled(true);
     historyList_->setUpdatesEnabled(true);
     isHistoryListDirty_ = false;
 }
@@ -3304,6 +3307,7 @@ void BrowserPage::refreshFavoritesList() {
     favoritesList_->setDragEnabled(query.isEmpty());
     favoritesList_->setAcceptDrops(query.isEmpty());
     favoritesList_->setCurrentRow(-1);
+    favoritesList_->setEnabled(true);
     favoritesList_->setUpdatesEnabled(true);
     isFavoritesListDirty_ = false;
 }
