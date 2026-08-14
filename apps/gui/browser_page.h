@@ -10,7 +10,7 @@
 #include <optional>
 
 #include "browser_event_listener.h"
-#include "browser_data_store.h"
+#include "browser_data_model.h"
 #include "browser_favicon_cache.h"
 #include "browser_tab_group_model.h"
 
@@ -237,6 +237,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void showFavorites();
     void refreshHistoryList();
     void refreshFavoritesList();
+    void replaceHistoryData(QVector<BrowserHistoryEntry> history);
+    void replaceFavoritesData(QVector<BrowserFavoriteEntry> favorites);
     void removeSelectedHistoryEntry();
     void showHistoryClearConfirmation();
     void confirmClearHistory();
@@ -298,7 +300,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     [[nodiscard]] QString errorText(BrowserErrorKind kind) const;
 
     BrowserBackend& backend_;
-    BrowserDataStore* dataStore_{nullptr};
+    BrowserDataModel dataModel_;
     BrowserSessionStore* sessionStore_{nullptr};
     BrowserStartupSettingsStore* startupSettingsStore_{nullptr};
     BrowserPermissionStore* permissionStore_{nullptr};
@@ -360,10 +362,12 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QDialog* historyDialog_{nullptr};
     QLineEdit* historySearchEdit_{nullptr};
     QListWidget* historyList_{nullptr};
+    bool isHistoryListDirty_{true};
     QDialog* historyClearDialog_{nullptr};
     QDialog* favoritesDialog_{nullptr};
     QLineEdit* favoritesSearchEdit_{nullptr};
     QListWidget* favoritesList_{nullptr};
+    bool isFavoritesListDirty_{true};
     QLabel* favoriteTransferStatusLabel_{nullptr};
     QDialog* favoriteEditorDialog_{nullptr};
     QLineEdit* favoriteTitleEdit_{nullptr};

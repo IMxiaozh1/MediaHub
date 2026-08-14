@@ -36,9 +36,7 @@ QString normalizeStoredBrowserUrl(const QString& value) {
     return normalized.toString(QUrl::FullyEncoded);
 }
 
-namespace {
-
-QVector<BrowserHistoryEntry> normalizedHistory(
+QVector<BrowserHistoryEntry> normalizeBrowserHistoryEntries(
     const QVector<BrowserHistoryEntry>& history) {
     QVector<BrowserHistoryEntry> normalized;
     normalized.reserve(std::min(history.size(), kMaximumHistoryEntries));
@@ -61,7 +59,7 @@ QVector<BrowserHistoryEntry> normalizedHistory(
     return normalized;
 }
 
-QVector<BrowserFavoriteEntry> normalizedFavorites(
+QVector<BrowserFavoriteEntry> normalizeBrowserFavoriteEntries(
     const QVector<BrowserFavoriteEntry>& favorites) {
     QVector<BrowserFavoriteEntry> normalized;
     normalized.reserve(std::min(favorites.size(), kMaximumFavoriteEntries));
@@ -81,8 +79,6 @@ QVector<BrowserFavoriteEntry> normalizedFavorites(
     }
     return normalized;
 }
-
-}  // namespace
 
 QSettingsBrowserDataStore::QSettingsBrowserDataStore()
     : settings_(std::make_unique<QSettings>()) {}
@@ -114,12 +110,13 @@ QVector<BrowserHistoryEntry> QSettingsBrowserDataStore::loadHistory() {
     }
     settings_->endArray();
     settings_->endGroup();
-    return normalizedHistory(history);
+    return normalizeBrowserHistoryEntries(history);
 }
 
 void QSettingsBrowserDataStore::saveHistory(
     const QVector<BrowserHistoryEntry>& history) {
-    const QVector<BrowserHistoryEntry> normalized = normalizedHistory(history);
+    const QVector<BrowserHistoryEntry> normalized =
+        normalizeBrowserHistoryEntries(history);
     settings_->beginGroup(QStringLiteral("browserData"));
     settings_->setValue(QStringLiteral("version"), kBrowserDataVersion);
     settings_->remove(QStringLiteral("history"));
@@ -156,13 +153,13 @@ QVector<BrowserFavoriteEntry> QSettingsBrowserDataStore::loadFavorites() {
     }
     settings_->endArray();
     settings_->endGroup();
-    return normalizedFavorites(favorites);
+    return normalizeBrowserFavoriteEntries(favorites);
 }
 
 void QSettingsBrowserDataStore::saveFavorites(
     const QVector<BrowserFavoriteEntry>& favorites) {
     const QVector<BrowserFavoriteEntry> normalized =
-        normalizedFavorites(favorites);
+        normalizeBrowserFavoriteEntries(favorites);
     settings_->beginGroup(QStringLiteral("browserData"));
     settings_->setValue(QStringLiteral("version"), kBrowserDataVersion);
     settings_->remove(QStringLiteral("favorites"));

@@ -178,6 +178,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/browser_backend.h
         apps/gui/browser_bookmark_html.cpp
         apps/gui/browser_bookmark_html.h
+        apps/gui/browser_data_model.cpp
+        apps/gui/browser_data_model.h
         apps/gui/browser_data_store.cpp
         apps/gui/browser_data_store.h
         apps/gui/browser_download_center.cpp

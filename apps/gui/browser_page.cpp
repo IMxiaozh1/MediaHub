@@ -258,7 +258,7 @@ BrowserPage::BrowserPage(BrowserBackend& backend, QString userDataDirectory,
                          BrowserPermissionStore* const permissionStore)
     : QWidget(parent),
       backend_(backend),
-      dataStore_(dataStore),
+      dataModel_(dataStore),
       sessionStore_(sessionStore),
       startupSettingsStore_(startupSettingsStore),
       permissionStore_(permissionStore),
@@ -2978,8 +2978,10 @@ void BrowserPage::showHistory() {
         buttons->addStretch();
         buttons->addWidget(closeButton);
         layout->addLayout(buttons);
-        connect(historySearchEdit_, &QLineEdit::textChanged, this,
-                [this] { refreshHistoryList(); });
+        connect(historySearchEdit_, &QLineEdit::textChanged, this, [this] {
+            isHistoryListDirty_ = true;
+            refreshHistoryList();
+        });
         connect(removeButton, &QPushButton::clicked, this,
                 &BrowserPage::removeSelectedHistoryEntry);
         connect(clearButton, &QPushButton::clicked, this,
@@ -2992,8 +2994,8 @@ void BrowserPage::showHistory() {
         updateSelectionAction();
         connect(closeButton, &QPushButton::clicked, historyDialog_, &QDialog::hide);
     }
-    refreshHistoryList();
     historyDialog_->show();
+    refreshHistoryList();
     historyDialog_->raise();
     historyDialog_->activateWindow();
 }
@@ -3076,8 +3078,10 @@ void BrowserPage::showFavorites() {
                 favoritesDialog_, [updateSelectionActions](int) {
                     updateSelectionActions();
                 });
-        connect(favoritesSearchEdit_, &QLineEdit::textChanged, this,
-                [this] { refreshFavoritesList(); });
+        connect(favoritesSearchEdit_, &QLineEdit::textChanged, this, [this] {
+            isFavoritesListDirty_ = true;
+            refreshFavoritesList();
+        });
         connect(importButton, &QPushButton::clicked, this,
                 &BrowserPage::chooseFavoriteImportFile);
         connect(exportButton, &QPushButton::clicked, this,
@@ -3086,24 +3090,23 @@ void BrowserPage::showFavorites() {
         connect(closeButton, &QPushButton::clicked, favoritesDialog_,
                 &QDialog::hide);
     }
-    refreshFavoritesList();
     favoritesDialog_->show();
+    refreshFavoritesList();
     favoritesDialog_->raise();
     favoritesDialog_->activateWindow();
 }
 
 void BrowserPage::refreshHistoryList() {
-    if (historyList_ == nullptr) {
+    if (!isHistoryListDirty_ || historyDialog_ == nullptr ||
+        !historyDialog_->isVisible() || historyList_ == nullptr) {
         return;
     }
+    historyList_->setUpdatesEnabled(false);
     historyList_->clear();
-    if (dataStore_ == nullptr) {
-        return;
-    }
     const QString query = historySearchEdit_ == nullptr
                               ? QString{}
                               : historySearchEdit_->text().trimmed();
-    const QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    const QVector<BrowserHistoryEntry>& history = dataModel_.history();
     for (int index = 0; index < history.size(); ++index) {
         const BrowserHistoryEntry& entry = history.at(index);
         if (!query.isEmpty() &&
@@ -3120,20 +3123,21 @@ void BrowserPage::refreshHistoryList() {
         item->setToolTip(entry.url);
     }
     historyList_->setCurrentRow(-1);
+    historyList_->setUpdatesEnabled(true);
+    isHistoryListDirty_ = false;
 }
 
 void BrowserPage::refreshFavoritesList() {
-    if (favoritesList_ == nullptr) {
+    if (!isFavoritesListDirty_ || favoritesDialog_ == nullptr ||
+        !favoritesDialog_->isVisible() || favoritesList_ == nullptr) {
         return;
     }
+    favoritesList_->setUpdatesEnabled(false);
     favoritesList_->clear();
-    if (dataStore_ == nullptr) {
-        return;
-    }
     const QString query = favoritesSearchEdit_ == nullptr
                               ? QString{}
                               : favoritesSearchEdit_->text().trimmed();
-    const QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    const QVector<BrowserFavoriteEntry>& favorites = dataModel_.favorites();
     for (int index = 0; index < favorites.size(); ++index) {
         const BrowserFavoriteEntry& entry = favorites.at(index);
         if (!query.isEmpty() &&
@@ -3156,22 +3160,36 @@ void BrowserPage::refreshFavoritesList() {
     favoritesList_->setDragEnabled(query.isEmpty());
     favoritesList_->setAcceptDrops(query.isEmpty());
     favoritesList_->setCurrentRow(-1);
+    favoritesList_->setUpdatesEnabled(true);
+    isFavoritesListDirty_ = false;
+}
+
+void BrowserPage::replaceHistoryData(QVector<BrowserHistoryEntry> history) {
+    dataModel_.replaceHistory(std::move(history));
+    isHistoryListDirty_ = true;
+    refreshHistoryList();
+}
+
+void BrowserPage::replaceFavoritesData(
+    QVector<BrowserFavoriteEntry> favorites) {
+    dataModel_.replaceFavorites(std::move(favorites));
+    isFavoritesListDirty_ = true;
+    refreshFavoritesList();
 }
 
 void BrowserPage::removeSelectedHistoryEntry() {
-    if (dataStore_ == nullptr || historyList_ == nullptr ||
+    if (!dataModel_.isAvailable() || historyList_ == nullptr ||
         historyList_->currentItem() == nullptr) {
         return;
     }
     const int index =
         historyList_->currentItem()->data(Qt::UserRole + 1).toInt();
-    QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    QVector<BrowserHistoryEntry> history = dataModel_.history();
     if (index < 0 || index >= history.size()) {
         return;
     }
     history.removeAt(index);
-    dataStore_->saveHistory(history);
-    refreshHistoryList();
+    replaceHistoryData(std::move(history));
 }
 
 void BrowserPage::showHistoryClearConfirmation() {
@@ -3209,12 +3227,11 @@ void BrowserPage::showHistoryClearConfirmation() {
 }
 
 void BrowserPage::confirmClearHistory() {
-    if (dataStore_ == nullptr) {
+    if (!dataModel_.isAvailable()) {
         return;
     }
-    dataStore_->saveHistory({});
+    replaceHistoryData({});
     historyClearDialog_->hide();
-    refreshHistoryList();
 }
 
 void BrowserPage::openStoredUrl(const QString& url, const bool isNewTab) {
@@ -3230,11 +3247,11 @@ void BrowserPage::openStoredUrl(const QString& url, const bool isNewTab) {
 }
 
 void BrowserPage::showFavoriteEditor(const int favoriteIndex) {
-    if (dataStore_ == nullptr || currentTabIndex_ < 0 ||
+    if (!dataModel_.isAvailable() || currentTabIndex_ < 0 ||
         currentTabIndex_ >= tabs_.size()) {
         return;
     }
-    QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    const QVector<BrowserFavoriteEntry>& favorites = dataModel_.favorites();
     BrowserFavoriteEntry entry;
     editingFavoriteIndex_ = favoriteIndex;
     if (favoriteIndex >= 0 && favoriteIndex < favorites.size()) {
@@ -3298,7 +3315,7 @@ void BrowserPage::showFavoriteEditor(const int favoriteIndex) {
 }
 
 void BrowserPage::saveFavoriteEditor() {
-    if (dataStore_ == nullptr) {
+    if (!dataModel_.isAvailable()) {
         return;
     }
     const BrowserAddress address =
@@ -3307,7 +3324,7 @@ void BrowserPage::saveFavoriteEditor() {
         favoriteUrlEdit_->setFocus();
         return;
     }
-    QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    QVector<BrowserFavoriteEntry> favorites = dataModel_.favorites();
     BrowserFavoriteEntry entry{address.url, favoriteTitleEdit_->text(),
                                favoriteNoteEdit_->text()};
     const bool isEditing = editingFavoriteIndex_ >= 0 &&
@@ -3325,13 +3342,12 @@ void BrowserPage::saveFavoriteEditor() {
         }
     }
     favorites.insert(std::clamp(insertionIndex, 0, favorites.size()), entry);
-    dataStore_->saveFavorites(favorites);
+    replaceFavoritesData(std::move(favorites));
     favoriteEditorDialog_->hide();
-    refreshFavoritesList();
 }
 
 void BrowserPage::removeSelectedFavorite() {
-    if (dataStore_ == nullptr || favoritesList_ == nullptr) {
+    if (!dataModel_.isAvailable() || favoritesList_ == nullptr) {
         return;
     }
     QListWidgetItem* const item = favoritesList_->currentItem();
@@ -3339,22 +3355,21 @@ void BrowserPage::removeSelectedFavorite() {
         return;
     }
     const int index = item->data(Qt::UserRole + 1).toInt();
-    QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    QVector<BrowserFavoriteEntry> favorites = dataModel_.favorites();
     if (index < 0 || index >= favorites.size()) {
         return;
     }
     favorites.removeAt(index);
-    dataStore_->saveFavorites(favorites);
-    refreshFavoritesList();
+    replaceFavoritesData(std::move(favorites));
 }
 
 void BrowserPage::persistFavoriteListOrder() {
-    if (dataStore_ == nullptr || favoritesList_ == nullptr ||
+    if (!dataModel_.isAvailable() || favoritesList_ == nullptr ||
         (favoritesSearchEdit_ != nullptr &&
          !favoritesSearchEdit_->text().trimmed().isEmpty())) {
         return;
     }
-    const QVector<BrowserFavoriteEntry> favorites = dataStore_->loadFavorites();
+    const QVector<BrowserFavoriteEntry>& favorites = dataModel_.favorites();
     if (favoritesList_->count() != favorites.size()) {
         refreshFavoritesList();
         return;
@@ -3372,8 +3387,7 @@ void BrowserPage::persistFavoriteListOrder() {
         knownIndices.insert(index);
         reordered.append(favorites.at(index));
     }
-    dataStore_->saveFavorites(reordered);
-    refreshFavoritesList();
+    replaceFavoritesData(std::move(reordered));
 }
 
 void BrowserPage::chooseFavoriteImportFile() {
@@ -3399,7 +3413,7 @@ void BrowserPage::chooseFavoriteImportFile() {
 }
 
 void BrowserPage::prepareFavoriteImport(QByteArray html) {
-    if (dataStore_ == nullptr) {
+    if (!dataModel_.isAvailable()) {
         return;
     }
     const BrowserBookmarkImportResult result = importBrowserBookmarksHtml(html);
@@ -3412,7 +3426,7 @@ void BrowserPage::prepareFavoriteImport(QByteArray html) {
         return;
     }
 
-    const QVector<BrowserFavoriteEntry> existing = dataStore_->loadFavorites();
+    const QVector<BrowserFavoriteEntry>& existing = dataModel_.favorites();
     pendingImportedFavorites_ = existing;
     constexpr int kMaximumFavoriteEntries = 5000;
     QSet<QString> knownUrls;
@@ -3479,14 +3493,13 @@ void BrowserPage::prepareFavoriteImport(QByteArray html) {
 }
 
 void BrowserPage::confirmFavoriteImport() {
-    if (dataStore_ == nullptr || pendingImportedFavorites_.isEmpty()) {
+    if (!dataModel_.isAvailable() || pendingImportedFavorites_.isEmpty()) {
         return;
     }
-    dataStore_->saveFavorites(pendingImportedFavorites_);
+    replaceFavoritesData(pendingImportedFavorites_);
     pendingImportedFavorites_.clear();
     favoriteImportDialog_->hide();
     setFavoriteTransferStatus(QStringLiteral("收藏导入完成"));
-    refreshFavoritesList();
 }
 
 void BrowserPage::chooseFavoriteExportFile() {
@@ -3504,11 +3517,11 @@ void BrowserPage::chooseFavoriteExportFile() {
 }
 
 void BrowserPage::exportFavoritesToFile(QString filePath) {
-    if (dataStore_ == nullptr || filePath.isEmpty()) {
+    if (!dataModel_.isAvailable() || filePath.isEmpty()) {
         return;
     }
     QSaveFile file(filePath);
-    const QByteArray html = exportBrowserBookmarksHtml(dataStore_->loadFavorites());
+    const QByteArray html = exportBrowserBookmarksHtml(dataModel_.favorites());
     if (!file.open(QIODevice::WriteOnly) || file.write(html) != html.size() ||
         !file.commit()) {
         file.cancelWriting();
@@ -3873,14 +3886,14 @@ void BrowserPage::updateBackendBounds() {
 
 void BrowserPage::recordSuccessfulNavigation(const QString& visibleUrl,
                                              const QString& title) {
-    if (dataStore_ == nullptr) {
+    if (!dataModel_.isAvailable()) {
         return;
     }
     const QString storedUrl = normalizeStoredBrowserUrl(visibleUrl);
     if (storedUrl.isEmpty()) {
         return;
     }
-    QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    QVector<BrowserHistoryEntry> history = dataModel_.history();
     for (auto iterator = history.begin(); iterator != history.end();) {
         if (iterator->url == storedUrl) {
             iterator = history.erase(iterator);
@@ -3890,25 +3903,25 @@ void BrowserPage::recordSuccessfulNavigation(const QString& visibleUrl,
     }
     history.prepend(BrowserHistoryEntry{
         storedUrl, title.trimmed(), QDateTime::currentMSecsSinceEpoch()});
-    dataStore_->saveHistory(history);
+    replaceHistoryData(std::move(history));
 }
 
 void BrowserPage::updateRecordedNavigationTitle(const QString& visibleUrl,
                                                 const QString& title) {
-    if (dataStore_ == nullptr) {
+    if (!dataModel_.isAvailable()) {
         return;
     }
     const QString storedUrl = normalizeStoredBrowserUrl(visibleUrl);
     if (storedUrl.isEmpty()) {
         return;
     }
-    QVector<BrowserHistoryEntry> history = dataStore_->loadHistory();
+    QVector<BrowserHistoryEntry> history = dataModel_.history();
     for (BrowserHistoryEntry& entry : history) {
         if (entry.url == storedUrl) {
             const QString trimmedTitle = title.trimmed();
             if (entry.title != trimmedTitle) {
                 entry.title = trimmedTitle;
-                dataStore_->saveHistory(history);
+                replaceHistoryData(std::move(history));
             }
             return;
         }

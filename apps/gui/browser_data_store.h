@@ -26,6 +26,14 @@ struct BrowserFavoriteEntry {
     QString note;
 };
 
+// 统一限制历史条目数量、字段长度和 URL 安全边界。
+[[nodiscard]] QVector<BrowserHistoryEntry> normalizeBrowserHistoryEntries(
+    const QVector<BrowserHistoryEntry>& history);
+
+// 统一限制收藏条目数量、字段长度和 URL 安全边界。
+[[nodiscard]] QVector<BrowserFavoriteEntry> normalizeBrowserFavoriteEntries(
+    const QVector<BrowserFavoriteEntry>& favorites);
+
 // 内置浏览器自己的持久化边界，不参与播放器状态恢复。
 class BrowserDataStore {
  public:
