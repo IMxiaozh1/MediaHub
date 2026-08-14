@@ -1,6 +1,7 @@
 #include <QTest>
 
 #include <QAction>
+#include <QAbstractButton>
 #include <QAbstractItemModel>
 #include <QBuffer>
 #include <QDialog>
@@ -21,12 +22,14 @@
 
 #include "browser_download_widget.h"
 #include "browser_download_center.h"
+#include "browser_chrome.h"
 #include "browser_data_store.h"
 #include "main_window.h"
 #include "browser_page.h"
 #include "browser_permission_dialog.h"
 #include "browser_navigation_policy.h"
 #include "browser_session_store.h"
+#include "browser_side_panel.h"
 #include "browser_startup_settings.h"
 #include "browser_tab_group_dialog.h"
 #include "fakes/fake_browser_backend.h"
@@ -187,6 +190,12 @@ class BrowserPageTest final : public QObject {
     void shutdownDetachesListenerBeforeBackend();
     void detachesListenerAndShutsDownOnDestruction();
     void appliesResponsiveSizeAcrossToolbarBreakpoints();
+    void exposesTwoLayerChromeAndIconCommands();
+    void editsCurrentPageFavoriteFromAddressStar();
+    void filtersSiteControlToCurrentOrigin();
+    void switchesUnifiedSidePanelPages();
+    void updatesBackendBoundsWhenSidePanelVisibilityChanges();
+    void hostsWebViewInExistingNativeAncestor();
     void routesBrowserHistoryShortcuts();
     void routesWebShortcutsWithoutNativeConflicts();
     void routesNativeAcceleratorsThroughCurrentGeneration();
@@ -1025,7 +1034,9 @@ void BrowserPageTest::opensBingOnceAndProvidesActiveTabShortcuts() {
     page.activateWindow();
     QCoreApplication::processEvents();
 
-    backend.emitReady(1);
+    backend.emitTabDocumentStateChanged(
+        1, 1, QStringLiteral("about:blank"));
+    backend.emitTabReady(1, 1);
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate), 1);
     QCOMPARE(backend.lastCommand().text, QStringLiteral("https://www.bing.com/"));
     backend.emitReady(1);
@@ -1037,7 +1048,9 @@ void BrowserPageTest::opensBingOnceAndProvidesActiveTabShortcuts() {
         QStringLiteral("browserNewTabButton"));
     QVERIFY(tabBar != nullptr);
     QVERIFY(newTabButton != nullptr);
-    QCOMPARE(newTabButton->text(), QStringLiteral("+"));
+    QVERIFY(!newTabButton->icon().isNull());
+    QCOMPARE(newTabButton->accessibleName(),
+             QStringLiteral("新建网页标签（Ctrl+T）"));
 
     QTest::mouseClick(newTabButton, Qt::LeftButton);
     QCOMPARE(tabBar->count(), 2);
@@ -1754,7 +1767,7 @@ void BrowserPageTest::failedRecoveryKeepsRecoverableFailureVisible() {
 void BrowserPageTest::throttlesRepeatedTabRecoveryWithoutPermanentLockout() {
     test::FakeBrowserBackend backend;
     BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
-    page.setProperty("browserRecoveryCooldownMilliseconds", 10);
+    page.setProperty("browserRecoveryCooldownMilliseconds", 100);
     page.show();
     QCoreApplication::processEvents();
     backend.emitReady(1);
@@ -3385,58 +3398,300 @@ void BrowserPageTest::appliesResponsiveSizeAcrossToolbarBreakpoints() {
     page.setStyleSheet(mainWindowStyleSheet());
     page.show();
     QCoreApplication::processEvents();
-    auto *const toolbar = page.findChild<QWidget *>(QStringLiteral("browserToolbar"));
-    auto *const address = page.findChild<QLineEdit *>(QStringLiteral("browserAddressEdit"));
+    auto* const chrome = page.findChild<BrowserChrome*>(
+        QStringLiteral("browserChrome"));
+    auto* const tabStrip = page.findChild<QWidget*>(
+        QStringLiteral("browserTabStrip"));
+    auto* const toolbar = page.findChild<QWidget*>(
+        QStringLiteral("browserToolbar"));
+    auto* const navigation = page.findChild<QWidget*>(
+        QStringLiteral("browserNavigationBar"));
+    auto* const address = page.findChild<QLineEdit*>(
+        QStringLiteral("browserAddressEdit"));
+    auto* const sidePanel = page.findChild<BrowserSidePanel*>(
+        QStringLiteral("browserSidePanel"));
+    QVERIFY(chrome != nullptr);
+    QVERIFY(tabStrip != nullptr);
     QVERIFY(toolbar != nullptr);
+    QVERIFY(navigation != nullptr);
     QVERIFY(address != nullptr);
-    QCOMPARE(address->minimumWidth(), 180);
-    const QStringList controlNames{
+    QVERIFY(sidePanel != nullptr);
+    QVERIFY(page.findChild<QWidget*>(QStringLiteral("browserInformationRow")) ==
+            nullptr);
+    const QStringList iconControlNames{
         QStringLiteral("browserBackButton"),
         QStringLiteral("browserForwardButton"),
         QStringLiteral("browserReloadButton"),
-        QStringLiteral("browserHomeButton"),
-        QStringLiteral("browserAddressEdit"),
-        QStringLiteral("browserGoButton"),
-        QStringLiteral("browserHistoryButton"),
-        QStringLiteral("browserFavoritesButton"),
-        QStringLiteral("browserClearDataButton"),
+        QStringLiteral("browserFavoriteCurrentButton"),
+        QStringLiteral("browserAudioTabsButton"),
+        QStringLiteral("browserDownloadButton"),
+        QStringLiteral("browserMoreButton"),
+        QStringLiteral("browserNewTabButton"),
+        QStringLiteral("browserTabSearchButton"),
     };
-
-    struct Breakpoint {
-        QSize size;
-        QString key;
-        int addressFontPixels;
-    };
-    const QList<Breakpoint> breakpoints{
-        {QSize(800, 600), QStringLiteral("compact"), 12},
-        {QSize(960, 640), QStringLiteral("normal"), 13},
-        {QSize(1200, 800), QStringLiteral("large"), 15},
-        {QSize(1600, 1000), QStringLiteral("extraLarge"), 17},
-    };
-    for (const auto &entry : breakpoints) {
-        page.resize(entry.size);
+    const int addressFontPixels = address->font().pixelSize();
+    const QList<QSize> sizes{QSize(800, 600), QSize(1280, 720),
+                             QSize(1920, 1080)};
+    for (const QSize& size : sizes) {
+        page.resize(size);
         QCoreApplication::processEvents();
-        QCOMPARE(page.size(), entry.size);
-        QCOMPARE(page.property("responsiveSize").toString(), entry.key);
-        QCOMPARE(address->font().pixelSize(), entry.addressFontPixels);
-        QVERIFY(page.rect().contains(toolbar->geometry()));
-        for (const QString &objectName : controlNames) {
-            QWidget *const control = page.findChild<QWidget *>(objectName);
+        QVERIFY(page.rect().contains(chrome->geometry()));
+        QVERIFY(chrome->rect().contains(tabStrip->geometry()));
+        QVERIFY(chrome->rect().contains(toolbar->geometry()));
+        QVERIFY(toolbar->rect().contains(navigation->geometry()));
+        for (const QString& objectName : iconControlNames) {
+            QWidget* const control = page.findChild<QWidget*>(objectName);
             QVERIFY2(control != nullptr, qPrintable(objectName));
             QVERIFY2(control->isVisible(), qPrintable(objectName));
-            QVERIFY2(!control->geometry().isEmpty(), qPrintable(objectName));
-            const QRect toolbarGeometry(control->mapTo(toolbar, QPoint{}),
-                                        control->size());
-            QVERIFY2(toolbar->rect().contains(toolbarGeometry),
+            auto* const button = qobject_cast<QAbstractButton*>(control);
+            QVERIFY2(button != nullptr, qPrintable(objectName));
+            QVERIFY2(!button->icon().isNull(), qPrintable(objectName));
+            QVERIFY2(!control->toolTip().isEmpty(), qPrintable(objectName));
+            QVERIFY2(!control->accessibleName().isEmpty(),
                      qPrintable(objectName));
-            if (control == address) {
-                QVERIFY(address->width() >= address->minimumWidth());
-            } else {
-                QVERIFY2(control->width() >= control->sizeHint().width(),
-                         qPrintable(objectName));
-            }
+            QVERIFY2(button->size() == QSize(32, 32), qPrintable(objectName));
+        }
+        QVERIFY(address->width() >= address->minimumWidth());
+        QCOMPARE(address->font().pixelSize(), addressFontPixels);
+        const bool isCompact = size.width() < 900;
+        QVERIFY(page.findChild<QToolButton*>(QStringLiteral("browserHomeButton"))
+                    ->isVisible() != isCompact);
+        QVERIFY(page.findChild<QToolButton*>(QStringLiteral("browserHistoryButton"))
+                    ->isVisible() != isCompact);
+        QVERIFY(page.findChild<QToolButton*>(QStringLiteral("browserFavoritesButton"))
+                    ->isVisible() != isCompact);
+        QVERIFY(page.findChild<QPushButton*>(QStringLiteral("browserGoButton"))
+                    ->isVisible() != isCompact);
+        QCOMPARE(sidePanel->isHidden(), true);
+    }
+}
+
+void BrowserPageTest::editsCurrentPageFavoriteFromAddressStar() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(1,
+                                    QStringLiteral("https://favorite.example/page"),
+                                    QStringLiteral("Favorite page"));
+
+    auto* const favorite = page.findChild<QToolButton*>(
+        QStringLiteral("browserFavoriteCurrentButton"));
+    QVERIFY(favorite != nullptr);
+    QVERIFY(favorite->isEnabled());
+    QVERIFY(favorite->toolTip().contains(QStringLiteral("收藏")));
+    favorite->click();
+
+    auto* const editor = page.findChild<QDialog*>(
+        QStringLiteral("browserFavoriteEditorDialog"));
+    auto* const title = page.findChild<QLineEdit*>(
+        QStringLiteral("browserFavoriteTitleEdit"));
+    auto* const url = page.findChild<QLineEdit*>(
+        QStringLiteral("browserFavoriteUrlEdit"));
+    QVERIFY(editor != nullptr);
+    QVERIFY(editor->isVisible());
+    QCOMPARE(title->text(), QStringLiteral("Favorite page"));
+    QCOMPARE(url->text(), QStringLiteral("https://favorite.example/page"));
+    page.findChild<QPushButton*>(QStringLiteral("browserFavoriteSaveButton"))
+        ->click();
+    QCOMPARE(dataStore.favorites.size(), 1);
+    QCOMPARE(dataStore.favoriteSaveCount, 1);
+    QVERIFY(favorite->toolTip().contains(QStringLiteral("编辑")));
+
+    favorite->click();
+    QVERIFY(editor->isVisible());
+    QCOMPARE(title->text(), QStringLiteral("Favorite page"));
+}
+
+void BrowserPageTest::filtersSiteControlToCurrentOrigin() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    BrowserPermissionStore permissionStore(
+        directory.filePath(QStringLiteral("permissions.json")));
+    QVERIFY(permissionStore.set(QStringLiteral("https://current.example"),
+                                BrowserPermissionKind::Camera,
+                                BrowserPermissionState::Allow));
+    QVERIFY(permissionStore.set(QStringLiteral("https://other.example"),
+                                BrowserPermissionKind::Microphone,
+                                BrowserPermissionState::Block));
+
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     nullptr, nullptr, nullptr, &permissionStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://current.example/private"),
+        QStringLiteral("Current"));
+
+    page.findChild<QToolButton*>(QStringLiteral("browserSiteControlButton"))
+        ->click();
+    auto* const dialog = page.findChild<BrowserPermissionManagementDialog*>(
+        QStringLiteral("browserPermissionManagementDialog"));
+    auto* const search = page.findChild<QLineEdit*>(
+        QStringLiteral("browserPermissionSearchEdit"));
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->isVisible());
+    QCOMPARE(search->text(), QStringLiteral("https://current.example"));
+    QCOMPARE(dialog->visibleEntryCount(), 1);
+
+    dialog->hide();
+    page.findChild<QAction*>(QStringLiteral("browserMorePermissionsAction"))
+        ->trigger();
+    QVERIFY(dialog->isVisible());
+    QVERIFY(search->text().isEmpty());
+    QCOMPARE(dialog->visibleEntryCount(), 2);
+}
+
+void BrowserPageTest::exposesTwoLayerChromeAndIconCommands() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+
+    auto* const moreButton = page.findChild<QToolButton*>(
+        QStringLiteral("browserMoreButton"));
+    auto* const menu = page.findChild<QMenu*>(QStringLiteral("browserMoreMenu"));
+    QVERIFY(moreButton != nullptr);
+    QVERIFY(menu != nullptr);
+    const QStringList actionNames{
+        QStringLiteral("browserMoreHistoryAction"),
+        QStringLiteral("browserMoreFavoritesAction"),
+        QStringLiteral("browserMoreDownloadsAction"),
+        QStringLiteral("browserMoreGroupsAction"),
+        QStringLiteral("browserMoreZoomOutAction"),
+        QStringLiteral("browserMoreZoomResetAction"),
+        QStringLiteral("browserMoreZoomInAction"),
+        QStringLiteral("browserMoreStartupAction"),
+        QStringLiteral("browserMorePermissionsAction"),
+        QStringLiteral("browserMoreClearDataAction"),
+    };
+    for (const QString& objectName : actionNames) {
+        QAction* const action = menu->findChild<QAction*>(objectName);
+        QVERIFY2(action != nullptr, qPrintable(objectName));
+        QVERIFY2(!action->icon().isNull(), qPrintable(objectName));
+        QVERIFY2(!action->text().isEmpty(), qPrintable(objectName));
+    }
+}
+
+void BrowserPageTest::switchesUnifiedSidePanelPages() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    auto* const panel = page.findChild<BrowserSidePanel*>(
+        QStringLiteral("browserSidePanel"));
+    QVERIFY(panel != nullptr);
+
+    const QList<QPair<QToolButton*, BrowserSidePanel::Page>> directPages{
+        {page.findChild<QToolButton*>(QStringLiteral("browserHistoryButton")),
+         BrowserSidePanel::Page::History},
+        {page.findChild<QToolButton*>(QStringLiteral("browserFavoritesButton")),
+         BrowserSidePanel::Page::Favorites},
+        {page.findChild<QToolButton*>(QStringLiteral("browserAudioTabsButton")),
+         BrowserSidePanel::Page::Audio},
+        {page.findChild<QToolButton*>(QStringLiteral("browserDownloadButton")),
+         BrowserSidePanel::Page::Downloads},
+        {page.findChild<QToolButton*>(QStringLiteral("browserTabSearchButton")),
+         BrowserSidePanel::Page::TabSearch},
+    };
+    for (const auto& entry : directPages) {
+        QVERIFY(entry.first != nullptr);
+        entry.first->click();
+        QVERIFY(panel->isVisible());
+        QCOMPARE(panel->currentPage(), entry.second);
+        panel->closePanel();
+    }
+
+    auto* const groupAction = page.findChild<QAction*>(
+        QStringLiteral("browserMoreGroupsAction"));
+    QVERIFY(groupAction != nullptr);
+    groupAction->trigger();
+    QVERIFY(panel->isVisible());
+    QCOMPARE(panel->currentPage(), BrowserSidePanel::Page::Groups);
+    panel->closePanel();
+}
+
+void BrowserPageTest::updatesBackendBoundsWhenSidePanelVisibilityChanges() {
+    test::FakeBrowserBackend backend;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.resize(1280, 720);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    QCoreApplication::processEvents();
+
+    auto* const panel = page.findChild<BrowserSidePanel*>(
+        QStringLiteral("browserSidePanel"));
+    auto* const historyButton = page.findChild<QToolButton*>(
+        QStringLiteral("browserHistoryButton"));
+    auto* const browserHost = page.findChild<QWidget*>(
+        QStringLiteral("browserNativeHost"));
+    QVERIFY(panel != nullptr);
+    QVERIFY(historyButton != nullptr);
+    QVERIFY(browserHost != nullptr);
+    const int initialBoundsCount =
+        backend.count(test::FakeBrowserCommandKind::SetBounds);
+    const int fullWidth = browserHost->width();
+
+    historyButton->click();
+    QCoreApplication::processEvents();
+    QVERIFY(panel->isVisible());
+    QVERIFY(browserHost->width() < fullWidth);
+    QVERIFY(backend.count(test::FakeBrowserCommandKind::SetBounds) >
+            initialBoundsCount);
+
+    panel->closePanel();
+    QCoreApplication::processEvents();
+    QVERIFY(panel->isHidden());
+    QCOMPARE(browserHost->width(), fullWidth);
+    QVERIFY(backend.count(test::FakeBrowserCommandKind::SetBounds) >
+            initialBoundsCount + 1);
+    QCOMPARE(backend.lastCommand().kind,
+             test::FakeBrowserCommandKind::SetBounds);
+    QCOMPARE(backend.lastCommand().bounds.width(),
+             qRound(browserHost->width() * browserHost->devicePixelRatioF()));
+}
+
+void BrowserPageTest::hostsWebViewInExistingNativeAncestor() {
+    test::FakeBrowserBackend backend;
+    MainWindow window(&backend, QStringLiteral("C:/temporary-profile"));
+    window.show();
+    window.showDisplayMode(DisplayMode::Web);
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    QCoreApplication::processEvents();
+
+    auto* const browserHost = window.findChild<QWidget*>(
+        QStringLiteral("browserNativeHost"));
+    QVERIFY(browserHost != nullptr);
+    QVERIFY(!browserHost->testAttribute(Qt::WA_NativeWindow));
+    QWidget* const nativeParent = browserHost->nativeParentWidget();
+    QVERIFY(nativeParent != nullptr);
+    QVERIFY(nativeParent != browserHost);
+
+    const test::FakeBrowserCommand* initializeCommand = nullptr;
+    const test::FakeBrowserCommand* boundsCommand = nullptr;
+    for (const test::FakeBrowserCommand& command : backend.commands) {
+        if (command.kind == test::FakeBrowserCommandKind::Initialize) {
+            initializeCommand = &command;
+        } else if (command.kind == test::FakeBrowserCommandKind::SetBounds) {
+            boundsCommand = &command;
         }
     }
+    QVERIFY(initializeCommand != nullptr);
+    QCOMPARE(initializeCommand->nativeHandle,
+             static_cast<quintptr>(nativeParent->winId()));
+    QVERIFY(boundsCommand != nullptr);
+
+    const qreal scale = browserHost->devicePixelRatioF();
+    const QPoint origin = browserHost->mapTo(nativeParent, QPoint(0, 0));
+    QCOMPARE(boundsCommand->bounds.topLeft(),
+             QPoint(qRound(origin.x() * scale), qRound(origin.y() * scale)));
 }
 
 void BrowserPageTest::routesBrowserHistoryShortcuts() {

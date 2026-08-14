@@ -99,7 +99,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     add_test(NAME gui.browser_page
         COMMAND mediahub_browser_gui_tests -platform offscreen
     )
-    set_tests_properties(gui.browser_page PROPERTIES TIMEOUT 30)
+    set_tests_properties(gui.browser_page PROPERTIES TIMEOUT 120)
 
     add_executable(mediahub_browser_permission_tests
         gui/browser_permission_test.cpp

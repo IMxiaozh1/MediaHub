@@ -46,12 +46,14 @@
 
 #include "browser_backend.h"
 #include "browser_bookmark_html.h"
+#include "browser_chrome.h"
 #include "browser_data_store.h"
 #include "browser_download_widget.h"
 #include "browser_download_center.h"
 #include "browser_navigation_policy.h"
 #include "browser_permission_dialog.h"
 #include "browser_permission_store.h"
+#include "browser_side_panel.h"
 #include "browser_session_store.h"
 #include "browser_startup_settings.h"
 #include "browser_startup_settings_dialog.h"
@@ -114,83 +116,6 @@ QToolButton* createToolButton(const QString& objectName, const QString& text,
     button->setAutoRaise(false);
     return button;
 }
-
-// 地址栏的单击语义是准备替换旧地址，键盘仍可正常移动光标和选择文本。
-class BrowserAddressEdit final : public QLineEdit {
- public:
-    explicit BrowserAddressEdit(QWidget* const parent) : QLineEdit(parent) {}
-
- protected:
-    void focusInEvent(QFocusEvent* const event) override {
-        QLineEdit::focusInEvent(event);
-        selectAll();
-        selectsOnMouseRelease_ = event->reason() == Qt::MouseFocusReason;
-    }
-
-    void mouseReleaseEvent(QMouseEvent* const event) override {
-        QLineEdit::mouseReleaseEvent(event);
-        if (event->button() == Qt::LeftButton && selectsOnMouseRelease_) {
-            selectAll();
-            selectsOnMouseRelease_ = false;
-        }
-    }
-
- private:
-    bool selectsOnMouseRelease_{false};
-};
-
-class BrowserTabBar final : public QTabBar {
- public:
-    explicit BrowserTabBar(QWidget* const parent) : QTabBar(parent) {}
-
-    void setCollapsedTabIds(const QSet<qulonglong>& tabIds) {
-        if (collapsedTabIds_ == tabIds) {
-            return;
-        }
-        collapsedTabIds_ = tabIds;
-        const bool wasExpanding = expanding();
-        setExpanding(!wasExpanding);
-        setExpanding(wasExpanding);
-        updateGeometry();
-        update();
-    }
-
-    [[nodiscard]] bool isTabCollapsed(const qulonglong tabId) const {
-        return collapsedTabIds_.contains(tabId);
-    }
-
- protected:
-    QSize tabSizeHint(const int index) const override {
-        const QSize normalSize = QTabBar::tabSizeHint(index);
-        if (collapsedTabIds_.contains(tabData(index).toULongLong())) {
-            return QSize(0, normalSize.height());
-        }
-        return normalSize;
-    }
-
-    QSize minimumTabSizeHint(const int index) const override {
-        const QSize normalSize = QTabBar::minimumTabSizeHint(index);
-        if (collapsedTabIds_.contains(tabData(index).toULongLong())) {
-            return QSize(0, normalSize.height());
-        }
-        return normalSize;
-    }
-
-    void mousePressEvent(QMouseEvent* const event) override {
-        if (event->button() == Qt::MiddleButton) {
-            const int index = tabAt(event->pos());
-            if (index >= 0) {
-                emit tabCloseRequested(index);
-                event->accept();
-                return;
-            }
-        }
-        QTabBar::mousePressEvent(event);
-    }
-
- private:
-    QSet<qulonglong> collapsedTabIds_;
-};
 
 // 历史和收藏项把左键、Ctrl+左键和中键统一成稳定打开动作。
 class BrowserLinkListWidget final : public QListWidget {
@@ -360,13 +285,19 @@ void BrowserPage::activate() {
     if (isShuttingDown_) {
         return;
     }
-    backend_.setVisible(true);
+    isActivated_ = true;
+    const bool isVisible =
+        !isInitialized_ || contentStack_->currentWidget() == browserHost_;
+    backendVisibility_ = isVisible;
+    backend_.setVisible(isVisible);
 }
 
 void BrowserPage::deactivate() {
     if (isShuttingDown_) {
         return;
     }
+    isActivated_ = false;
+    backendVisibility_ = false;
     backend_.setVisible(false);
 }
 
@@ -434,26 +365,7 @@ void BrowserPage::exitWebFullScreen() {
 }
 
 void BrowserPage::onBrowserReady(std::uint64_t generation) {
-    const int index = findTabIndex(1);
-    if (isShuttingDown_ || hasBrowserProcessExited_ || index < 0 ||
-        generation != tabs_.at(index).generation) {
-        return;
-    }
-    tabs_[index].state = BrowserPageState::Ready;
-    tabs_[index].lastError.reset();
-    tabs_[index].processFailure.reset();
-    if (index != currentTabIndex_) {
-        return;
-    }
-    state_ = BrowserPageState::Ready;
-    statusLabel_->setText(QStringLiteral("网页组件已就绪"));
-    showHost();
-    updateControls();
-    updateBackendBounds();
-    if (!hasOpenedInitialHome_ && tabs_[index].address.isEmpty()) {
-        hasOpenedInitialHome_ = true;
-        openInitialTabs();
-    }
+    onTabReady(1, generation);
 }
 
 void BrowserPage::onBrowserError(std::uint64_t generation, BrowserErrorKind kind,
@@ -551,21 +463,34 @@ void BrowserPage::onFullScreenChanged(std::uint64_t generation,
     if (isFullScreen == isWebFullScreen_) {
         return;
     }
-    QWidget* const downloadPresentation =
-        backend_.supportsConcurrentDownloads()
-            ? static_cast<QWidget*>(downloadCenter_)
-                       : static_cast<QWidget*>(downloadWidget_);
     if (isFullScreen) {
         wasToolbarHidden_ = toolbar_->isHidden();
-        wasInformationRowHidden_ = informationRow_->isHidden();
-        wasDownloadWidgetHidden_ = downloadPresentation->isHidden();
+        wasFindBarHidden_ = findBar_->isHidden();
+        wasDownloadWidgetHidden_ = sidePanel_->isHidden();
+        chrome_->hide();
         toolbar_->hide();
-        informationRow_->hide();
-        downloadPresentation->hide();
+        findBar_->hide();
+        sidePanel_->hide();
+        if (downloadCenter_ != nullptr) {
+            downloadCenter_->hide();
+        }
+        if (downloadWidget_ != nullptr) {
+            downloadWidget_->hide();
+        }
     } else {
+        chrome_->setVisible(!wasToolbarHidden_);
         toolbar_->setVisible(!wasToolbarHidden_);
-        informationRow_->setVisible(!wasInformationRowHidden_);
-        downloadPresentation->setVisible(!wasDownloadWidgetHidden_);
+        findBar_->setVisible(!wasFindBarHidden_);
+        sidePanel_->setVisible(!wasDownloadWidgetHidden_);
+        if (!wasDownloadWidgetHidden_ && sidePanel_->currentPage() ==
+                                             BrowserSidePanel::Page::Downloads) {
+            if (downloadCenter_ != nullptr) {
+                downloadCenter_->show();
+            }
+            if (downloadWidget_ != nullptr) {
+                downloadWidget_->show();
+            }
+        }
     }
     isWebFullScreen_ = isFullScreen;
     emit fullScreenChanged(isFullScreen);
@@ -582,6 +507,14 @@ void BrowserPage::onAcceleratorRequested(
         case BrowserAccelerator::FocusAddress:
             addressEdit_->setFocus();
             addressEdit_->selectAll();
+            break;
+        case BrowserAccelerator::FocusCycle:
+            if (chrome_->isAncestorOf(focusWidget())) {
+                browserHost_->setFocus(Qt::ShortcutFocusReason);
+            } else {
+                addressEdit_->setFocus(Qt::ShortcutFocusReason);
+                addressEdit_->selectAll();
+            }
             break;
         case BrowserAccelerator::Back:
             if (backButton_->isEnabled()) {
@@ -606,6 +539,15 @@ void BrowserPage::onAcceleratorRequested(
             break;
         case BrowserAccelerator::ResetZoom:
             resetCurrentTabZoom();
+            break;
+        case BrowserAccelerator::ShowHistory:
+            showHistory();
+            break;
+        case BrowserAccelerator::ShowFavorites:
+            showFavorites();
+            break;
+        case BrowserAccelerator::ShowDownloads:
+            showDownloads();
             break;
         case BrowserAccelerator::NewTab:
             openNewTab();
@@ -845,11 +787,14 @@ void BrowserPage::onDownloadRequested(const std::uint64_t requestId,
         isDownloadCancellationSent_ = false;
         downloadWidget_->beginDownload(requestId, origin, suggestedFileName,
                                        totalBytes);
+        showDownloads();
         if (isWebFullScreen_) {
             // 全屏期间新出现的下载在退出全屏后必须恢复可见。
             wasDownloadWidgetHidden_ = false;
+            sidePanel_->hide();
             downloadWidget_->hide();
         }
+        chrome_->setDownloadActive(activeDownloadCount() > 0);
         return;
     }
     if (downloadCenter_ == nullptr ||
@@ -858,11 +803,13 @@ void BrowserPage::onDownloadRequested(const std::uint64_t requestId,
         backend_.cancelDownload(requestId);
         return;
     }
-    downloadCenter_->show();
+    showDownloads();
     if (isWebFullScreen_) {
         wasDownloadWidgetHidden_ = false;
+        sidePanel_->hide();
         downloadCenter_->hide();
     }
+    chrome_->setDownloadActive(activeDownloadCount() > 0);
 }
 
 void BrowserPage::onTabDownloadRequested(
@@ -893,12 +840,14 @@ void BrowserPage::onDownloadUpdated(const std::uint64_t requestId,
         if (state == BrowserDownloadState::CancelFailed) {
             isDownloadCancellationSent_ = false;
         }
+        chrome_->setDownloadActive(activeDownloadCount() > 0);
         return;
     }
     if (downloadCenter_ != nullptr) {
         downloadCenter_->updateDownload(requestId, state, receivedBytes,
                                         totalBytes);
     }
+    chrome_->setDownloadActive(activeDownloadCount() > 0);
 }
 
 void BrowserPage::onTabDownloadUpdated(
@@ -987,8 +936,7 @@ bool BrowserPage::onNewTabRequested(const std::uint64_t newWindowRequestId,
         isInternalBlank ? QStringLiteral("about:blank") : address.url;
     const std::uint64_t tabId = nextTabId_;
     const std::uint64_t tabGeneration = generation_ + 1;
-    const auto nativeHandle = reinterpret_cast<void*>(
-        static_cast<quintptr>(browserHost_->winId()));
+    void* const nativeHandle = nativeBrowserParentHandle();
     if (!backend_.createTab(nativeHandle, tabId, initialUrl, tabGeneration,
                             newWindowRequestId)) {
         return false;
@@ -1031,6 +979,10 @@ void BrowserPage::onTabReady(const std::uint64_t tabId,
         showHost();
         updateControls();
         updateBackendBounds();
+    }
+    if (tabId == 1 && !hasOpenedInitialHome_) {
+        hasOpenedInitialHome_ = true;
+        openInitialTabs();
     }
 }
 
@@ -1231,6 +1183,8 @@ void BrowserPage::onTabAudioStateChanged(const std::uint64_t tabId,
     const bool wasListed =
         tabs_.at(index).isPlayingAudio || tabs_.at(index).isUserMuted;
     tabs_[index].isPlayingAudio = isPlayingAudio;
+    tabBar_->setTabAudioState(tabId, isPlayingAudio,
+                              tabs_.at(index).isUserMuted || isGloballyMuted_);
     updateAudioTabPresentation(tabId, wasListed);
     updateAudibleTabCount();
 }
@@ -1263,8 +1217,8 @@ void BrowserPage::onTabZoomFactorChanged(const std::uint64_t tabId,
     }
     tabs_[index].zoomFactor = std::clamp(zoomFactor, 0.25, 5.0);
     if (index == currentTabIndex_) {
-        zoomResetButton_->setText(QStringLiteral("%1%").arg(
-            qRound(tabs_.at(index).zoomFactor * 100.0)));
+        chrome_->setZoomPercentage(
+            qRound(tabs_.at(index).zoomFactor * 100.0));
     }
 }
 
@@ -1352,8 +1306,7 @@ void BrowserPage::showEvent(QShowEvent* event) {
     state_ = BrowserPageState::Initializing;
     statusLabel_->setText(QStringLiteral("正在初始化网页组件..."));
     updateControls();
-    const auto nativeHandle = reinterpret_cast<void*>(
-        static_cast<quintptr>(browserHost_->winId()));
+    void* const nativeHandle = nativeBrowserParentHandle();
     backend_.initialize(nativeHandle, userDataDirectory_, generation_);
 }
 
@@ -1366,103 +1319,38 @@ void BrowserPage::resizeEvent(QResizeEvent* event) {
 void BrowserPage::buildUi() {
     auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(8);
+    rootLayout->setSpacing(0);
 
-    toolbar_ = new QFrame(this);
-    toolbar_->setObjectName(QStringLiteral("browserToolbar"));
-    auto* toolbarLayout = new QHBoxLayout(toolbar_);
-    toolbarLayout->setContentsMargins(10, 8, 10, 8);
-    toolbarLayout->setSpacing(6);
+    chrome_ = new BrowserChrome(this);
+    toolbar_ = chrome_->toolbar();
+    tabBar_ = chrome_->tabBar();
+    newTabButton_ = chrome_->newTabButton();
+    tabSearchButton_ = chrome_->tabSearchButton();
+    tabGroupButton_ = chrome_->tabGroupButton();
+    backButton_ = chrome_->backButton();
+    forwardButton_ = chrome_->forwardButton();
+    reloadButton_ = chrome_->reloadButton();
+    homeButton_ = chrome_->homeButton();
+    addressEdit_ = chrome_->addressEdit();
+    goButton_ = chrome_->goButton();
+    clearDataButton_ = chrome_->clearDataButton();
+    historyButton_ = chrome_->historyButton();
+    favoritesButton_ = chrome_->favoritesButton();
+    startupSettingsButton_ = chrome_->startupSettingsButton();
+    permissionSettingsButton_ = chrome_->permissionSettingsButton();
+    currentTabMuteButton_ = chrome_->currentTabMuteButton();
+    audioTabsButton_ = chrome_->audioTabsButton();
+    zoomOutButton_ = chrome_->zoomOutButton();
+    zoomResetButton_ = chrome_->zoomResetButton();
+    zoomInButton_ = chrome_->zoomInButton();
 
-    tabBar_ = new BrowserTabBar(this);
-    tabBar_->setObjectName(QStringLiteral("browserTabBar"));
-    tabBar_->setTabsClosable(true);
-    tabBar_->setMovable(true);
-    tabBar_->setContextMenuPolicy(Qt::CustomContextMenu);
-    newTabButton_ = createToolButton(QStringLiteral("browserNewTabButton"),
-                                     QStringLiteral("+"), this);
-    newTabButton_->setToolTip(QStringLiteral("新建网页标签（Ctrl+T）"));
-    tabSearchButton_ = createToolButton(
-        QStringLiteral("browserTabSearchButton"), QStringLiteral("搜索"), this);
-    tabSearchButton_->setToolTip(QStringLiteral("搜索已打开的标签（Ctrl+Shift+A）"));
-
-    backButton_ = createToolButton(QStringLiteral("browserBackButton"),
-                                   QStringLiteral("后退"), toolbar_);
-    forwardButton_ = createToolButton(QStringLiteral("browserForwardButton"),
-                                      QStringLiteral("前进"), toolbar_);
-    reloadButton_ = createToolButton(QStringLiteral("browserReloadButton"),
-                                     QStringLiteral("刷新"), toolbar_);
-    homeButton_ = createToolButton(QStringLiteral("browserHomeButton"),
-                                   QStringLiteral("主页"), toolbar_);
-    addressEdit_ = new BrowserAddressEdit(toolbar_);
-    addressEdit_->setObjectName(QStringLiteral("browserAddressEdit"));
-    addressEdit_->setPlaceholderText(QStringLiteral("输入网站地址"));
-    addressEdit_->setMinimumWidth(180);
-    goButton_ = new QPushButton(QStringLiteral("访问"), toolbar_);
-    goButton_->setObjectName(QStringLiteral("browserGoButton"));
-    clearDataButton_ = new QPushButton(QStringLiteral("清除"), toolbar_);
-    clearDataButton_->setObjectName(QStringLiteral("browserClearDataButton"));
-    clearDataButton_->setToolTip(QStringLiteral("清除网页 Cookie、缓存和宿主保存状态"));
-    historyButton_ = createToolButton(QStringLiteral("browserHistoryButton"),
-                                       QStringLiteral("历史"), toolbar_);
-    favoritesButton_ = createToolButton(
-        QStringLiteral("browserFavoritesButton"), QStringLiteral("收藏夹"),
-        toolbar_);
-    startupSettingsButton_ = createToolButton(
-        QStringLiteral("browserStartupSettingsButton"), QStringLiteral("启动"),
-        toolbar_);
-    startupSettingsButton_->setToolTip(
-        QStringLiteral("主页、启动页和会话恢复设置"));
-    permissionSettingsButton_ = createToolButton(
-        QStringLiteral("browserPermissionSettingsButton"),
-        QStringLiteral("权限"), toolbar_);
-    permissionSettingsButton_->setToolTip(
-        QStringLiteral("管理网站摄像头、麦克风和通知权限"));
-    currentTabMuteButton_ = createToolButton(
-        QStringLiteral("browserCurrentTabMuteButton"), QStringLiteral("静音"),
-        toolbar_);
-    audioTabsButton_ = createToolButton(
-        QStringLiteral("browserAudioTabsButton"), QStringLiteral("声音"),
-        toolbar_);
-    zoomOutButton_ = createToolButton(
-        QStringLiteral("browserZoomOutButton"), QStringLiteral("-"), toolbar_);
-    zoomResetButton_ = createToolButton(
-        QStringLiteral("browserZoomResetButton"), QStringLiteral("100%"),
-        toolbar_);
-    zoomInButton_ = createToolButton(
-        QStringLiteral("browserZoomInButton"), QStringLiteral("+"), toolbar_);
-    zoomOutButton_->setToolTip(QStringLiteral("缩小当前网页（Ctrl+-）"));
-    zoomResetButton_->setToolTip(QStringLiteral("重置当前网页缩放（Ctrl+0）"));
-    zoomInButton_->setToolTip(QStringLiteral("放大当前网页（Ctrl++）"));
-
-    toolbarLayout->addWidget(backButton_);
-    toolbarLayout->addWidget(forwardButton_);
-    toolbarLayout->addWidget(reloadButton_);
-    toolbarLayout->addWidget(homeButton_);
-    toolbarLayout->addWidget(addressEdit_, 1);
-    toolbarLayout->addWidget(goButton_);
-    toolbarLayout->addWidget(historyButton_);
-    toolbarLayout->addWidget(favoritesButton_);
-    toolbarLayout->addWidget(clearDataButton_);
-
-    informationRow_ = new QWidget(this);
-    informationRow_->setObjectName(QStringLiteral("browserInformationRow"));
-    auto* informationLayout = new QHBoxLayout(informationRow_);
-    informationLayout->setContentsMargins(10, 0, 10, 0);
-    titleLabel_ = new QLabel(QStringLiteral("网页"), informationRow_);
+    // 标题和状态保留为无障碍/测试可读状态，不再占用常驻布局高度。
+    titleLabel_ = new QLabel(QStringLiteral("网页"), chrome_);
     titleLabel_->setObjectName(QStringLiteral("browserTitleLabel"));
-    statusLabel_ = new QLabel(QStringLiteral("网页组件尚未初始化"), informationRow_);
+    titleLabel_->hide();
+    statusLabel_ = new QLabel(QStringLiteral("网页组件尚未初始化"), chrome_);
     statusLabel_->setObjectName(QStringLiteral("browserStatusLabel"));
-    statusLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    informationLayout->addWidget(titleLabel_, 1);
-    informationLayout->addWidget(statusLabel_);
-    informationLayout->addWidget(startupSettingsButton_);
-    informationLayout->addWidget(permissionSettingsButton_);
-    informationLayout->addWidget(zoomOutButton_);
-    informationLayout->addWidget(zoomResetButton_);
-    informationLayout->addWidget(zoomInButton_);
-    informationLayout->addWidget(currentTabMuteButton_);
-    informationLayout->addWidget(audioTabsButton_);
+    statusLabel_->hide();
 
     findBar_ = new QFrame(this);
     findBar_->setObjectName(QStringLiteral("browserFindBar"));
@@ -1495,7 +1383,6 @@ void BrowserPage::buildUi() {
     contentStack_->setContentsMargins(0, 0, 0, 0);
     browserHost_ = new QWidget(content);
     browserHost_->setObjectName(QStringLiteral("browserNativeHost"));
-    browserHost_->setAttribute(Qt::WA_NativeWindow);
     browserHost_->setMinimumSize(320, 240);
     errorLabel_ = new QLabel(QStringLiteral("网页组件尚未初始化"), content);
     errorLabel_->setObjectName(QStringLiteral("browserErrorLabel"));
@@ -1533,29 +1420,42 @@ void BrowserPage::buildUi() {
     contentStack_->addWidget(processFailurePage_);
     contentStack_->setCurrentWidget(errorLabel_);
 
-    auto* const tabRow = new QHBoxLayout();
-    tabRow->setContentsMargins(0, 0, 0, 0);
-    tabRow->setSpacing(6);
-    tabRow->addWidget(tabBar_, 1);
-    tabRow->addWidget(tabSearchButton_);
-    tabGroupButton_ = createToolButton(
-        QStringLiteral("browserTabGroupButton"), QStringLiteral("分组"), this);
-    tabGroupButton_->setToolTip(QStringLiteral("管理标签分组"));
-    tabRow->addWidget(tabGroupButton_);
-    tabRow->addWidget(newTabButton_);
-    rootLayout->addLayout(tabRow);
-    rootLayout->addWidget(toolbar_);
-    rootLayout->addWidget(informationRow_);
-    rootLayout->addWidget(findBar_);
-    downloadWidget_ = new BrowserDownloadWidget(this);
+    sidePanel_ = new BrowserSidePanel(this);
+    downloadPage_ = new QWidget(sidePanel_);
+    downloadPage_->setObjectName(QStringLiteral("browserDownloadsPage"));
+    auto* const downloadLayout = new QVBoxLayout(downloadPage_);
+    downloadLayout->setContentsMargins(0, 0, 0, 0);
+    downloadWidget_ = new BrowserDownloadWidget(downloadPage_);
     downloadWidget_->hide();
-    downloadCenter_ = new BrowserDownloadCenter(this);
+    downloadCenter_ = new BrowserDownloadCenter(downloadPage_);
     downloadCenter_->setObjectName(QStringLiteral("browserDownloadCenter"));
     downloadCenter_->hide();
-    rootLayout->addWidget(downloadCenter_);
-    rootLayout->addWidget(content, 1);
+    downloadLayout->addWidget(downloadWidget_);
+    downloadLayout->addWidget(downloadCenter_, 1);
+    sidePanel_->addPage(BrowserSidePanel::Page::Downloads, downloadPage_,
+                        QStringLiteral("下载"));
+
+    auto* const workspace = new QWidget(this);
+    auto* const workspaceLayout = new QHBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0);
+    workspaceLayout->setSpacing(0);
+    workspaceLayout->addWidget(content, 1);
+    workspaceLayout->addWidget(sidePanel_);
+    rootLayout->addWidget(chrome_);
+    rootLayout->addWidget(findBar_);
+    rootLayout->addWidget(workspace, 1);
 
     updateResponsiveStyle();
+
+    const auto scheduleBackendBoundsUpdate = [this] {
+        QTimer::singleShot(0, this, &BrowserPage::updateBackendBounds);
+    };
+    connect(sidePanel_, &BrowserSidePanel::pageChanged, this,
+            [scheduleBackendBoundsUpdate](BrowserSidePanel::Page) {
+                scheduleBackendBoundsUpdate();
+            });
+    connect(sidePanel_, &BrowserSidePanel::panelClosed, this,
+            scheduleBackendBoundsUpdate);
 
     connect(addressEdit_, &QLineEdit::returnPressed, this,
             &BrowserPage::submitAddress);
@@ -1571,6 +1471,8 @@ void BrowserPage::buildUi() {
             &BrowserPage::showTabSearch);
     connect(tabGroupButton_, &QToolButton::clicked, this,
             &BrowserPage::showTabGroups);
+    connect(tabBar_, &BrowserTabBar::tabAudioToggleRequested, this,
+            [this](const qulonglong tabId) { toggleTabMuted(tabId); });
     connect(tabBar_, &QTabBar::tabMoved, this,
             [this](const int from, const int to) {
                 if (from < 0 || from >= tabs_.size() || to < 0 ||
@@ -1605,14 +1507,20 @@ void BrowserPage::buildUi() {
             &BrowserPage::showHistory);
     connect(favoritesButton_, &QToolButton::clicked, this,
             &BrowserPage::showFavorites);
+    connect(chrome_->currentPageFavoriteButton(), &QToolButton::clicked, this,
+            &BrowserPage::showCurrentPageFavoriteEditor);
     connect(startupSettingsButton_, &QToolButton::clicked, this,
             &BrowserPage::showStartupSettings);
     connect(permissionSettingsButton_, &QToolButton::clicked, this,
             &BrowserPage::showPermissionSettings);
+    connect(chrome_->siteControlButton(), &QToolButton::clicked, this,
+            &BrowserPage::showCurrentSitePermissions);
     connect(currentTabMuteButton_, &QToolButton::clicked, this,
             &BrowserPage::toggleCurrentTabMuted);
     connect(audioTabsButton_, &QToolButton::clicked, this,
             &BrowserPage::showAudioTabs);
+    connect(chrome_->downloadButton(), &QToolButton::clicked, this,
+            &BrowserPage::showDownloads);
     connect(zoomOutButton_, &QToolButton::clicked, this,
             [this] { adjustCurrentTabZoom(-0.1); });
     connect(zoomResetButton_, &QToolButton::clicked, this,
@@ -1722,6 +1630,27 @@ void BrowserPage::buildUi() {
         new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this);
     connect(resetZoom, &QShortcut::activated, this,
             &BrowserPage::resetCurrentTabZoom);
+    auto* const historyShortcut =
+        new QShortcut(QKeySequence(QStringLiteral("Ctrl+H")), this);
+    connect(historyShortcut, &QShortcut::activated, this,
+            &BrowserPage::showHistory);
+    auto* const favoritesShortcut =
+        new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")), this);
+    connect(favoritesShortcut, &QShortcut::activated, this,
+            &BrowserPage::showFavorites);
+    auto* const downloadsShortcut =
+        new QShortcut(QKeySequence(QStringLiteral("Ctrl+J")), this);
+    connect(downloadsShortcut, &QShortcut::activated, this,
+            &BrowserPage::showDownloads);
+    auto* const focusCycle = new QShortcut(QKeySequence(Qt::Key_F6), this);
+    connect(focusCycle, &QShortcut::activated, this, [this] {
+        if (chrome_ != nullptr && chrome_->isAncestorOf(focusWidget())) {
+            browserHost_->setFocus(Qt::ShortcutFocusReason);
+        } else {
+            addressEdit_->setFocus(Qt::ShortcutFocusReason);
+            addressEdit_->selectAll();
+        }
+    });
 }
 
 void BrowserPage::updateResponsiveStyle() {
@@ -1741,60 +1670,9 @@ void BrowserPage::updateResponsiveStyle() {
     responsiveSize_ = sizeKey;
     setProperty("responsiveSize", sizeKey);
     const bool isCompact = sizeKey == QStringLiteral("compact");
-    backButton_->setText(isCompact ? QStringLiteral("<") : QStringLiteral("后退"));
-    forwardButton_->setText(isCompact ? QStringLiteral(">") : QStringLiteral("前进"));
-    reloadButton_->setText(isCompact ? QStringLiteral("R") : QStringLiteral("刷新"));
-    homeButton_->setText(isCompact ? QStringLiteral("H") : QStringLiteral("主页"));
-    historyButton_->setText(isCompact ? QStringLiteral("历") : QStringLiteral("历史"));
-    favoritesButton_->setText(isCompact ? QStringLiteral("藏") : QStringLiteral("收藏夹"));
-    clearDataButton_->setText(isCompact ? QStringLiteral("清") : QStringLiteral("清除"));
-    startupSettingsButton_->setText(isCompact ? QStringLiteral("启") : QStringLiteral("启动"));
-    permissionSettingsButton_->setText(isCompact ? QStringLiteral("权") : QStringLiteral("权限"));
-    currentTabMuteButton_->setText(isCompact ? QStringLiteral("静") : QStringLiteral("静音"));
-    audioTabsButton_->setText(isCompact ? QStringLiteral("声") : QStringLiteral("声音"));
-    if (auto* const informationLayout =
-            qobject_cast<QHBoxLayout*>(informationRow_->layout())) {
-        informationLayout->setContentsMargins(isCompact ? 4 : 10, 0,
-                                               isCompact ? 4 : 10, 0);
-        informationLayout->setSpacing(isCompact ? 2 : 6);
-    }
-    const QList<QWidget*> toolbarControls{
-        backButton_, forwardButton_, reloadButton_, homeButton_, goButton_,
-        historyButton_, favoritesButton_, clearDataButton_};
-    for (QWidget* const control : toolbarControls) {
-        if (control != nullptr) {
-            control->setMinimumWidth(isCompact ? 0 : control->minimumSizeHint().width());
-        }
-    }
-    if (auto* const toolbarLayout =
-            qobject_cast<QHBoxLayout*>(toolbar_->layout())) {
-        toolbarLayout->setContentsMargins(isCompact ? 5 : 10,
-                                          isCompact ? 5 : 8,
-                                          isCompact ? 5 : 10,
-                                          isCompact ? 5 : 8);
-        toolbarLayout->setSpacing(isCompact ? 2 : 6);
-    }
-    const QList<QWidget*> widgets{this, toolbar_, addressEdit_, goButton_,
-                                  clearDataButton_, backButton_, forwardButton_,
-                                  reloadButton_, homeButton_, historyButton_,
-                                  favoritesButton_, startupSettingsButton_,
-                                  permissionSettingsButton_,
-                                  currentTabMuteButton_,
-                                  audioTabsButton_, zoomOutButton_,
-                                  zoomResetButton_, zoomInButton_, newTabButton_,
-                                  tabSearchButton_, findBar_,
-                                  findEdit_, findResultLabel_,
-                                  findPreviousButton_, findNextButton_,
-                                  findCloseButton_};
-    for (QWidget* const widget : widgets) {
-        if (widget == nullptr) {
-            continue;
-        }
-        widget->setProperty("responsiveSize", sizeKey);
-        widget->style()->unpolish(widget);
-        widget->style()->polish(widget);
-        widget->updateGeometry();
-    }
+    chrome_->setCompact(isCompact);
+    sidePanel_->setCompact(isCompact);
+    setProperty("responsiveSize", sizeKey);
 }
 
 void BrowserPage::openNewTab() {
@@ -1858,6 +1736,7 @@ void BrowserPage::showPermissionSettings() {
             QStringLiteral("browserPermissionManagementDialog"));
     }
     permissionSettingsDialog_->reloadEntries();
+    permissionSettingsDialog_->setOriginFilter({});
     permissionSettingsDialog_->show();
     permissionSettingsDialog_->raise();
     permissionSettingsDialog_->activateWindow();
@@ -2059,6 +1938,32 @@ void BrowserPage::saveSession() {
     }
 }
 
+void BrowserPage::showCurrentSitePermissions() {
+    if (permissionStore_ == nullptr || currentTabIndex_ < 0 ||
+        currentTabIndex_ >= tabs_.size()) {
+        statusLabel_->setText(QStringLiteral("网站权限设置暂不可用"));
+        return;
+    }
+    const QString origin = BrowserPermissionStore::normalizeOrigin(
+        tabs_.at(currentTabIndex_).address);
+    if (origin.isEmpty()) {
+        statusLabel_->setText(
+            QStringLiteral("当前标签没有可查看权限的网站来源"));
+        return;
+    }
+    if (permissionSettingsDialog_ == nullptr) {
+        permissionSettingsDialog_ =
+            new BrowserPermissionManagementDialog(*permissionStore_, this);
+        permissionSettingsDialog_->setObjectName(
+            QStringLiteral("browserPermissionManagementDialog"));
+    }
+    permissionSettingsDialog_->reloadEntries();
+    permissionSettingsDialog_->setOriginFilter(origin);
+    permissionSettingsDialog_->show();
+    permissionSettingsDialog_->raise();
+    permissionSettingsDialog_->activateWindow();
+}
+
 void BrowserPage::showFindBar() {
     if (isShuttingDown_ || currentTabIndex_ < 0 ||
         currentTabIndex_ >= tabs_.size()) {
@@ -2110,9 +2015,10 @@ void BrowserPage::showTabSearch() {
         return;
     }
     if (tabSearchDialog_ == nullptr) {
-        tabSearchDialog_ = new QDialog(this);
+        tabSearchDialog_ = new QDialog(sidePanel_);
         tabSearchDialog_->setObjectName(QStringLiteral("browserTabSearchDialog"));
         tabSearchDialog_->setWindowTitle(QStringLiteral("搜索标签"));
+        tabSearchDialog_->setWindowFlags(Qt::Widget);
         tabSearchDialog_->resize(520, 360);
         auto* const layout = new QVBoxLayout(tabSearchDialog_);
         tabSearchEdit_ = new QLineEdit(tabSearchDialog_);
@@ -2153,14 +2059,14 @@ void BrowserPage::showTabSearch() {
         connect(tabSearchSwitchButton_, &QPushButton::clicked, this,
                 &BrowserPage::activateSelectedSearchTab);
         connect(closeButton, &QPushButton::clicked, tabSearchDialog_,
-                &QDialog::hide);
+                [this] { sidePanel_->closePanel(); });
+        sidePanel_->addPage(BrowserSidePanel::Page::TabSearch,
+                            tabSearchDialog_, QStringLiteral("搜索标签"));
     }
     if (isTabSearchDirty_) {
         refreshTabSearch();
     }
-    tabSearchDialog_->show();
-    tabSearchDialog_->raise();
-    tabSearchDialog_->activateWindow();
+    sidePanel_->showPage(BrowserSidePanel::Page::TabSearch);
     tabSearchEdit_->setFocus();
     tabSearchEdit_->selectAll();
 }
@@ -2223,7 +2129,7 @@ void BrowserPage::activateSelectedSearchTab() {
         return;
     }
     tabBar_->setCurrentIndex(index);
-    tabSearchDialog_->hide();
+    sidePanel_->closePanel();
 }
 
 void BrowserPage::showTabContextMenu(const QPoint& position) {
@@ -2373,7 +2279,8 @@ void BrowserPage::showTabContextMenu(const QPoint& position) {
 
 void BrowserPage::showTabGroups() {
     if (tabGroupDialog_ == nullptr) {
-        tabGroupDialog_ = new BrowserTabGroupDialog(tabGroupModel_, this);
+        tabGroupDialog_ = new BrowserTabGroupDialog(tabGroupModel_, sidePanel_);
+        tabGroupDialog_->setWindowFlags(Qt::Widget);
         connect(tabGroupDialog_, &BrowserTabGroupDialog::groupsChanged, this,
                 [this] {
                     isTabGroupDialogDirty_ = false;
@@ -2381,14 +2288,20 @@ void BrowserPage::showTabGroups() {
                 });
         connect(tabGroupDialog_, &BrowserTabGroupDialog::groupRemoved, this,
                 &BrowserPage::removeGroupFromTabs);
+        if (auto* const closeButton =
+                tabGroupDialog_->findChild<QPushButton*>(
+                    QStringLiteral("browserTabGroupCloseButton"))) {
+            connect(closeButton, &QPushButton::clicked, this,
+                    [this] { sidePanel_->closePanel(); });
+        }
         isTabGroupDialogDirty_ = false;
+        sidePanel_->addPage(BrowserSidePanel::Page::Groups, tabGroupDialog_,
+                            QStringLiteral("标签分组"));
     } else if (isTabGroupDialogDirty_) {
         tabGroupDialog_->reload();
         isTabGroupDialogDirty_ = false;
     }
-    tabGroupDialog_->show();
-    tabGroupDialog_->raise();
-    tabGroupDialog_->activateWindow();
+    sidePanel_->showPage(BrowserSidePanel::Page::Groups);
 }
 
 void BrowserPage::updateTabGroupDialogPresentation() {
@@ -2746,6 +2659,10 @@ void BrowserPage::updateTabPresentation() {
     state_ = tab.state;
     zoomResetButton_->setText(
         QStringLiteral("%1%").arg(qRound(tab.zoomFactor * 100.0)));
+    chrome_->setZoomPercentage(qRound(tab.zoomFactor * 100.0));
+    updateCurrentPageFavoritePresentation();
+    tabBar_->setTabAudioState(tab.tabId, tab.isPlayingAudio,
+                              tab.isUserMuted || isGloballyMuted_);
     if (tab.processFailure.has_value()) {
         showTabProcessFailure();
     } else if (tab.state == BrowserPageState::Failed &&
@@ -2802,6 +2719,10 @@ void BrowserPage::clearTabFavicons() {
 
 void BrowserPage::updateAudioPresentation() {
     updateAudioControls();
+    for (const BrowserTabRecord& tab : tabs_) {
+        tabBar_->setTabAudioState(tab.tabId, tab.isPlayingAudio,
+                                  tab.isUserMuted || isGloballyMuted_);
+    }
     if (audioTabsDialog_ != nullptr && audioTabsDialog_->isVisible()) {
         refreshAudioTabs();
     } else {
@@ -2811,6 +2732,12 @@ void BrowserPage::updateAudioPresentation() {
 
 void BrowserPage::updateAudioTabPresentation(const std::uint64_t tabId,
                                              const bool wasListed) {
+    const int index = findTabIndex(tabId);
+    if (index >= 0) {
+        const BrowserTabRecord& tab = tabs_.at(index);
+        tabBar_->setTabAudioState(tab.tabId, tab.isPlayingAudio,
+                                  tab.isUserMuted || isGloballyMuted_);
+    }
     updateAudioControls();
     updateAudioTabRow(tabId, wasListed);
 }
@@ -2821,6 +2748,7 @@ void BrowserPage::updateAudioControls() {
         return;
     }
     const BrowserTabRecord& currentTab = tabs_.at(currentTabIndex_);
+    chrome_->setCurrentTabMuted(currentTab.isUserMuted || isGloballyMuted_);
     currentTabMuteButton_->setText(currentTab.isUserMuted
                                        ? QStringLiteral("取消静音")
                                        : QStringLiteral("静音"));
@@ -2886,9 +2814,10 @@ void BrowserPage::toggleTabMuted(const std::uint64_t tabId) {
 
 void BrowserPage::showAudioTabs() {
     if (audioTabsDialog_ == nullptr) {
-        audioTabsDialog_ = new QDialog(this);
+        audioTabsDialog_ = new QDialog(sidePanel_);
         audioTabsDialog_->setObjectName(QStringLiteral("browserAudioTabsDialog"));
         audioTabsDialog_->setWindowTitle(QStringLiteral("网页声音"));
+        audioTabsDialog_->setWindowFlags(Qt::Widget);
         audioTabsDialog_->resize(540, 360);
         auto* const layout = new QVBoxLayout(audioTabsDialog_);
         auto* const explanation = new QLabel(
@@ -2933,7 +2862,7 @@ void BrowserPage::showAudioTabs() {
                 item->data(Qt::UserRole).toULongLong());
             if (index >= 0) {
                 tabBar_->setCurrentIndex(index);
-                audioTabsDialog_->hide();
+                sidePanel_->closePanel();
             }
         });
         connect(audioTabMuteButton_, &QPushButton::clicked, this, [this] {
@@ -2954,13 +2883,13 @@ void BrowserPage::showAudioTabs() {
             updateAudioPresentation();
             updateAudibleTabCount();
         });
+        sidePanel_->addPage(BrowserSidePanel::Page::Audio, audioTabsDialog_,
+                            QStringLiteral("网页声音"));
     }
     if (isAudioTabsDirty_) {
         refreshAudioTabs();
     }
-    audioTabsDialog_->show();
-    audioTabsDialog_->raise();
-    audioTabsDialog_->activateWindow();
+    sidePanel_->showPage(BrowserSidePanel::Page::Audio);
 }
 
 void BrowserPage::refreshAudioTabs() {
@@ -3039,6 +2968,7 @@ void BrowserPage::setCurrentTabZoom(const double zoomFactor) {
     backend_.setTabZoomFactor(tab.tabId, tab.zoomFactor);
     zoomResetButton_->setText(
         QStringLiteral("%1%").arg(qRound(tab.zoomFactor * 100.0)));
+    chrome_->setZoomPercentage(qRound(tab.zoomFactor * 100.0));
 }
 
 void BrowserPage::adjustCurrentTabZoom(const double delta) {
@@ -3071,9 +3001,10 @@ int BrowserPage::findTabIndex(const std::uint64_t tabId) const noexcept {
 
 void BrowserPage::showHistory() {
     if (historyDialog_ == nullptr) {
-        historyDialog_ = new QDialog(this);
+        historyDialog_ = new QDialog(sidePanel_);
         historyDialog_->setObjectName(QStringLiteral("browserHistoryDialog"));
         historyDialog_->setWindowTitle(QStringLiteral("浏览历史"));
+        historyDialog_->setWindowFlags(Qt::Widget);
         historyDialog_->resize(680, 460);
         auto* layout = new QVBoxLayout(historyDialog_);
         historySearchEdit_ = new QLineEdit(historyDialog_);
@@ -3094,7 +3025,7 @@ void BrowserPage::showHistory() {
         historyList_->setAlternatingRowColors(true);
         list->setOpenCallback([this](const QString& url, const bool isNewTab) {
             openStoredUrl(url, isNewTab);
-            historyDialog_->hide();
+            sidePanel_->closePanel();
         });
         layout->addWidget(historyList_);
         auto* buttons = new QHBoxLayout();
@@ -3129,19 +3060,21 @@ void BrowserPage::showHistory() {
         connect(historyList_, &QListWidget::currentRowChanged, historyDialog_,
                 [updateSelectionAction](int) { updateSelectionAction(); });
         updateSelectionAction();
-        connect(closeButton, &QPushButton::clicked, historyDialog_, &QDialog::hide);
+        connect(closeButton, &QPushButton::clicked, historyDialog_,
+                [this] { sidePanel_->closePanel(); });
+        sidePanel_->addPage(BrowserSidePanel::Page::History, historyDialog_,
+                            QStringLiteral("浏览历史"));
     }
-    historyDialog_->show();
+    sidePanel_->showPage(BrowserSidePanel::Page::History);
     refreshHistoryList();
-    historyDialog_->raise();
-    historyDialog_->activateWindow();
 }
 
 void BrowserPage::showFavorites() {
     if (favoritesDialog_ == nullptr) {
-        favoritesDialog_ = new QDialog(this);
+        favoritesDialog_ = new QDialog(sidePanel_);
         favoritesDialog_->setObjectName(QStringLiteral("browserFavoritesDialog"));
         favoritesDialog_->setWindowTitle(QStringLiteral("收藏夹"));
+        favoritesDialog_->setWindowFlags(Qt::Widget);
         favoritesDialog_->resize(680, 460);
         auto* layout = new QVBoxLayout(favoritesDialog_);
         favoritesSearchEdit_ = new QLineEdit(favoritesDialog_);
@@ -3164,7 +3097,7 @@ void BrowserPage::showFavorites() {
         favoritesList_->setDefaultDropAction(Qt::MoveAction);
         list->setOpenCallback([this](const QString& url, const bool isNewTab) {
             openStoredUrl(url, isNewTab);
-            favoritesDialog_->hide();
+            sidePanel_->closePanel();
         });
         list->setOrderChangedCallback(
             [this] { persistFavoriteListOrder(); });
@@ -3234,12 +3167,25 @@ void BrowserPage::showFavorites() {
                 &BrowserPage::chooseFavoriteExportFile);
         updateSelectionActions();
         connect(closeButton, &QPushButton::clicked, favoritesDialog_,
-                &QDialog::hide);
+                [this] { sidePanel_->closePanel(); });
+        sidePanel_->addPage(BrowserSidePanel::Page::Favorites, favoritesDialog_,
+                            QStringLiteral("收藏夹"));
     }
-    favoritesDialog_->show();
+    sidePanel_->showPage(BrowserSidePanel::Page::Favorites);
     refreshFavoritesList();
-    favoritesDialog_->raise();
-    favoritesDialog_->activateWindow();
+}
+
+void BrowserPage::showDownloads() {
+    if (isShuttingDown_ || sidePanel_ == nullptr || downloadPage_ == nullptr) {
+        return;
+    }
+    sidePanel_->showPage(BrowserSidePanel::Page::Downloads);
+    if (downloadCenter_ != nullptr) {
+        downloadCenter_->show();
+    }
+    if (downloadWidget_ != nullptr) {
+        downloadWidget_->show();
+    }
 }
 
 void BrowserPage::refreshHistoryList() {
@@ -3339,6 +3285,7 @@ void BrowserPage::replaceFavoritesData(
     QVector<BrowserFavoriteEntry> favorites) {
     dataModel_.replaceFavorites(std::move(favorites));
     isFavoritesListDirty_ = true;
+    updateCurrentPageFavoritePresentation();
     refreshFavoritesList();
 }
 
@@ -3409,6 +3356,47 @@ void BrowserPage::openStoredUrl(const QString& url, const bool isNewTab) {
         return;
     }
     navigateTo(address.url);
+}
+
+int BrowserPage::favoriteIndexForUrl(const QString& url) {
+    if (!dataModel_.isAvailable()) {
+        return -1;
+    }
+    const BrowserAddress address = normalizeBrowserAddress(url);
+    if (address.kind != BrowserAddressKind::Web) {
+        return -1;
+    }
+    const QVector<BrowserFavoriteEntry>& favorites = dataModel_.favorites();
+    for (int index = 0; index < favorites.size(); ++index) {
+        if (favorites.at(index).url.compare(address.url,
+                                            Qt::CaseInsensitive) == 0) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+void BrowserPage::updateCurrentPageFavoritePresentation() {
+    if (chrome_ == nullptr || currentTabIndex_ < 0 ||
+        currentTabIndex_ >= tabs_.size()) {
+        return;
+    }
+    QToolButton* const button = chrome_->currentPageFavoriteButton();
+    const BrowserAddress address =
+        normalizeBrowserAddress(tabs_.at(currentTabIndex_).address);
+    const bool canFavorite = dataModel_.isAvailable() &&
+                             address.kind == BrowserAddressKind::Web;
+    button->setEnabled(canFavorite);
+    chrome_->setCurrentPageFavorite(
+        canFavorite && favoriteIndexForUrl(address.url) >= 0);
+}
+
+void BrowserPage::showCurrentPageFavoriteEditor() {
+    if (currentTabIndex_ < 0 || currentTabIndex_ >= tabs_.size()) {
+        return;
+    }
+    const QString& url = tabs_.at(currentTabIndex_).address;
+    showFavoriteEditor(favoriteIndexForUrl(url));
 }
 
 void BrowserPage::showFavoriteEditor(const int favoriteIndex) {
@@ -3795,11 +3783,14 @@ void BrowserPage::confirmClearBrowsingData() {
 
 void BrowserPage::showHost() {
     contentStack_->setCurrentWidget(browserHost_);
+    updateBackendBounds();
+    updateBackendVisibility();
 }
 
 void BrowserPage::showError(BrowserErrorKind kind) {
     errorLabel_->setText(errorText(kind));
     contentStack_->setCurrentWidget(errorLabel_);
+    updateBackendVisibility();
     statusLabel_->setText(QStringLiteral("网页功能需要处理"));
 }
 
@@ -3836,6 +3827,7 @@ void BrowserPage::showTabProcessFailure() {
     processRecoveryButton_->setVisible(canRecover);
     processRecoveryButton_->setEnabled(canRecover && !isRecoveryBlocked);
     contentStack_->setCurrentWidget(processFailurePage_);
+    updateBackendVisibility();
     statusLabel_->setText(canRecover ? QStringLiteral("网页标签需要恢复")
                                      : QStringLiteral("网页组件需要重启"));
 }
@@ -4033,9 +4025,17 @@ void BrowserPage::updateControls() {
         backButton_->setEnabled(false);
         forwardButton_->setEnabled(false);
     }
-    reloadButton_->setText(state_ == BrowserPageState::Navigating
-                               ? QStringLiteral("停止")
-                               : QStringLiteral("刷新"));
+    chrome_->setReloading(state_ == BrowserPageState::Navigating);
+    chrome_->setDownloadActive(activeDownloadCount() > 0);
+}
+
+void* BrowserPage::nativeBrowserParentHandle() const {
+    QWidget* const nativeParent = browserHost_->nativeParentWidget();
+    if (nativeParent == nullptr) {
+        return nullptr;
+    }
+    return reinterpret_cast<void*>(
+        static_cast<quintptr>(nativeParent->winId()));
 }
 
 void BrowserPage::updateBackendBounds() {
@@ -4043,9 +4043,35 @@ void BrowserPage::updateBackendBounds() {
         browserHost_->height() <= 0) {
         return;
     }
+    QWidget* const nativeParent = browserHost_->nativeParentWidget();
+    if (nativeParent == nullptr) {
+        return;
+    }
     const qreal scale = browserHost_->devicePixelRatioF();
-    backend_.setBounds(QRect(0, 0, qRound(browserHost_->width() * scale),
-                             qRound(browserHost_->height() * scale)));
+    const QPoint origin = browserHost_->mapTo(nativeParent, QPoint(0, 0));
+    const QRect bounds(qRound(origin.x() * scale),
+                       qRound(origin.y() * scale),
+                       qRound(browserHost_->width() * scale),
+                       qRound(browserHost_->height() * scale));
+    if (backendBounds_.has_value() && *backendBounds_ == bounds) {
+        return;
+    }
+    backendBounds_ = bounds;
+    backend_.setBounds(bounds);
+}
+
+void BrowserPage::updateBackendVisibility() {
+    if (isShuttingDown_) {
+        return;
+    }
+    const bool isVisible =
+        isActivated_ &&
+        (!isInitialized_ || contentStack_->currentWidget() == browserHost_);
+    if (backendVisibility_.has_value() && *backendVisibility_ == isVisible) {
+        return;
+    }
+    backendVisibility_ = isVisible;
+    backend_.setVisible(isVisible);
 }
 
 void BrowserPage::recordSuccessfulNavigation(const QString& visibleUrl,

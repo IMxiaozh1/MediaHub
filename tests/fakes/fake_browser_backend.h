@@ -45,6 +45,7 @@ struct FakeBrowserCommand {
     FakeBrowserCommandKind kind;
     QString text;
     QRect bounds;
+    quintptr nativeHandle{0};
     std::uint64_t requestId{0};
     std::uint64_t newWindowRequestId{0};
     std::uint64_t generation{0};
@@ -67,11 +68,12 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         commands.push_back({FakeBrowserCommandKind::SetEventListener});
     }
 
-    void initialize(void*, const QString& userDataDirectory,
+    void initialize(void* parentWindowHandle, const QString& userDataDirectory,
                     std::uint64_t generation) override {
         FakeBrowserCommand command{FakeBrowserCommandKind::Initialize};
         command.text = userDataDirectory;
         command.generation = generation;
+        command.nativeHandle = reinterpret_cast<quintptr>(parentWindowHandle);
         commands.push_back(command);
     }
 
@@ -82,7 +84,8 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         commands.push_back(command);
     }
 
-    bool createTab(void*, std::uint64_t tabId, const QString& initialUrl,
+    bool createTab(void* parentWindowHandle, std::uint64_t tabId,
+                   const QString& initialUrl,
                    std::uint64_t generation,
                    std::uint64_t newWindowRequestId = 0) override {
         FakeBrowserCommand command{FakeBrowserCommandKind::CreateTab};
@@ -90,6 +93,7 @@ class FakeBrowserBackend final : public gui::BrowserBackend {
         command.newWindowRequestId = newWindowRequestId;
         command.text = initialUrl;
         command.generation = generation;
+        command.nativeHandle = reinterpret_cast<quintptr>(parentWindowHandle);
         commands.push_back(command);
         return canCreateTab;
     }

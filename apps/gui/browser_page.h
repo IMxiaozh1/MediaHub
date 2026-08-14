@@ -33,6 +33,8 @@ class QWidget;
 namespace mediahub::gui {
 
 class BrowserBackend;
+class BrowserChrome;
+class BrowserTabBar;
 class BrowserDataStore;
 class BrowserDownloadWidget;
 class BrowserDownloadCenter;
@@ -40,6 +42,7 @@ class BrowserPermissionDialog;
 class BrowserPermissionManagementDialog;
 class BrowserPermissionStore;
 class BrowserSessionStore;
+class BrowserSidePanel;
 class BrowserStartupSettingsDialog;
 class BrowserStartupSettingsStore;
 class BrowserTabGroupDialog;
@@ -226,7 +229,10 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void updateControls();
     // 调用线程：GUI 主线程。仅在响应式档位变化时刷新网页工具栏样式。
     void updateResponsiveStyle();
+    // 调用线程：GUI 主线程。WebView2 挂既有原生祖先，避免提升网页 Qt 布局链。
+    [[nodiscard]] void* nativeBrowserParentHandle() const;
     void updateBackendBounds();
+    void updateBackendVisibility();
     void recordSuccessfulNavigation(const QString& visibleUrl,
                                     const QString& title);
     void updateRecordedNavigationTitle(const QString& visibleUrl,
@@ -237,6 +243,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
                                bool shouldRecordHistory);
     void showHistory();
     void showFavorites();
+    void showCurrentPageFavoriteEditor();
+    void showDownloads();
     void refreshHistoryList();
     void refreshFavoritesList();
     void replaceHistoryData(QVector<BrowserHistoryEntry> history);
@@ -248,6 +256,8 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void showHistoryClearConfirmation();
     void confirmClearHistory();
     void openStoredUrl(const QString& url, bool isNewTab);
+    [[nodiscard]] int favoriteIndexForUrl(const QString& url);
+    void updateCurrentPageFavoritePresentation();
     void showFavoriteEditor(int favoriteIndex = -1);
     void saveFavoriteEditor();
     void removeSelectedFavorite();
@@ -276,6 +286,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void resetCurrentTabZoom();
     void showStartupSettings();
     void showPermissionSettings();
+    void showCurrentSitePermissions();
     void openConfiguredHome();
     void openInitialTabs();
     void openInitialTab(const QString& url, const QString& title = {},
@@ -322,14 +333,19 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     std::uint64_t generation_{1};
     BrowserPageState state_{BrowserPageState::Unavailable};
     bool isInitialized_{false};
+    bool isActivated_{false};
+    std::optional<bool> backendVisibility_;
+    std::optional<QRect> backendBounds_;
     bool hasOpenedInitialHome_{false};
     bool isShuttingDown_{false};
     bool isWebFullScreen_{false};
     bool wasToolbarHidden_{false};
-    bool wasInformationRowHidden_{false};
+    bool wasFindBarHidden_{true};
     bool wasDownloadWidgetHidden_{true};
+    BrowserChrome* chrome_{nullptr};
+    BrowserSidePanel* sidePanel_{nullptr};
     QFrame* toolbar_{nullptr};
-    QTabBar* tabBar_{nullptr};
+    BrowserTabBar* tabBar_{nullptr};
     QToolButton* newTabButton_{nullptr};
     QToolButton* tabSearchButton_{nullptr};
     QToolButton* tabGroupButton_{nullptr};
@@ -346,7 +362,6 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QPushButton* findPreviousButton_{nullptr};
     QPushButton* findNextButton_{nullptr};
     QToolButton* findCloseButton_{nullptr};
-    QWidget* informationRow_{nullptr};
     QWidget* browserHost_{nullptr};
     QStackedLayout* contentStack_{nullptr};
     QToolButton* backButton_{nullptr};
@@ -373,6 +388,7 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QLabel* processFailureDetailLabel_{nullptr};
     QPushButton* processRecoveryButton_{nullptr};
     QDialog* clearDataDialog_{nullptr};
+    QWidget* downloadPage_{nullptr};
     QDialog* historyDialog_{nullptr};
     QLineEdit* historySearchEdit_{nullptr};
     QTimer* historySearchTimer_{nullptr};

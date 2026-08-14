@@ -47,6 +47,9 @@ AcceleratorDispatch handleAcceleratorKey(Args& args, const bool isControlDown,
     if (isControlDown && !isAltDown && isShiftDown && virtualKey == VK_TAB) {
         accelerator = gui::BrowserAccelerator::PreviousTab;
     } else if (isControlDown && !isAltDown && isShiftDown &&
+               virtualKey == static_cast<UINT>('O')) {
+        accelerator = gui::BrowserAccelerator::ShowFavorites;
+    } else if (isControlDown && !isAltDown && isShiftDown &&
                virtualKey == static_cast<UINT>('T')) {
         accelerator = gui::BrowserAccelerator::ReopenClosedTab;
     } else if (isControlDown && !isAltDown && isShiftDown &&
@@ -57,6 +60,12 @@ AcceleratorDispatch handleAcceleratorKey(Args& args, const bool isControlDown,
     } else if (isControlDown && !isAltDown &&
                virtualKey == static_cast<UINT>('L')) {
         accelerator = gui::BrowserAccelerator::FocusAddress;
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('H')) {
+        accelerator = gui::BrowserAccelerator::ShowHistory;
+    } else if (isControlDown && !isAltDown &&
+               virtualKey == static_cast<UINT>('J')) {
+        accelerator = gui::BrowserAccelerator::ShowDownloads;
     } else if (isControlDown && !isAltDown &&
                virtualKey == static_cast<UINT>('T')) {
         accelerator = gui::BrowserAccelerator::NewTab;
@@ -86,6 +95,9 @@ AcceleratorDispatch handleAcceleratorKey(Args& args, const bool isControlDown,
         accelerator = gui::BrowserAccelerator::ResetZoom;
     } else if (!isControlDown && !isAltDown && virtualKey == VK_F5) {
         accelerator = gui::BrowserAccelerator::Reload;
+    } else if (!isControlDown && !isAltDown && !isShiftDown &&
+               virtualKey == VK_F6) {
+        accelerator = gui::BrowserAccelerator::FocusCycle;
     } else if (!isControlDown && !isAltDown && isWebFullScreen &&
                virtualKey == VK_ESCAPE) {
         accelerator = gui::BrowserAccelerator::ExitFullScreen;

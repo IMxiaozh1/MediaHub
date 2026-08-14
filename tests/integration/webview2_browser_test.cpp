@@ -2225,6 +2225,12 @@ void WebView2BrowserTest::mapsAndHandlesControllerAccelerators() {
     const QList<Case> cases{
         {static_cast<UINT>('L'), true, false, false,
          gui::BrowserAccelerator::FocusAddress},
+        {static_cast<UINT>('H'), true, false, false,
+         gui::BrowserAccelerator::ShowHistory},
+        {static_cast<UINT>('J'), true, false, false,
+         gui::BrowserAccelerator::ShowDownloads},
+        {static_cast<UINT>('O'), true, false, true,
+         gui::BrowserAccelerator::ShowFavorites},
         {static_cast<UINT>('T'), true, false, false,
          gui::BrowserAccelerator::NewTab},
         {static_cast<UINT>('W'), true, false, false,
@@ -2251,6 +2257,7 @@ void WebView2BrowserTest::mapsAndHandlesControllerAccelerators() {
         {static_cast<UINT>('0'), true, false, false,
          gui::BrowserAccelerator::ResetZoom},
         {VK_F5, false, false, false, gui::BrowserAccelerator::Reload},
+        {VK_F6, false, false, false, gui::BrowserAccelerator::FocusCycle},
         {VK_ESCAPE, false, false, false,
          gui::BrowserAccelerator::ExitFullScreen},
     };
