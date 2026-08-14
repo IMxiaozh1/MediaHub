@@ -11,6 +11,8 @@
 
 class QLabel;
 class QPushButton;
+class QShowEvent;
+class QTimer;
 class QVBoxLayout;
 
 namespace mediahub::gui {
@@ -83,6 +85,9 @@ class BrowserDownloadCenter final : public QWidget {
     [[nodiscard]] std::optional<ItemSnapshot> itemSnapshot(
         std::uint64_t requestId) const;
 
+ protected:
+    void showEvent(QShowEvent* event) override;
+
  signals:
     void destinationChosen(std::uint64_t requestId, const QString& destination);
     void cancelRequested(std::uint64_t requestId);
@@ -91,14 +96,28 @@ class BrowserDownloadCenter final : public QWidget {
  private:
     [[nodiscard]] BrowserDownloadItem* itemFor(
         std::uint64_t requestId) const noexcept;
+    void applyDownloadUpdate(std::uint64_t requestId,
+                             BrowserDownloadState state,
+                             std::int64_t receivedBytes,
+                             std::int64_t totalBytes);
+    // 调用线程：GUI 主线程。可见时一次提交每个任务的最新进度。
+    void flushPendingProgress();
+    void discardPendingProgress(std::uint64_t requestId);
     void chooseDestination(std::uint64_t requestId);
     void refreshSummary();
 
+    struct PendingProgressUpdate {
+        std::int64_t receivedBytes{0};
+        std::int64_t totalBytes{0};
+    };
+
     QHash<quint64, BrowserDownloadItem*> items_;
+    QHash<quint64, PendingProgressUpdate> pendingProgressUpdates_;
     QVBoxLayout* itemLayout_{nullptr};
     QLabel* summaryLabel_{nullptr};
     QLabel* emptyLabel_{nullptr};
     QPushButton* clearButton_{nullptr};
+    QTimer* progressUpdateTimer_{nullptr};
 };
 
 }  // namespace mediahub::gui

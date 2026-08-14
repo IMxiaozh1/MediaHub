@@ -178,6 +178,7 @@ class BrowserPageTest final : public QObject {
     void webFullScreenDefersConcurrentDownloadCenterPresentation();
     void shutdownCancelsEveryConcurrentDownload();
     void deactivatesAndActivatesBrowserInSafeOrder();
+    void keepsBackgroundWebAndDownloadSemantics();
     void tracksIndependentTabAudioAndMuteState();
     void updatesOnlyChangedAudioRowAndSkipsHiddenRebuilds();
     void audioCenterTargetsStableTabAfterManualReorder();
@@ -495,6 +496,11 @@ void BrowserPageTest::cachesBrowserDataAndSkipsUnchangedListRebuilds() {
         1, QStringLiteral("https://latest.example/page?secret=value"),
         QStringLiteral("Latest"), false, false);
     QCOMPARE(dataStore.historyLoadCount, 1);
+    auto* const historyPersistenceTimer = page.findChild<QTimer*>(
+        QStringLiteral("browserHistoryPersistenceTimer"));
+    QVERIFY(historyPersistenceTimer != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(historyPersistenceTimer, "timeout",
+                                      Qt::DirectConnection));
     QCOMPARE(dataStore.saveCount, 1);
     QCOMPARE(historyRowsInserted.count(), 0);
     QCOMPARE(historyRowsRemoved.count(), 0);
@@ -2099,6 +2105,11 @@ void BrowserPageTest::switchesTabsWithoutReloadAndKeepsIndependentState() {
         QStringLiteral("Two background"), true, true);
     QCOMPARE(address->text(), QStringLiteral("https://one.example/background"));
     QCOMPARE(tabBar->tabText(1), QStringLiteral("Two background"));
+    auto* const historyPersistenceTimer = page.findChild<QTimer*>(
+        QStringLiteral("browserHistoryPersistenceTimer"));
+    QVERIFY(historyPersistenceTimer != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(historyPersistenceTimer, "timeout",
+                                      Qt::DirectConnection));
     QCOMPARE(dataStore.history.constFirst().url,
              QStringLiteral("https://two.example/background"));
 
@@ -2894,6 +2905,11 @@ void BrowserPageTest::managesConcurrentDownloadsIndependently() {
 
     backend.emitDownloadUpdated(81, BrowserDownloadState::InProgress, 40, 100);
     backend.emitDownloadUpdated(82, BrowserDownloadState::InProgress, 150, 200);
+    auto* const progressTimer = center->findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressTimer != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(progressTimer, "timeout",
+                                      Qt::DirectConnection));
     QCOMPARE(center->itemSnapshot(81)->progressValue, 40);
     QCOMPARE(center->itemSnapshot(82)->progressValue, 75);
 
@@ -2959,6 +2975,11 @@ void BrowserPageTest::hidingPageKeepsConcurrentDownloadProgress() {
 
     QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 0);
     QCOMPARE(center->activeItemCount(), 1);
+    QCOMPARE(center->itemSnapshot(83)->progressValue, 0);
+
+    page.show();
+    page.activate();
+    QCoreApplication::processEvents();
     QCOMPARE(center->itemSnapshot(83)->progressValue, 60);
 }
 
@@ -3032,6 +3053,42 @@ void BrowserPageTest::deactivatesAndActivatesBrowserInSafeOrder() {
     }
     QVERIFY(!backend.commands[0].flag);
     QVERIFY(backend.commands[1].flag);
+}
+
+void BrowserPageTest::keepsBackgroundWebAndDownloadSemantics() {
+    test::FakeBrowserBackend backend;
+    backend.supportsConcurrentDownloadsFlag = true;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"));
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitDownloadRequested(701, QStringLiteral("https://files.example"),
+                                  QStringLiteral("background.bin"), 100);
+    backend.commands.clear();
+
+    page.deactivate();
+    page.hide();
+    backend.emitDownloadUpdated(701, BrowserDownloadState::InProgress, 10, 100);
+
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetVisible), 1);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::Navigate), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CreateTab), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CloseTab), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetAudioMuted), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetTabAudioMuted), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetSuspended), 0);
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::CancelDownload), 0);
+
+    auto* const center = page.findChild<BrowserDownloadCenter*>(
+        QStringLiteral("browserDownloadCenter"));
+    QVERIFY(center != nullptr);
+    QCOMPARE(center->itemSnapshot(701)->progressValue, 0);
+
+    page.show();
+    page.activate();
+    QCoreApplication::processEvents();
+    QCOMPARE(backend.count(test::FakeBrowserCommandKind::SetVisible), 2);
+    QCOMPARE(center->itemSnapshot(701)->progressValue, 10);
 }
 
 void BrowserPageTest::tracksIndependentTabAudioAndMuteState() {

@@ -11,14 +11,19 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QShowEvent>
+#include <QTimer>
 #include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <utility>
 
 namespace mediahub::gui {
 namespace {
+
+constexpr int kDownloadProgressUpdateIntervalMilliseconds = 150;
 
 QString safeOriginText(const QString& origin) {
     const QUrl parsed(origin.trimmed(), QUrl::StrictMode);
@@ -454,6 +459,14 @@ BrowserDownloadCenter::BrowserDownloadCenter(QWidget* const parent)
 
     connect(clearButton_, &QPushButton::clicked, this,
             &BrowserDownloadCenter::clearCompleted);
+    progressUpdateTimer_ = new QTimer(this);
+    progressUpdateTimer_->setObjectName(
+        QStringLiteral("browserDownloadProgressTimer"));
+    progressUpdateTimer_->setSingleShot(true);
+    progressUpdateTimer_->setInterval(
+        kDownloadProgressUpdateIntervalMilliseconds);
+    connect(progressUpdateTimer_, &QTimer::timeout, this,
+            &BrowserDownloadCenter::flushPendingProgress);
     refreshSummary();
 }
 
@@ -485,11 +498,19 @@ void BrowserDownloadCenter::updateDownload(
     const std::uint64_t requestId, const BrowserDownloadState state,
     const std::int64_t receivedBytes, const std::int64_t totalBytes) {
     BrowserDownloadItem* const item = itemFor(requestId);
-    if (item == nullptr) {
+    if (item == nullptr || isTerminalState(item->state())) {
         return;
     }
-    item->update(state, receivedBytes, totalBytes);
-    refreshSummary();
+    if (state == BrowserDownloadState::InProgress) {
+        pendingProgressUpdates_.insert(
+            requestId, PendingProgressUpdate{receivedBytes, totalBytes});
+        if (isVisible() && !progressUpdateTimer_->isActive()) {
+            progressUpdateTimer_->start();
+        }
+        return;
+    }
+    discardPendingProgress(requestId);
+    applyDownloadUpdate(requestId, state, receivedBytes, totalBytes);
 }
 
 bool BrowserDownloadCenter::submitDestination(const std::uint64_t requestId,
@@ -518,6 +539,7 @@ bool BrowserDownloadCenter::requestCancel(const std::uint64_t requestId) {
     if (item == nullptr || !item->markCancelling()) {
         return false;
     }
+    discardPendingProgress(requestId);
     emit cancelRequested(requestId);
     refreshSummary();
     return true;
@@ -528,6 +550,7 @@ bool BrowserDownloadCenter::requestRetry(const std::uint64_t requestId) {
     if (item == nullptr || !item->markRetrying()) {
         return false;
     }
+    discardPendingProgress(requestId);
     emit retryRequested(requestId);
     refreshSummary();
     return true;
@@ -541,6 +564,7 @@ int BrowserDownloadCenter::clearCompleted() {
             ++iterator;
             continue;
         }
+        discardPendingProgress(item->requestId());
         iterator = items_.erase(iterator);
         itemLayout_->removeWidget(item);
         delete item;
@@ -557,6 +581,8 @@ int BrowserDownloadCenter::clearForBrowsingData() {
         delete item;
     }
     items_.clear();
+    pendingProgressUpdates_.clear();
+    progressUpdateTimer_->stop();
     refreshSummary();
     return removedCount;
 }
@@ -599,10 +625,49 @@ BrowserDownloadCenter::itemSnapshot(const std::uint64_t requestId) const {
     return item->snapshot();
 }
 
+void BrowserDownloadCenter::showEvent(QShowEvent* const event) {
+    QWidget::showEvent(event);
+    flushPendingProgress();
+}
+
 BrowserDownloadItem* BrowserDownloadCenter::itemFor(
     const std::uint64_t requestId) const noexcept {
     const auto iterator = items_.constFind(requestId);
     return iterator == items_.cend() ? nullptr : iterator.value();
+}
+
+void BrowserDownloadCenter::applyDownloadUpdate(
+    const std::uint64_t requestId, const BrowserDownloadState state,
+    const std::int64_t receivedBytes, const std::int64_t totalBytes) {
+    BrowserDownloadItem* const item = itemFor(requestId);
+    if (item == nullptr) {
+        return;
+    }
+    item->update(state, receivedBytes, totalBytes);
+    refreshSummary();
+}
+
+void BrowserDownloadCenter::flushPendingProgress() {
+    if (!isVisible() || pendingProgressUpdates_.isEmpty()) {
+        return;
+    }
+    progressUpdateTimer_->stop();
+    const QHash<quint64, PendingProgressUpdate> updates =
+        std::move(pendingProgressUpdates_);
+    pendingProgressUpdates_.clear();
+    for (auto iterator = updates.cbegin(); iterator != updates.cend();
+         ++iterator) {
+        applyDownloadUpdate(iterator.key(), BrowserDownloadState::InProgress,
+                            iterator->receivedBytes, iterator->totalBytes);
+    }
+}
+
+void BrowserDownloadCenter::discardPendingProgress(
+    const std::uint64_t requestId) {
+    pendingProgressUpdates_.remove(requestId);
+    if (pendingProgressUpdates_.isEmpty()) {
+        progressUpdateTimer_->stop();
+    }
 }
 
 void BrowserDownloadCenter::chooseDestination(const std::uint64_t requestId) {

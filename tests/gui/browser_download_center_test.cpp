@@ -1,9 +1,11 @@
 #include <QDir>
 #include <QFile>
 #include <QLabel>
+#include <QProgressBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 #include <cstdint>
 
@@ -25,6 +27,9 @@ class BrowserDownloadCenterTest final : public QObject {
     void retriesCancellationAfterFailure();
     void retriesInterruptedDownloadWhenBackendAllowsResume();
     void hidingCenterDoesNotCancelActiveTasks();
+    void coalescesFrequentProgressUpdates();
+    void defersHiddenProgressUntilShown();
+    void appliesTerminalStateWithoutWaitingForProgressTimer();
 };
 
 void BrowserDownloadCenterTest::initTestCase() {
@@ -35,6 +40,8 @@ void BrowserDownloadCenterTest::keepsConcurrentRequestsIsolated() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     BrowserDownloadCenter center;
+    center.show();
+    QCoreApplication::processEvents();
     QSignalSpy destinationSpy(&center,
                               &BrowserDownloadCenter::destinationChosen);
 
@@ -52,6 +59,11 @@ void BrowserDownloadCenterTest::keepsConcurrentRequestsIsolated() {
     center.updateDownload(11, BrowserDownloadState::InProgress,
                           6'000'000'000'000'000'000LL,
                           8'000'000'000'000'000'000LL);
+    auto* const progressTimer = center.findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressTimer != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(progressTimer, "timeout",
+                                      Qt::DirectConnection));
     const auto first = center.itemSnapshot(11);
     const auto second = center.itemSnapshot(22);
     QVERIFY(first.has_value());
@@ -68,9 +80,16 @@ void BrowserDownloadCenterTest::keepsConcurrentRequestsIsolated() {
 
 void BrowserDownloadCenterTest::ignoresDuplicateAndLateEvents() {
     BrowserDownloadCenter center;
+    center.show();
+    QCoreApplication::processEvents();
     QVERIFY(center.beginDownload(7, QStringLiteral("https://example.com"),
                                  QStringLiteral("original.bin"), 100));
     center.updateDownload(7, BrowserDownloadState::InProgress, 40, 100);
+    auto* const progressTimer = center.findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressTimer != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(progressTimer, "timeout",
+                                      Qt::DirectConnection));
     QVERIFY(center.beginDownload(7, QStringLiteral("https://changed.example"),
                                  QStringLiteral("changed.bin"), 1));
 
@@ -209,6 +228,8 @@ void BrowserDownloadCenterTest::retriesCancellationAfterFailure() {
 
 void BrowserDownloadCenterTest::retriesInterruptedDownloadWhenBackendAllowsResume() {
     BrowserDownloadCenter center;
+    center.show();
+    QCoreApplication::processEvents();
     QSignalSpy retrySpy(&center, &BrowserDownloadCenter::retryRequested);
     QVERIFY(center.beginDownload(57, QStringLiteral("https://example.com"),
                                  QStringLiteral("large-file.bin"), 100));
@@ -229,6 +250,11 @@ void BrowserDownloadCenterTest::retriesInterruptedDownloadWhenBackendAllowsResum
              BrowserDownloadCenter::ItemState::InProgress);
 
     center.updateDownload(57, BrowserDownloadState::InProgress, 55, 100);
+    auto* const progressTimer = center.findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressTimer != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(progressTimer, "timeout",
+                                      Qt::DirectConnection));
     QCOMPARE(center.itemSnapshot(57)->progressValue, 55);
     center.updateDownload(57, BrowserDownloadState::RetryableFailure, 60, 100);
     QVERIFY(center.requestRetry(57));
@@ -252,7 +278,94 @@ void BrowserDownloadCenterTest::hidingCenterDoesNotCancelActiveTasks() {
 
     QCOMPARE(cancelSpy.count(), 0);
     QCOMPARE(center.activeItemCount(), 1);
+    QCOMPARE(center.itemSnapshot(61)->progressValue, 0);
+
+    center.show();
+    QCoreApplication::processEvents();
     QCOMPARE(center.itemSnapshot(61)->progressValue, 60);
+}
+
+void BrowserDownloadCenterTest::coalescesFrequentProgressUpdates() {
+    BrowserDownloadCenter center;
+    center.show();
+    QCoreApplication::processEvents();
+    QVERIFY(center.beginDownload(71, QStringLiteral("https://example.com"),
+                                 QStringLiteral("large.bin"), 1000));
+    auto* const progressBar = center.findChild<QProgressBar*>(
+        QStringLiteral("browserDownloadProgressBar"));
+    auto* const progressTimer = center.findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressBar != nullptr);
+    QVERIFY(progressTimer != nullptr);
+    QSignalSpy progressSpy(progressBar, &QProgressBar::valueChanged);
+
+    for (int index = 1; index <= 100; ++index) {
+        center.updateDownload(71, BrowserDownloadState::InProgress,
+                              index * 10, 1000);
+    }
+
+    QCOMPARE(progressSpy.count(), 0);
+    QCOMPARE(center.itemSnapshot(71)->progressValue, 0);
+    QVERIFY(progressTimer->isActive());
+    QVERIFY(QMetaObject::invokeMethod(progressTimer, "timeout",
+                                      Qt::DirectConnection));
+    QCOMPARE(progressSpy.count(), 1);
+    QCOMPARE(center.itemSnapshot(71)->progressValue, 100);
+    QVERIFY(!progressTimer->isActive());
+}
+
+void BrowserDownloadCenterTest::defersHiddenProgressUntilShown() {
+    BrowserDownloadCenter center;
+    QVERIFY(center.beginDownload(72, QStringLiteral("https://example.com"),
+                                 QStringLiteral("hidden.bin"), 100));
+    auto* const progressBar = center.findChild<QProgressBar*>(
+        QStringLiteral("browserDownloadProgressBar"));
+    auto* const progressTimer = center.findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressBar != nullptr);
+    QVERIFY(progressTimer != nullptr);
+    QSignalSpy progressSpy(progressBar, &QProgressBar::valueChanged);
+
+    center.updateDownload(72, BrowserDownloadState::InProgress, 20, 100);
+    center.updateDownload(72, BrowserDownloadState::InProgress, 60, 100);
+
+    QCOMPARE(progressSpy.count(), 0);
+    QCOMPARE(center.itemSnapshot(72)->progressValue, 0);
+    QVERIFY(!progressTimer->isActive());
+
+    center.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(progressSpy.count(), 1);
+    QCOMPARE(center.itemSnapshot(72)->progressValue, 60);
+}
+
+void BrowserDownloadCenterTest::appliesTerminalStateWithoutWaitingForProgressTimer() {
+    BrowserDownloadCenter center;
+    center.show();
+    QCoreApplication::processEvents();
+    QVERIFY(center.beginDownload(73, QStringLiteral("https://example.com"),
+                                 QStringLiteral("terminal.bin"), 100));
+    auto* const progressBar = center.findChild<QProgressBar*>(
+        QStringLiteral("browserDownloadProgressBar"));
+    auto* const progressTimer = center.findChild<QTimer*>(
+        QStringLiteral("browserDownloadProgressTimer"));
+    QVERIFY(progressBar != nullptr);
+    QVERIFY(progressTimer != nullptr);
+    QSignalSpy progressSpy(progressBar, &QProgressBar::valueChanged);
+
+    center.updateDownload(73, BrowserDownloadState::InProgress, 40, 100);
+    QVERIFY(progressTimer->isActive());
+    QCOMPARE(progressSpy.count(), 0);
+
+    center.updateDownload(73, BrowserDownloadState::Completed, 100, 100);
+    QCOMPARE(progressSpy.count(), 1);
+    QCOMPARE(center.itemSnapshot(73)->progressValue, 100);
+    QCOMPARE(center.itemSnapshot(73)->state,
+             BrowserDownloadCenter::ItemState::Completed);
+    QVERIFY(!progressTimer->isActive());
+    QVERIFY(QMetaObject::invokeMethod(progressTimer, "timeout",
+                                      Qt::DirectConnection));
+    QCOMPARE(progressSpy.count(), 1);
 }
 
 }  // namespace
