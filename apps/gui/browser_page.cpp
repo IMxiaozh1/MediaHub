@@ -65,8 +65,46 @@ constexpr int kDefaultMaximumTabCount = 20;
 constexpr int kMaximumClosedTabCount = 20;
 constexpr qint64 kRecoveryCooldownMilliseconds = 30000;
 constexpr int kSessionCheckpointMilliseconds = 30000;
+constexpr int kHistoryPersistenceDelayMilliseconds = 1000;
 constexpr int kListSearchDebounceMilliseconds = 150;
 constexpr int kMaximumRecoveryAttemptsPerWindow = 3;
+
+bool haveSameSessionTab(const BrowserSessionTab& left,
+                        const BrowserSessionTab& right) {
+    return left.url == right.url && left.title == right.title &&
+           left.groupId == right.groupId && left.isPinned == right.isPinned &&
+           left.isMuted == right.isMuted && left.zoomFactor == right.zoomFactor;
+}
+
+bool haveSameSessionGroup(const BrowserSessionGroup& left,
+                          const BrowserSessionGroup& right) {
+    return left.id == right.id && left.name == right.name &&
+           left.color == right.color &&
+           left.isCollapsed == right.isCollapsed;
+}
+
+template <typename Value, typename Equal>
+bool haveSameValues(const QVector<Value>& left, const QVector<Value>& right,
+                    Equal equal) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (int index = 0; index < left.size(); ++index) {
+        if (!equal(left.at(index), right.at(index))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool haveSameSession(const BrowserSessionState& left,
+                     const BrowserSessionState& right) {
+    return left.currentIndex == right.currentIndex &&
+           haveSameValues(left.tabs, right.tabs, haveSameSessionTab) &&
+           haveSameValues(left.closedTabs, right.closedTabs,
+                          haveSameSessionTab) &&
+           haveSameValues(left.groups, right.groups, haveSameSessionGroup);
+}
 
 QToolButton* createToolButton(const QString& objectName, const QString& text,
                               QWidget* parent) {
@@ -271,6 +309,16 @@ BrowserPage::BrowserPage(BrowserBackend& backend, QString userDataDirectory,
     tabBar_->setTabData(0, QVariant::fromValue<qulonglong>(1));
     updateTabCloseButtons();
     backend_.setEventListener(this);
+    if (dataModel_.isAvailable()) {
+        historyPersistenceTimer_ = new QTimer(this);
+        historyPersistenceTimer_->setObjectName(
+            QStringLiteral("browserHistoryPersistenceTimer"));
+        historyPersistenceTimer_->setSingleShot(true);
+        historyPersistenceTimer_->setInterval(
+            kHistoryPersistenceDelayMilliseconds);
+        connect(historyPersistenceTimer_, &QTimer::timeout, this,
+                &BrowserPage::flushPendingHistory);
+    }
     if (sessionStore_ != nullptr) {
         sessionCheckpointTimer_ = new QTimer(this);
         sessionCheckpointTimer_->setObjectName(
@@ -332,6 +380,10 @@ void BrowserPage::shutdown() noexcept {
     if (sessionCheckpointTimer_ != nullptr) {
         sessionCheckpointTimer_->stop();
     }
+    if (historyPersistenceTimer_ != nullptr) {
+        historyPersistenceTimer_->stop();
+    }
+    flushPendingHistory();
     saveSession();
     closeFindBar(true);
     if (pendingPermissionId_.has_value()) {
@@ -1995,8 +2047,14 @@ void BrowserPage::saveSession() {
             tab.isUserMuted, tab.zoomFactor});
     }
     session.groups = tabGroupModel_.groups();
+    if (lastSavedSession_.has_value() &&
+        haveSameSession(*lastSavedSession_, session)) {
+        return;
+    }
     try {
-        static_cast<void>(sessionStore_->save(session));
+        if (sessionStore_->save(session)) {
+            lastSavedSession_ = std::move(session);
+        }
     } catch (...) {
     }
 }
@@ -3251,9 +3309,26 @@ void BrowserPage::refreshFavoritesList() {
 }
 
 void BrowserPage::replaceHistoryData(QVector<BrowserHistoryEntry> history) {
+    if (historyPersistenceTimer_ != nullptr) {
+        historyPersistenceTimer_->stop();
+    }
     dataModel_.replaceHistory(std::move(history));
     isHistoryListDirty_ = true;
     refreshHistoryList();
+}
+
+void BrowserPage::replaceHistoryDataDeferred(
+    QVector<BrowserHistoryEntry> history) {
+    dataModel_.replaceHistoryDeferred(std::move(history));
+    isHistoryListDirty_ = true;
+    refreshHistoryList();
+    if (historyPersistenceTimer_ != nullptr) {
+        historyPersistenceTimer_->start();
+    }
+}
+
+void BrowserPage::flushPendingHistory() {
+    dataModel_.flushPendingHistory();
 }
 
 void BrowserPage::replaceFavoritesData(
@@ -3988,7 +4063,7 @@ void BrowserPage::recordSuccessfulNavigation(const QString& visibleUrl,
     }
     history.prepend(BrowserHistoryEntry{
         storedUrl, title.trimmed(), QDateTime::currentMSecsSinceEpoch()});
-    replaceHistoryData(std::move(history));
+    replaceHistoryDataDeferred(std::move(history));
 }
 
 void BrowserPage::updateRecordedNavigationTitle(const QString& visibleUrl,
@@ -4006,7 +4081,7 @@ void BrowserPage::updateRecordedNavigationTitle(const QString& visibleUrl,
             const QString trimmedTitle = title.trimmed();
             if (entry.title != trimmedTitle) {
                 entry.title = trimmedTitle;
-                replaceHistoryData(std::move(history));
+                replaceHistoryDataDeferred(std::move(history));
             }
             return;
         }

@@ -124,6 +124,7 @@ class BrowserPageTest final : public QObject {
     void routesNavigationAndIgnoresLateGeneration();
     void keepsAddressEditableAndSelectsOldAddressOnFocus();
     void reusesCurrentPageAndRecordsSuccessfulNavigation();
+    void flushesPendingHistoryWhenShuttingDown();
     void persistsAndNormalizesBrowserHistory();
     void persistsAndNormalizesBrowserFavorites();
     void limitsPersistedBrowserRecords();
@@ -285,13 +286,20 @@ void BrowserPageTest::reusesCurrentPageAndRecordsSuccessfulNavigation() {
              initialNavigateCount + 1);
     backend.emitNavigationCompleted(
         2, QStringLiteral("https://example.com/one"), QStringLiteral("First"));
-    const qint64 firstVisit = dataStore.history.constFirst().visitedAtMilliseconds;
     backend.emitDocumentStateChanged(
         2, QStringLiteral("https://example.com/one"), QStringLiteral("Updated"));
-    QCOMPARE(dataStore.saveCount, 2);
+    auto* const persistenceTimer = page.findChild<QTimer*>(
+        QStringLiteral("browserHistoryPersistenceTimer"));
+    QVERIFY(persistenceTimer != nullptr);
+    QVERIFY(persistenceTimer->isActive());
+    QCOMPARE(dataStore.saveCount, 0);
+
+    QVERIFY(QMetaObject::invokeMethod(persistenceTimer, "timeout",
+                                      Qt::DirectConnection));
+    QCOMPARE(dataStore.saveCount, 1);
     QCOMPARE(dataStore.history.size(), 1);
     QCOMPARE(dataStore.history.constFirst().title, QStringLiteral("Updated"));
-    QCOMPARE(dataStore.history.constFirst().visitedAtMilliseconds, firstVisit);
+    const qint64 firstVisit = dataStore.history.constFirst().visitedAtMilliseconds;
 
     address->setText(QStringLiteral("https://example.com/two"));
     QTest::keyClick(address, Qt::Key_Return);
@@ -300,7 +308,11 @@ void BrowserPageTest::reusesCurrentPageAndRecordsSuccessfulNavigation() {
     backend.emitNavigationCompleted(
         3, QStringLiteral("https://example.com/two"), QStringLiteral("Second"));
 
-    QCOMPARE(dataStore.saveCount, 3);
+    QCOMPARE(dataStore.saveCount, 1);
+    QVERIFY(persistenceTimer->isActive());
+    QVERIFY(QMetaObject::invokeMethod(persistenceTimer, "timeout",
+                                      Qt::DirectConnection));
+    QCOMPARE(dataStore.saveCount, 2);
     QCOMPARE(dataStore.history.size(), 2);
     QCOMPARE(dataStore.history.at(0).url,
              QStringLiteral("https://example.com/two"));
@@ -316,11 +328,31 @@ void BrowserPageTest::reusesCurrentPageAndRecordsSuccessfulNavigation() {
         4, QStringLiteral("https://example.com/two"),
         QStringLiteral("Second"), true, false);
     QCOMPARE(page.state(), BrowserPageState::Ready);
-    QCOMPARE(dataStore.saveCount, 3);
+    QCOMPARE(dataStore.saveCount, 2);
     QCOMPARE(dataStore.history.size(), 2);
     QCOMPARE(dataStore.history.at(0).url,
              QStringLiteral("https://example.com/two"));
     QCOMPARE(dataStore.history.at(1).visitedAtMilliseconds, firstVisit);
+}
+
+void BrowserPageTest::flushesPendingHistoryWhenShuttingDown() {
+    test::FakeBrowserBackend backend;
+    MemoryBrowserDataStore dataStore;
+    BrowserPage page(backend, QStringLiteral("C:/temporary-profile"), nullptr,
+                     &dataStore);
+    page.show();
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    backend.emitNavigationCompleted(
+        1, QStringLiteral("https://shutdown.example/page"),
+        QStringLiteral("Shutdown"));
+
+    QCOMPARE(dataStore.saveCount, 0);
+    page.shutdown();
+    QCOMPARE(dataStore.saveCount, 1);
+    QCOMPARE(dataStore.history.size(), 1);
+    QCOMPARE(dataStore.history.constFirst().url,
+             QStringLiteral("https://shutdown.example/page"));
 }
 
 void BrowserPageTest::persistsAndNormalizesBrowserHistory() {
@@ -3543,6 +3575,18 @@ void BrowserPageTest::periodicallyCheckpointsBrowserSession() {
     QCOMPARE(sessions.saved.tabs.size(), 1);
     QCOMPARE(sessions.saved.tabs.constFirst().url,
              QStringLiteral("https://checkpoint.example/page"));
+
+    QVERIFY(QMetaObject::invokeMethod(checkpointTimer, "timeout",
+                                      Qt::DirectConnection));
+    QCOMPARE(sessions.saveCount, 1);
+
+    backend.emitDocumentStateChanged(
+        1, QStringLiteral("https://checkpoint.example/page"),
+        QStringLiteral("Checkpoint updated"));
+    page.shutdown();
+    QCOMPARE(sessions.saveCount, 2);
+    QCOMPARE(sessions.saved.tabs.constFirst().title,
+             QStringLiteral("Checkpoint updated"));
 }
 
 void BrowserPageTest::restoresCurrentPinnedTabByStableIdentity() {

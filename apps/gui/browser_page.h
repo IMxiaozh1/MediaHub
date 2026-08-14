@@ -240,6 +240,9 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     void refreshHistoryList();
     void refreshFavoritesList();
     void replaceHistoryData(QVector<BrowserHistoryEntry> history);
+    void replaceHistoryDataDeferred(QVector<BrowserHistoryEntry> history);
+    // 调用线程：GUI 主线程。提交导航热路径中合并的历史写入。
+    void flushPendingHistory();
     void replaceFavoritesData(QVector<BrowserFavoriteEntry> favorites);
     void removeSelectedHistoryEntry();
     void showHistoryClearConfirmation();
@@ -409,7 +412,9 @@ class BrowserPage final : public QWidget, public BrowserEventListener {
     QDialog* certificateDialog_{nullptr};
     BrowserDownloadWidget* downloadWidget_{nullptr};
     BrowserDownloadCenter* downloadCenter_{nullptr};
+    QTimer* historyPersistenceTimer_{nullptr};
     QTimer* sessionCheckpointTimer_{nullptr};
+    std::optional<BrowserSessionState> lastSavedSession_;
     std::optional<std::uint64_t> pendingExternalProtocolId_;
     std::optional<std::uint64_t> pendingCertificateId_;
     std::optional<std::uint64_t> activeDownloadId_;

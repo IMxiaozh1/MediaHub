@@ -35,9 +35,25 @@ const QVector<BrowserFavoriteEntry>& BrowserDataModel::favorites() {
 void BrowserDataModel::replaceHistory(QVector<BrowserHistoryEntry> history) {
     history_ = normalizeBrowserHistoryEntries(history);
     hasLoadedHistory_ = true;
+    hasPendingHistoryWrite_ = false;
     if (dataStore_ != nullptr) {
         dataStore_->saveHistory(history_);
     }
+}
+
+void BrowserDataModel::replaceHistoryDeferred(
+    QVector<BrowserHistoryEntry> history) {
+    history_ = normalizeBrowserHistoryEntries(history);
+    hasLoadedHistory_ = true;
+    hasPendingHistoryWrite_ = dataStore_ != nullptr;
+}
+
+void BrowserDataModel::flushPendingHistory() {
+    if (!hasPendingHistoryWrite_ || dataStore_ == nullptr) {
+        return;
+    }
+    dataStore_->saveHistory(history_);
+    hasPendingHistoryWrite_ = false;
 }
 
 void BrowserDataModel::replaceFavorites(
