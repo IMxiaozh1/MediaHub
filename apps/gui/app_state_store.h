@@ -9,6 +9,7 @@
 
 #include "live_source_memo.h"
 #include "mediahub/core/media_types.h"
+#include "theme_settings.h"
 
 class QSettings;
 
@@ -29,6 +30,7 @@ struct AppStateSnapshot {
   QStringList livePlaylistUrlHistory;
   QStringList favoriteLiveSourceUrls;
   QVector<LiveSourceMemo> liveSourceMemos;
+  ThemeSettings themeSettings;
 };
 
 // GUI 持久化边界。测试可注入内存实现，正式程序使用 QSettings 实现。

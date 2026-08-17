@@ -181,6 +181,7 @@ class BrowserPageTest final : public QObject {
     void webFullScreenDefersConcurrentDownloadCenterPresentation();
     void shutdownCancelsEveryConcurrentDownload();
     void deactivatesAndActivatesBrowserInSafeOrder();
+    void updatesBoundsBeforeShowingBrowserAfterHiddenWindowResize();
     void keepsBackgroundWebAndDownloadSemantics();
     void tracksIndependentTabAudioAndMuteState();
     void updatesOnlyChangedAudioRowAndSkipsHiddenRebuilds();
@@ -3067,6 +3068,59 @@ void BrowserPageTest::deactivatesAndActivatesBrowserInSafeOrder() {
     }
     QVERIFY(!backend.commands[0].flag);
     QVERIFY(backend.commands[1].flag);
+}
+
+void BrowserPageTest::updatesBoundsBeforeShowingBrowserAfterHiddenWindowResize() {
+    test::FakeBrowserBackend backend;
+    MainWindow window(&backend, QStringLiteral("C:/temporary-profile"));
+    window.resize(960, 720);
+    window.show();
+    window.showDisplayMode(DisplayMode::Web);
+    QCoreApplication::processEvents();
+    backend.emitReady(1);
+    QCoreApplication::processEvents();
+
+    auto* const browserHost = window.findChild<QWidget*>(
+        QStringLiteral("browserNativeHost"));
+    QVERIFY(browserHost != nullptr);
+
+    window.showDisplayMode(DisplayMode::Local);
+    QCoreApplication::processEvents();
+    window.resize(1400, 900);
+    QCoreApplication::processEvents();
+    backend.commands.clear();
+
+    window.showDisplayMode(DisplayMode::Web);
+    QCoreApplication::processEvents();
+
+    int boundsIndex = -1;
+    int visibleIndex = -1;
+    for (int index = 0; index < static_cast<int>(backend.commands.size());
+         ++index) {
+        const test::FakeBrowserCommand& command = backend.commands[index];
+        if (boundsIndex < 0 &&
+            command.kind == test::FakeBrowserCommandKind::SetBounds) {
+            boundsIndex = index;
+        }
+        if (visibleIndex < 0 &&
+            command.kind == test::FakeBrowserCommandKind::SetVisible &&
+            command.flag) {
+            visibleIndex = index;
+        }
+    }
+    QVERIFY(boundsIndex >= 0);
+    QVERIFY(visibleIndex >= 0);
+    QVERIFY(boundsIndex < visibleIndex);
+
+    QWidget* const nativeParent = browserHost->nativeParentWidget();
+    QVERIFY(nativeParent != nullptr);
+    const qreal scale = browserHost->devicePixelRatioF();
+    const QPoint origin = browserHost->mapTo(nativeParent, QPoint(0, 0));
+    const QRect expectedBounds(qRound(origin.x() * scale),
+                               qRound(origin.y() * scale),
+                               qRound(browserHost->width() * scale),
+                               qRound(browserHost->height() * scale));
+    QCOMPARE(backend.commands[boundsIndex].bounds, expectedBounds);
 }
 
 void BrowserPageTest::keepsBackgroundWebAndDownloadSemantics() {

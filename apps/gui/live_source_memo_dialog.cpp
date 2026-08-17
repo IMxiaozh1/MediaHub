@@ -21,90 +21,83 @@ namespace {
 const QString& dialogStyleSheet() {
   static const QString styleSheet = QStringLiteral(R"(
       QDialog#liveSourceMemoDialog {
-          background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                      stop:0 #0b1215, stop:0.52 #101c1d,
-                                      stop:1 #172625);
-          color: #eef7f4;
+          background: #121417;
+          color: #e7e9ec;
           font-family: "Microsoft YaHei UI";
       }
       QFrame#liveSourceMemoHeader {
-          background: rgba(22, 40, 39, 232);
-          border: 1px solid #315451;
-          border-radius: 15px;
+          background: transparent;
+          border: none;
+          border-bottom: 1px solid #2a2e34;
       }
       QLabel#liveSourceMemoEyebrow {
-          color: #55e2b3;
-          font-family: "Bahnschrift SemiCondensed";
-          font-size: 11px;
-          font-weight: 700;
+          color: #7f8790;
+          font-size: 10px;
       }
       QLabel#liveSourceMemoTitle {
-          color: #f5fbf9;
-          font-size: 26px;
-          font-weight: 700;
+          color: #f1f3f5;
+          font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
+          font-size: 22px;
+          font-weight: 600;
       }
       QLabel#liveSourceMemoIntroduction {
-          color: #9cb0aa;
+          color: #89919a;
           font-size: 12px;
       }
       QLabel#liveSourceMemoNotice {
-          background: #3b1719;
-          border: 1px solid #7e3035;
-          border-radius: 8px;
-          color: #ff8f95;
-          font-size: 12px;
-          font-weight: 700;
-          padding: 9px 12px;
+          background: transparent;
+          border: none;
+          color: #858d96;
+          font-size: 11px;
+          padding: 0;
       }
       QLabel#liveSourceMemoCountBadge {
-          background: #1d3a35;
-          border: 1px solid #347564;
-          border-radius: 14px;
-          color: #7af0c5;
+          background: transparent;
+          border: none;
+          color: #89919a;
           font-size: 11px;
-          font-weight: 700;
-          padding: 7px 12px;
+          padding: 0;
       }
       QTableWidget#liveSourceMemoTable {
-          alternate-background-color: #142120;
-          background: #0f1919;
-          border: 1px solid #2b4845;
-          border-radius: 11px;
-          color: #e2eeea;
-          gridline-color: #223b38;
+          alternate-background-color: #15181c;
+          background: #101216;
+          border: 1px solid #2a2e34;
+          border-radius: 5px;
+          color: #d7dbe0;
+          gridline-color: #22262c;
           outline: none;
-          selection-background-color: #245b4e;
+          selection-background-color: #253b4e;
           selection-color: #ffffff;
       }
       QTableWidget#liveSourceMemoTable::item {
-          border-bottom: 1px solid #213936;
-          padding: 9px 12px;
+          border-bottom: 1px solid #22262c;
+          padding: 8px 11px;
       }
       QTableWidget#liveSourceMemoTable::item:hover {
-          background: #1b302d;
+          background: #1d2228;
       }
       QHeaderView::section {
-          background: #19302e;
+          background: #181b20;
           border: none;
-          border-bottom: 1px solid #3b625d;
-          color: #a7bbb5;
+          border-bottom: 1px solid #30353c;
+          color: #9299a2;
           font-size: 12px;
-          font-weight: 700;
-          padding: 10px 12px;
+          font-weight: 600;
+          padding: 9px 11px;
       }
       QScrollBar:vertical {
-          background: #0d1717;
+          background: #101216;
           border: none;
-          margin: 5px 3px;
-          width: 10px;
+          margin: 0;
+          width: 8px;
       }
       QScrollBar::handle:vertical {
-          background: #426c64;
-          border-radius: 4px;
-          min-height: 34px;
+          background: #3b4047;
+          border-radius: 3px;
+          min-height: 28px;
       }
       QScrollBar::handle:vertical:hover {
-          background: #57c49f;
+          background: #59616a;
       }
       QScrollBar::add-line:vertical,
       QScrollBar::sub-line:vertical {
@@ -115,59 +108,64 @@ const QString& dialogStyleSheet() {
           background: transparent;
       }
       QLabel#liveSourceMemoStatus {
-          color: #83a198;
+          color: #858d96;
           font-size: 11px;
       }
       QPushButton {
-          border-radius: 9px;
+          background: #20242a;
+          border: 1px solid #3a4048;
+          border-radius: 4px;
+          color: #d7dbe0;
           font-size: 13px;
-          font-weight: 700;
-          min-height: 42px;
-          min-width: 104px;
-          padding: 0 17px;
+          font-weight: 600;
+          min-height: 34px;
+          max-height: 36px;
+          min-width: 82px;
+          padding: 0 14px;
       }
       QPushButton#liveSourceMemoAddButton {
-          background: #48dcb0;
-          border: 2px solid #77ecc8;
-          color: #071713;
+          background: #202a34;
+          border-color: #385c78;
+          color: #9bc9ef;
       }
       QPushButton#liveSourceMemoAddButton:hover {
-          background: #72edc8;
-          border-color: #a0f6dc;
+          background: #273746;
+          border-color: #4f789b;
+          color: #d9efff;
       }
       QPushButton#liveSourceMemoDeleteButton {
-          background: #ff6f6f;
-          border: 2px solid #ff9999;
-          color: #260909;
+          background: #2b1d20;
+          border-color: #5d3439;
+          color: #e9979e;
       }
       QPushButton#liveSourceMemoDeleteButton:hover:enabled {
-          background: #ff9292;
-          border-color: #ffc0c0;
+          background: #3a2428;
+          border-color: #7a4249;
+          color: #ffc1c6;
       }
       QPushButton#liveSourceMemoDeleteButton:disabled {
-          background: #293634;
-          border: 2px solid #3b4a47;
-          color: #71827d;
+          background: #1a1d21;
+          border-color: #2b3036;
+          color: #606770;
       }
       QPushButton#liveSourceMemoReturnButton {
-          background: #e9f2ef;
-          border: 2px solid #ffffff;
-          color: #10201c;
+          background: #20242a;
+          border-color: #3a4048;
+          color: #cfd3d7;
       }
       QPushButton#liveSourceMemoReturnButton:hover {
-          background: #ffffff;
-          border-color: #77ecc8;
+          background: #292e35;
+          border-color: #505862;
       }
       QPushButton#liveSourceMemoSaveButton {
-          background: #ffd166;
-          border: 2px solid #ffe29c;
-          color: #241900;
-          font-size: 14px;
-          min-width: 132px;
+          background: #2f78b7;
+          border-color: #438dca;
+          color: #ffffff;
+          min-width: 92px;
       }
       QPushButton#liveSourceMemoSaveButton:hover {
-          background: #ffe08f;
-          border-color: #fff0c2;
+          background: #3d89c8;
+          border-color: #65a8dd;
       }
       QPushButton:pressed {
           padding-top: 2px;
@@ -179,53 +177,52 @@ const QString& dialogStyleSheet() {
 const QString& confirmationStyleSheet() {
   static const QString styleSheet = QStringLiteral(R"(
       QDialog {
-          background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                      stop:0 #101a19, stop:1 #1a2b28);
-          color: #eef7f4;
+          background: #15171b;
+          color: #e7e9ec;
           font-family: "Microsoft YaHei UI";
       }
       QLabel#memoConfirmationEyebrow {
-          color: #ffd166;
-          font-family: "Bahnschrift SemiCondensed";
-          font-size: 11px;
-          font-weight: 700;
+          color: #7f8790;
+          font-size: 10px;
       }
       QLabel#memoConfirmationTitle {
-          color: #f5fbf9;
-          font-size: 20px;
-          font-weight: 700;
+          color: #f1f3f5;
+          font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
+          font-size: 18px;
+          font-weight: 600;
       }
       QLabel#memoConfirmationMessage {
-          background: #13211f;
-          border: 1px solid #304b46;
-          border-radius: 9px;
-          color: #c7d8d2;
+          background: #111317;
+          border: 1px solid #2b3036;
+          border-radius: 4px;
+          color: #c5cad0;
           font-size: 13px;
-          padding: 11px 13px;
+          padding: 12px 13px;
       }
       QPushButton {
-          background: #edf5f2;
-          border: 2px solid #ffffff;
-          border-radius: 8px;
-          color: #10201c;
+          background: #24282e;
+          border: 1px solid #3d434b;
+          border-radius: 4px;
+          color: #d7dbe0;
           font-size: 13px;
-          font-weight: 700;
-          min-height: 38px;
+          font-weight: 600;
+          min-height: 34px;
+          max-height: 36px;
           min-width: 96px;
           padding: 0 14px;
       }
       QPushButton:hover {
-          background: #ffffff;
-          border-color: #74e9c4;
+          background: #2e333a;
+          border-color: #565f69;
       }
       QPushButton#memoConfirmationAcceptButton {
-          background: #ffd166;
-          border-color: #ffe6aa;
-          color: #241900;
+          background: #2f78b7;
+          border-color: #438dca;
+          color: #ffffff;
       }
       QPushButton#memoConfirmationAcceptButton:hover {
-          background: #ffe193;
-          border-color: #fff2c9;
+          background: #3d89c8;
+          border-color: #65a8dd;
       }
   )");
   return styleSheet;
@@ -241,15 +238,15 @@ bool showConfirmation(QWidget* const parent, const QString& objectName,
   dialog.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
   dialog.setWindowFlag(Qt::WindowCloseButtonHint, false);
   dialog.setModal(true);
-  dialog.setFixedWidth(470);
+  dialog.setFixedWidth(450);
   dialog.setStyleSheet(confirmationStyleSheet());
 
   auto* const layout = new QVBoxLayout(&dialog);
   layout->setContentsMargins(22, 20, 22, 18);
   layout->setSpacing(10);
-  auto* const eyebrow =
-      new QLabel(QStringLiteral("MEDIAHUB  /  CONFIRM"), &dialog);
+  auto* const eyebrow = new QLabel(&dialog);
   eyebrow->setObjectName(QStringLiteral("memoConfirmationEyebrow"));
+  eyebrow->hide();
   auto* const titleLabel = new QLabel(title, &dialog);
   titleLabel->setObjectName(QStringLiteral("memoConfirmationTitle"));
   auto* const messageLabel =
@@ -318,7 +315,7 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
                                            QWidget* const parent)
     : QDialog(parent), savedMemos_(std::move(memos)) {
   setObjectName(QStringLiteral("liveSourceMemoDialog"));
-  setWindowTitle(QStringLiteral("直播源"));
+  setWindowTitle(QStringLiteral("直播源备忘"));
   setWindowFlag(Qt::WindowContextHelpButtonHint, false);
   setModal(true);
   resize(860, 600);
@@ -326,24 +323,24 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
   setStyleSheet(dialogStyleSheet());
 
   auto* const layout = new QVBoxLayout(this);
-  layout->setContentsMargins(24, 24, 24, 20);
-  layout->setSpacing(15);
+  layout->setContentsMargins(22, 20, 22, 18);
+  layout->setSpacing(12);
 
   auto* const header = new QFrame(this);
   header->setObjectName(QStringLiteral("liveSourceMemoHeader"));
   auto* const headerLayout = new QHBoxLayout(header);
-  headerLayout->setContentsMargins(21, 17, 19, 17);
-  headerLayout->setSpacing(18);
+  headerLayout->setContentsMargins(0, 0, 0, 14);
+  headerLayout->setSpacing(16);
   auto* const titleLayout = new QVBoxLayout();
   titleLayout->setContentsMargins(0, 0, 0, 0);
   titleLayout->setSpacing(3);
-  auto* const eyebrow =
-      new QLabel(QStringLiteral("MEDIAHUB  /  LIVE NOTES"), header);
+  auto* const eyebrow = new QLabel(header);
   eyebrow->setObjectName(QStringLiteral("liveSourceMemoEyebrow"));
-  auto* const title = new QLabel(QStringLiteral("直播源"), header);
+  eyebrow->hide();
+  auto* const title = new QLabel(QStringLiteral("直播源备忘"), header);
   title->setObjectName(QStringLiteral("liveSourceMemoTitle"));
   auto* const introduction = new QLabel(
-      QStringLiteral("只保存地址与备注，不会自动解析、载入或播放。"), header);
+      QStringLiteral("记录常用直播地址和备注"), header);
   introduction->setObjectName(QStringLiteral("liveSourceMemoIntroduction"));
   titleLayout->addWidget(eyebrow);
   titleLayout->addWidget(title);
@@ -352,13 +349,14 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
   countBadge_ = new QLabel(header);
   countBadge_->setObjectName(QStringLiteral("liveSourceMemoCountBadge"));
   countBadge_->setAlignment(Qt::AlignCenter);
+  countBadge_->setMaximumHeight(24);
   headerLayout->addWidget(countBadge_, 0, Qt::AlignVCenter);
   layout->addWidget(header);
 
   auto* const notice = new QLabel(
-      QStringLiteral("本窗口为方便用户保存直播源"), this);
+      QStringLiteral("仅保存在本机，不会自动载入或播放"), this);
   notice->setObjectName(QStringLiteral("liveSourceMemoNotice"));
-  notice->setAlignment(Qt::AlignCenter);
+  notice->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
   layout->addWidget(notice);
 
   table_ = new QTableWidget(this);
@@ -392,21 +390,23 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
 
   auto* const actionLayout = new QHBoxLayout();
   actionLayout->setSpacing(10);
-  auto* const addButton = new QPushButton(QStringLiteral("+ 新增一行"), this);
+  auto* const addButton = new QPushButton(QStringLiteral("新增"), this);
   addButton->setObjectName(QStringLiteral("liveSourceMemoAddButton"));
-  deleteButton_ = new QPushButton(QStringLiteral("删除此行"), this);
+  deleteButton_ = new QPushButton(QStringLiteral("删除"), this);
   deleteButton_->setObjectName(QStringLiteral("liveSourceMemoDeleteButton"));
   statusLabel_ = new QLabel(this);
   statusLabel_->setObjectName(QStringLiteral("liveSourceMemoStatus"));
   statusLabel_->setAlignment(Qt::AlignCenter);
-  auto* const returnButton = new QPushButton(QStringLiteral("返回"), this);
+  auto* const returnButton = new QPushButton(QStringLiteral("关闭"), this);
   returnButton->setObjectName(QStringLiteral("liveSourceMemoReturnButton"));
-  saveButton_ = new QPushButton(QStringLiteral("保存  Ctrl+S"), this);
+  saveButton_ = new QPushButton(QStringLiteral("保存"), this);
   saveButton_->setObjectName(QStringLiteral("liveSourceMemoSaveButton"));
+  saveButton_->setToolTip(QStringLiteral("保存（Ctrl+S）"));
   saveButton_->setDefault(true);
   for (QPushButton* const button :
        {addButton, deleteButton_, returnButton, saveButton_}) {
     button->setCursor(Qt::PointingHandCursor);
+    button->setMaximumHeight(36);
   }
   actionLayout->addWidget(addButton);
   actionLayout->addWidget(deleteButton_);
@@ -504,12 +504,12 @@ void LiveSourceMemoDialog::updateControls() {
   deleteButton_->setEnabled(table_->currentRow() >= 0);
   if (isDirty_) {
     statusLabel_->setText(QStringLiteral("有未保存的修改"));
-    statusLabel_->setStyleSheet(QStringLiteral("color: #ffd166;"));
+    statusLabel_->setStyleSheet(QStringLiteral("color: #d9a441;"));
   } else {
     statusLabel_->setText(
         QStringLiteral("已保存 %1 条  |  双击单元格编辑")
             .arg(savedMemos_.size()));
-    statusLabel_->setStyleSheet(QStringLiteral("color: #7de8bd;"));
+    statusLabel_->setStyleSheet(QStringLiteral("color: #7f8790;"));
   }
 }
 

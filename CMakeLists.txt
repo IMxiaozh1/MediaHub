@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(MediaHub VERSION 0.6.0 LANGUAGES CXX)
+project(MediaHub VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -243,6 +243,12 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/shortcut_help_dialog.h
         apps/gui/shutdown_watchdog.cpp
         apps/gui/shutdown_watchdog.h
+        apps/gui/theme_background_widget.cpp
+        apps/gui/theme_background_widget.h
+        apps/gui/theme_settings.cpp
+        apps/gui/theme_settings.h
+        apps/gui/theme_settings_dialog.cpp
+        apps/gui/theme_settings_dialog.h
         apps/gui/ui_theme.cpp
         apps/gui/ui_theme.h
         apps/gui/video_output_widget.cpp

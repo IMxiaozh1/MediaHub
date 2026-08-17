@@ -375,6 +375,7 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
   window_.setLivePlaylistUrl(lastLivePlaylistUrl_);
   window_.setLivePlaylistHistoryUrls(livePlaylistUrlHistory_);
   window_.setLiveSourceMemos(liveSourceMemos_);
+  window_.setThemeSettings(themeSettings_);
   updateRecentLocalMediaView();
   connect(&window_, &MainWindow::localFilesSelected, this,
           &PlayerPresenter::addLocalFiles);
@@ -388,6 +389,8 @@ PlayerPresenter::PlayerPresenter(core::PlayerEngine &engine,
           &PlayerPresenter::updateLivePlaylistHistory);
   connect(&window_, &MainWindow::liveSourceMemosChanged, this,
           &PlayerPresenter::updateLiveSourceMemos);
+  connect(&window_, &MainWindow::themeSettingsChanged, this,
+          &PlayerPresenter::updateThemeSettings);
   connect(&window_, &MainWindow::recentLocalMediaSelected, this,
           &PlayerPresenter::openRecentLocalMedia);
   connect(&window_, &MainWindow::recentLocalMediaClearRequested, this,
@@ -1853,6 +1856,13 @@ void PlayerPresenter::updateLiveSourceMemos(
   persistAppState();
 }
 
+void PlayerPresenter::updateThemeSettings(const ThemeSettings& settings) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  themeSettings_ = normalizedThemeSettings(settings);
+  window_.setThemeSettings(themeSettings_);
+  persistAppState();
+}
+
 void PlayerPresenter::openRecentLocalMedia(const QString& filePath) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (isShuttingDown_ || filePath.trimmed().isEmpty()) {
@@ -2101,6 +2111,7 @@ void PlayerPresenter::restoreAppState() {
             LiveSourceMemo{sourceUrl, memo.note.trimmed()});
       }
     }
+    themeSettings_ = normalizedThemeSettings(snapshot.themeSettings);
     if (logger_ != nullptr) {
       logger_->log(
           logging::LogLevel::Info, "presenter", "app_state_restored",
@@ -2116,6 +2127,7 @@ void PlayerPresenter::restoreAppState() {
     favoriteLiveSources_.clear();
     recentLocalMedia_.clear();
     liveSourceMemos_.clear();
+    themeSettings_ = ThemeSettings{};
     lastLivePlaylistUrl_.clear();
     if (logger_ != nullptr) {
       logger_->log(logging::LogLevel::Warning, "presenter",
@@ -2148,6 +2160,7 @@ void PlayerPresenter::persistAppState() noexcept {
     std::sort(snapshot.favoriteLiveSourceUrls.begin(),
               snapshot.favoriteLiveSourceUrls.end());
     snapshot.liveSourceMemos = liveSourceMemos_;
+    snapshot.themeSettings = themeSettings_;
     appStateStore_->save(snapshot);
   } catch (...) {
     if (logger_ != nullptr) {

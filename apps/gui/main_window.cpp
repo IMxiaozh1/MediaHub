@@ -59,6 +59,8 @@
 #include "playlist_model.h"
 #include "seek_slider.h"
 #include "shortcut_help_dialog.h"
+#include "theme_background_widget.h"
+#include "theme_settings_dialog.h"
 #include "video_output_widget.h"
 
 #ifdef Q_OS_WIN
@@ -111,11 +113,11 @@ class UnavailableBrowserBackend final : public BrowserBackend {
   BrowserEventListener* listener_{nullptr};
 };
 
-constexpr int kNormalHorizontalMargin = 22;
-constexpr int kNormalVerticalMargin = 18;
-constexpr int kNormalSpacing = 12;
-constexpr int kPlaylistMinimumWidth = 260;
-constexpr int kPlaylistMaximumWidth = 440;
+constexpr int kNormalHorizontalMargin = 16;
+constexpr int kNormalVerticalMargin = 12;
+constexpr int kNormalSpacing = 10;
+constexpr int kPlaylistMinimumWidth = 280;
+constexpr int kPlaylistMaximumWidth = 390;
 constexpr int kKeyboardVolumeStep = 5;
 constexpr int kDefaultKeyboardSeekStepSeconds = 5;
 constexpr int kRightKeyHoldThresholdMilliseconds = 350;
@@ -123,6 +125,10 @@ constexpr std::array<double, 6> kPlaybackRates{0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
 constexpr std::array<int, 4> kSeekSteps{5, 10, 15, 20};
 
 enum class ControlIcon {
+  File,
+  View,
+  Help,
+  Theme,
   Previous,
   Next,
   Play,
@@ -150,12 +156,13 @@ QPolygonF makePolygon(const std::initializer_list<QPointF> points) {
   return polygon;
 }
 
-QIcon controlIcon(const ControlIcon icon) {
+QIcon controlIcon(
+    const ControlIcon icon,
+    const QColor& ink = QColor(QStringLiteral("#d5d9df"))) {
   QPixmap pixmap(20, 20);
   pixmap.fill(Qt::transparent);
   QPainter painter(&pixmap);
   painter.setRenderHint(QPainter::Antialiasing);
-  const QColor ink(QStringLiteral("#20ad72"));
   QPen pen(ink, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
   painter.setPen(pen);
   painter.setBrush(Qt::NoBrush);
@@ -170,6 +177,47 @@ QIcon controlIcon(const ControlIcon icon) {
   };
 
   switch (icon) {
+    case ControlIcon::File: {
+      QPainterPath page;
+      page.moveTo(5, 2.5);
+      page.lineTo(12.5, 2.5);
+      page.lineTo(16, 6);
+      page.lineTo(16, 17.5);
+      page.lineTo(5, 17.5);
+      page.closeSubpath();
+      painter.drawPath(page);
+      painter.drawLine(QPointF(12.5, 2.5), QPointF(12.5, 6));
+      painter.drawLine(QPointF(12.5, 6), QPointF(16, 6));
+      painter.drawLine(QPointF(7.5, 10), QPointF(13.5, 10));
+      painter.drawLine(QPointF(7.5, 13), QPointF(12, 13));
+      break;
+    }
+    case ControlIcon::View: {
+      QPainterPath eye;
+      eye.moveTo(2.5, 10);
+      eye.cubicTo(6, 4.5, 14, 4.5, 17.5, 10);
+      eye.cubicTo(14, 15.5, 6, 15.5, 2.5, 10);
+      painter.drawPath(eye);
+      painter.setBrush(ink);
+      painter.drawEllipse(QPointF(10, 10), 2.2, 2.2);
+      break;
+    }
+    case ControlIcon::Help:
+      painter.drawEllipse(QRectF(3, 3, 14, 14));
+      painter.drawArc(QRectF(7, 5.5, 6, 6), 15 * 16, 205 * 16);
+      painter.drawLine(QPointF(10, 11), QPointF(10, 12.5));
+      painter.setBrush(ink);
+      painter.drawEllipse(QPointF(10, 15), 1.0, 1.0);
+      break;
+    case ControlIcon::Theme:
+      painter.drawEllipse(QRectF(3, 3, 14, 14));
+      painter.setBrush(ink);
+      painter.drawEllipse(QPointF(7, 8), 1.2, 1.2);
+      painter.drawEllipse(QPointF(10.5, 6.5), 1.2, 1.2);
+      painter.drawEllipse(QPointF(13.5, 9), 1.2, 1.2);
+      painter.setBrush(Qt::NoBrush);
+      painter.drawArc(QRectF(7, 10, 7, 5), 195 * 16, 145 * 16);
+      break;
     case ControlIcon::Previous:
       painter.drawLine(QPointF(5, 4), QPointF(5, 16));
       painter.setBrush(ink);
@@ -303,6 +351,19 @@ void configureTransportButton(QToolButton* const button,
   button->setIconSize(QSize(20, 20));
   button->setIcon(controlIcon(icon));
   button->setFixedSize(36, 36);
+}
+
+void configureChromeButton(QToolButton* const button,
+                           const QString& accessibleName,
+                           const QString& toolTip, const ControlIcon icon) {
+  button->setAccessibleName(accessibleName);
+  button->setToolTip(toolTip);
+  button->setProperty("topChromeButton", true);
+  button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  button->setIconSize(QSize(20, 20));
+  button->setIcon(controlIcon(icon));
+  button->setCursor(Qt::PointingHandCursor);
+  button->setFixedSize(32, 32);
 }
 
 QString playbackModeName(const int modeIndex) {
@@ -527,9 +588,11 @@ void selectKeyboardSeekStep(QToolButton* const button, const int seconds) {
   }
 }
 
-void selectPlaybackMode(QToolButton* const button, const int modeIndex) {
+void selectPlaybackMode(
+    QToolButton* const button, const int modeIndex,
+    const QColor& iconColor = QColor(QStringLiteral("#d5d9df"))) {
   button->setProperty("playbackModeIndex", modeIndex);
-  button->setIcon(controlIcon(playbackModeIcon(modeIndex)));
+  button->setIcon(controlIcon(playbackModeIcon(modeIndex), iconColor));
   const QString modeName = playbackModeName(modeIndex);
   button->setAccessibleName(QStringLiteral("播放模式：%1").arg(modeName));
   button->setToolTip(
@@ -602,25 +665,27 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
     }
   });
 
-  auto* const fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
-  openAction_ = fileMenu->addAction(QStringLiteral("打开媒体文件(&O)..."));
+  fileMenu_ = new QMenu(QStringLiteral("文件"), this);
+  fileMenu_->setObjectName(QStringLiteral("topFileMenu"));
+  openAction_ = fileMenu_->addAction(QStringLiteral("打开媒体文件(&O)..."));
   openAction_->setObjectName(QStringLiteral("openFileAction"));
   openAction_->setShortcut(QKeySequence::Open);
   openNetworkAction_ =
-      fileMenu->addAction(QStringLiteral("打开网络地址(&N)..."));
+      fileMenu_->addAction(QStringLiteral("打开网络地址(&N)..."));
   openNetworkAction_->setObjectName(QStringLiteral("openNetworkAction"));
   openNetworkAction_->setShortcut(
       QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_L)));
   recentLocalMediaMenu_ =
-      fileMenu->addMenu(QStringLiteral("最近播放(&R)"));
+      fileMenu_->addMenu(QStringLiteral("最近播放(&R)"));
   recentLocalMediaMenu_->setObjectName(
       QStringLiteral("recentLocalMediaMenu"));
   setRecentLocalMedia({});
-  fileMenu->addSeparator();
-  auto* const exitAction = fileMenu->addAction(QStringLiteral("退出(&X)"));
+  fileMenu_->addSeparator();
+  auto* const exitAction = fileMenu_->addAction(QStringLiteral("退出(&X)"));
   exitAction->setShortcut(QKeySequence::Quit);
-  auto* const viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
-  fullScreenAction_ = viewMenu->addAction(QStringLiteral("进入全屏(&F)"));
+  viewMenu_ = new QMenu(QStringLiteral("视图"), this);
+  viewMenu_->setObjectName(QStringLiteral("topViewMenu"));
+  fullScreenAction_ = viewMenu_->addAction(QStringLiteral("进入全屏(&F)"));
   fullScreenAction_->setObjectName(QStringLiteral("fullScreenAction"));
   auto* const fullScreenShortcut =
       new QShortcut(QKeySequence(Qt::Key_F11), this);
@@ -630,14 +695,15 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   auto* const exitFullScreenAction = new QAction(this);
   exitFullScreenAction->setShortcut(QKeySequence(Qt::Key_Escape));
   addAction(exitFullScreenAction);
-  auto* const helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+  helpMenu_ = new QMenu(QStringLiteral("帮助"), this);
+  helpMenu_->setObjectName(QStringLiteral("topHelpMenu"));
   auto* const shortcutHelpAction =
-      helpMenu->addAction(QStringLiteral("快捷键(&K)..."));
+      helpMenu_->addAction(QStringLiteral("快捷键(&K)..."));
   shortcutHelpAction->setObjectName(QStringLiteral("shortcutHelpAction"));
   connect(shortcutHelpAction, &QAction::triggered, this,
           &MainWindow::showShortcutHelp);
   auto* const liveSourceMemoAction =
-      helpMenu->addAction(QStringLiteral("直播源(&L)..."));
+      helpMenu_->addAction(QStringLiteral("直播源(&L)..."));
   liveSourceMemoAction->setObjectName(
       QStringLiteral("liveSourceMemoAction"));
   liveSourceMemoAction->setShortcut(
@@ -646,6 +712,12 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   liveSourceMemoAction->setShortcutContext(Qt::WindowShortcut);
   connect(liveSourceMemoAction, &QAction::triggered, this,
           &MainWindow::showLiveSourceMemo);
+  for (QAction* const action : {openAction_, openNetworkAction_, exitAction,
+                                fullScreenAction_, shortcutHelpAction,
+                                liveSourceMemoAction}) {
+    addAction(action);
+  }
+  menuBar()->hide();
 
   auto* const playbackShortcut =
       new QShortcut(QKeySequence(Qt::Key_Space), this);
@@ -693,7 +765,8 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
                     this);
   nextShortcut->setObjectName(QStringLiteral("nextShortcut"));
   nextShortcut->setContext(Qt::WindowShortcut);
-  centralSurface_ = new QWidget(this);
+  themeBackground_ = new ThemeBackgroundWidget(this);
+  centralSurface_ = themeBackground_;
   centralSurface_->setObjectName(QStringLiteral("centralSurface"));
   auto* const outerLayout = new QVBoxLayout(centralSurface_);
   outerLayout->setContentsMargins(0, 0, 0, 0);
@@ -701,15 +774,18 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
 
   displayModePanel_ = new QFrame(centralSurface_);
   displayModePanel_->setObjectName(QStringLiteral("displayModePanel"));
-  displayModePanel_->setFixedHeight(64);
+  displayModePanel_->setFixedHeight(52);
   auto* const displayModeLayout = new QHBoxLayout(displayModePanel_);
-  displayModeLayout->setContentsMargins(22, 11, 22, 11);
-  displayModeLayout->setSpacing(0);
+  displayModeLayout->setContentsMargins(16, 8, 16, 8);
+  displayModeLayout->setSpacing(18);
+  auto* const brandLabel = new QLabel(QStringLiteral("MediaHub"),
+                                      displayModePanel_);
+  brandLabel->setObjectName(QStringLiteral("brandLabel"));
   auto* const displayModeRail = new QFrame(displayModePanel_);
   displayModeRail->setObjectName(QStringLiteral("displayModeRail"));
   auto* const displayModeRailLayout = new QHBoxLayout(displayModeRail);
-  displayModeRailLayout->setContentsMargins(3, 3, 3, 3);
-  displayModeRailLayout->setSpacing(3);
+  displayModeRailLayout->setContentsMargins(0, 0, 0, 0);
+  displayModeRailLayout->setSpacing(4);
   const auto makeModeButton = [displayModeRail](const QString& objectName,
                                                 const QString& text) {
     auto* const button = new QToolButton(displayModeRail);
@@ -721,7 +797,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
     button->setProperty("modeSegment", true);
     button->setAccessibleName(QStringLiteral("%1模式").arg(text));
     button->setToolTip(QStringLiteral("切换到%1模式").arg(text));
-    button->setFixedSize(128, 36);
+    button->setFixedSize(88, 32);
     return button;
   };
   localModeButton_ =
@@ -734,9 +810,45 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   displayModeRailLayout->addWidget(localModeButton_);
   displayModeRailLayout->addWidget(liveModeButton_);
   displayModeRailLayout->addWidget(webModeButton_);
-  displayModeLayout->addStretch(1);
+  displayModeLayout->addWidget(brandLabel);
   displayModeLayout->addWidget(displayModeRail);
   displayModeLayout->addStretch(1);
+  auto* const topActions = new QWidget(displayModePanel_);
+  auto* const topActionsLayout = new QHBoxLayout(topActions);
+  topActionsLayout->setContentsMargins(0, 0, 0, 0);
+  topActionsLayout->setSpacing(4);
+
+  fileMenuButton_ = new QToolButton(displayModePanel_);
+  fileMenuButton_->setObjectName(QStringLiteral("fileMenuButton"));
+  configureChromeButton(fileMenuButton_, QStringLiteral("文件菜单"),
+                        QStringLiteral("文件"), ControlIcon::File);
+  fileMenuButton_->setMenu(fileMenu_);
+  fileMenuButton_->setPopupMode(QToolButton::InstantPopup);
+  topActionsLayout->addWidget(fileMenuButton_);
+
+  viewMenuButton_ = new QToolButton(displayModePanel_);
+  viewMenuButton_->setObjectName(QStringLiteral("viewMenuButton"));
+  configureChromeButton(viewMenuButton_, QStringLiteral("视图菜单"),
+                        QStringLiteral("视图"), ControlIcon::View);
+  viewMenuButton_->setMenu(viewMenu_);
+  viewMenuButton_->setPopupMode(QToolButton::InstantPopup);
+  topActionsLayout->addWidget(viewMenuButton_);
+
+  helpMenuButton_ = new QToolButton(displayModePanel_);
+  helpMenuButton_->setObjectName(QStringLiteral("helpMenuButton"));
+  configureChromeButton(helpMenuButton_, QStringLiteral("帮助菜单"),
+                        QStringLiteral("帮助"), ControlIcon::Help);
+  helpMenuButton_->setMenu(helpMenu_);
+  helpMenuButton_->setPopupMode(QToolButton::InstantPopup);
+  topActionsLayout->addWidget(helpMenuButton_);
+
+  themeButton_ = new QToolButton(displayModePanel_);
+  themeButton_->setObjectName(QStringLiteral("themeButton"));
+  configureChromeButton(themeButton_, QStringLiteral("个性化主题"),
+                        QStringLiteral("设置外观、配色和背景图片"),
+                        ControlIcon::Theme);
+  topActionsLayout->addWidget(themeButton_);
+  displayModeLayout->addWidget(topActions);
   outerLayout->addWidget(displayModePanel_);
 
   auto* const displayModeContainer = new QWidget(centralSurface_);
@@ -754,11 +866,11 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   headerPanel_ = new QFrame(centralWidget);
   headerPanel_->setObjectName(QStringLiteral("headerPanel"));
   auto* const headerLayout = new QHBoxLayout(headerPanel_);
-  headerLayout->setContentsMargins(18, 12, 18, 12);
-  headerLayout->setSpacing(16);
+  headerLayout->setContentsMargins(2, 2, 2, 4);
+  headerLayout->setSpacing(12);
   auto* const headerCopyLayout = new QVBoxLayout();
   headerCopyLayout->setContentsMargins(0, 0, 0, 0);
-  headerCopyLayout->setSpacing(2);
+  headerCopyLayout->setSpacing(1);
   eyebrowLabel_ = new QLabel(headerPanel_);
   eyebrowLabel_->setObjectName(QStringLiteral("eyebrowLabel"));
   titleLabel_ = new QLabel(headerPanel_);
@@ -771,18 +883,21 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   modeBadgeLabel_ = new QLabel(headerPanel_);
   modeBadgeLabel_->setObjectName(QStringLiteral("modeBadgeLabel"));
   modeBadgeLabel_->setAlignment(Qt::AlignCenter);
+  eyebrowLabel_->hide();
+  modeBadgeLabel_->hide();
   headerLayout->addLayout(headerCopyLayout, 1);
   headerLayout->addWidget(modeBadgeLabel_, 0, Qt::AlignVCenter);
   rootLayout_->addWidget(headerPanel_);
 
   auto* const mediaWorkspace = new QHBoxLayout();
-  mediaWorkspace->setSpacing(10);
+  mediaWorkspace->setSpacing(8);
   mediaDisplay_ = new QWidget(centralWidget);
   auto* const mediaDisplay = mediaDisplay_;
   mediaDisplay->setObjectName(QStringLiteral("mediaDisplay"));
   mediaDisplayStack_ = new QStackedLayout(mediaDisplay);
   mediaDisplayStack_->setContentsMargins(0, 0, 0, 0);
   videoOutput_ = new VideoOutputWidget(mediaDisplay);
+  videoOutput_->setThemeBackgroundSource(themeBackground_);
   lyricsView_ = new LyricsView(mediaDisplay);
   mediaDisplayStack_->addWidget(videoOutput_);
   mediaDisplayStack_->addWidget(lyricsView_);
@@ -795,18 +910,22 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   configureTransportButton(
       playlistToggleButton_, QStringLiteral("收起播放列表"),
       QStringLiteral("收起播放列表"), ControlIcon::CollapseRight);
-  playlistToggleButton_->setFixedSize(28, 52);
+  playlistToggleButton_->setFixedSize(24, 48);
   mediaWorkspace->addWidget(playlistToggleButton_, 0, Qt::AlignVCenter);
 
   playlistPanel_ = new QFrame(centralWidget);
   playlistPanel_->setObjectName(QStringLiteral("playlistPanel"));
   playlistPanel_->setFixedWidth(kPlaylistMinimumWidth);
   auto* const playlistLayout = new QVBoxLayout(playlistPanel_);
-  playlistLayout->setContentsMargins(16, 14, 16, 14);
-  playlistLayout->setSpacing(10);
+  playlistLayout->setContentsMargins(14, 12, 14, 12);
+  playlistLayout->setSpacing(8);
+  auto* const playlistHeaderRow = new QHBoxLayout();
+  playlistHeaderRow->setSpacing(8);
   playlistTitleLabel_ =
       new QLabel(QStringLiteral("播放列表"), playlistPanel_);
   playlistTitleLabel_->setObjectName(QStringLiteral("playlistTitleLabel"));
+  playlistHeaderRow->addWidget(playlistTitleLabel_);
+  playlistHeaderRow->addStretch(1);
   playlistKindTabs_ = new QTabBar(playlistPanel_);
   playlistKindTabs_->setObjectName(QStringLiteral("playlistKindTabs"));
   playlistKindTabs_->setAccessibleName(QStringLiteral("播放列表类型"));
@@ -816,14 +935,14 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   playlistKindTabs_->setElideMode(Qt::ElideNone);
   playlistKindTabs_->addTab(QStringLiteral("本地列表"));
   playlistKindTabs_->addTab(QStringLiteral("直播列表"));
+  playlistKindTabs_->hide();
   livePlaylistTools_ = new QFrame(playlistPanel_);
   livePlaylistTools_->setObjectName(QStringLiteral("livePlaylistTools"));
   auto* const livePlaylistToolsLayout = new QVBoxLayout(livePlaylistTools_);
-  livePlaylistToolsLayout->setContentsMargins(9, 8, 9, 9);
+  livePlaylistToolsLayout->setContentsMargins(0, 4, 0, 0);
   livePlaylistToolsLayout->setSpacing(6);
   auto* const livePlaylistSourceLabel =
-      new QLabel(QStringLiteral("REMOTE PLAYLIST / SIGNAL SOURCE"),
-                 livePlaylistTools_);
+      new QLabel(QStringLiteral("播放源"), livePlaylistTools_);
   livePlaylistSourceLabel->setObjectName(
       QStringLiteral("livePlaylistSourceLabel"));
   livePlaylistUrlEdit_ = new QLineEdit(livePlaylistTools_);
@@ -841,12 +960,12 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
                            ControlIcon::History);
   livePlaylistHistoryButton_->setFixedSize(32, 32);
   livePlaylistLoadButton_ =
-      new QPushButton(QStringLiteral("载入 / 刷新清单"), livePlaylistTools_);
+      new QPushButton(QStringLiteral("载入清单"), livePlaylistTools_);
   livePlaylistLoadButton_->setObjectName(
       QStringLiteral("livePlaylistLoadButton"));
   livePlaylistLoadButton_->setProperty("primary", true);
   livePlaylistLocateButton_ =
-      new QPushButton(QStringLiteral("定位正在播放"), livePlaylistTools_);
+      new QPushButton(QStringLiteral("定位当前频道"), livePlaylistTools_);
   livePlaylistLocateButton_->setObjectName(
       QStringLiteral("livePlaylistLocateButton"));
   livePlaylistLocateButton_->setToolTip(
@@ -863,7 +982,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   livePlaylistSearchEdit_->setAccessibleName(
       QStringLiteral("搜索当前直播清单"));
   livePlaylistSearchEdit_->setPlaceholderText(
-      QStringLiteral("搜索当前清单中的频道"));
+      QStringLiteral("搜索频道"));
   livePlaylistSearchEdit_->setClearButtonEnabled(true);
   playlistView_ = new QListView(playlistPanel_);
   playlistView_->setObjectName(QStringLiteral("playlistView"));
@@ -872,9 +991,10 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   playlistView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
   playlistView_->setContextMenuPolicy(Qt::CustomContextMenu);
   playlistView_->viewport()->installEventFilter(this);
-  openButton_ = new QPushButton(QStringLiteral("打开文件"), playlistPanel_);
+  openButton_ = new QPushButton(QStringLiteral("添加媒体"), playlistPanel_);
   openButton_->setObjectName(QStringLiteral("openFileButton"));
-  openButton_->setProperty("primary", true);
+  openButton_->setProperty("compactAction", true);
+  playlistHeaderRow->addWidget(openButton_);
   playlistContextMenu_ = new QMenu(this);
   playlistContextMenu_->setObjectName(QStringLiteral("playlistContextMenu"));
   playlistPlayAction_ = playlistContextMenu_->addAction(QStringLiteral("播放"));
@@ -938,21 +1058,26 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   livePlaylistToolsLayout->addLayout(livePlaylistButtonRow);
   livePlaylistToolsLayout->addWidget(livePlaylistStatusLabel_);
 
-  playlistLayout->addWidget(playlistTitleLabel_);
+  playlistLayout->addLayout(playlistHeaderRow);
   playlistLayout->addWidget(playlistKindTabs_);
   playlistLayout->addWidget(livePlaylistTools_);
   playlistLayout->addWidget(livePlaylistSearchEdit_);
   playlistLayout->addWidget(playlistView_, 1);
-  playlistLayout->addWidget(openButton_);
   mediaWorkspace->addWidget(playlistPanel_, 1);
   rootLayout_->addLayout(mediaWorkspace, 1);
 
-  mediaCard_ = new QFrame(centralWidget);
+  auto* const playerDock = new QFrame(centralWidget);
+  playerDock->setObjectName(QStringLiteral("playerDock"));
+  auto* const playerDockLayout = new QVBoxLayout(playerDock);
+  playerDockLayout->setContentsMargins(0, 0, 0, 0);
+  playerDockLayout->setSpacing(0);
+
+  mediaCard_ = new QFrame(playerDock);
   auto* const mediaCard = mediaCard_;
   mediaCard->setObjectName(QStringLiteral("mediaCard"));
   auto* const cardLayout = new QVBoxLayout(mediaCard);
-  cardLayout->setContentsMargins(18, 12, 18, 12);
-  cardLayout->setSpacing(6);
+  cardLayout->setContentsMargins(16, 8, 16, 7);
+  cardLayout->setSpacing(4);
 
   auto* const mediaCaption = new QLabel(QStringLiteral("当前媒体"), mediaCard);
   mediaCaption->setObjectName(QStringLiteral("captionLabel"));
@@ -967,10 +1092,10 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   statusLabel_->setAlignment(Qt::AlignCenter);
 
   auto* const mediaRow = new QHBoxLayout();
-  mediaRow->setSpacing(18);
+  mediaRow->setSpacing(10);
+  mediaRow->addWidget(mediaCaption);
   mediaRow->addWidget(mediaNameLabel_, 1);
   mediaRow->addWidget(statusLabel_);
-  cardLayout->addWidget(mediaCaption);
   cardLayout->addLayout(mediaRow);
 
   errorLabel_ = new QLabel(mediaCard);
@@ -978,25 +1103,21 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   errorLabel_->setWordWrap(true);
   errorLabel_->hide();
   cardLayout->addWidget(errorLabel_);
-  rootLayout_->addWidget(mediaCard);
+  playerDockLayout->addWidget(mediaCard);
 
-  transportPanel_ = new QFrame(centralWidget);
+  transportPanel_ = new QFrame(playerDock);
   auto* const transportPanel = transportPanel_;
   transportPanel->setObjectName(QStringLiteral("transportPanel"));
   auto* const transportLayout = new QVBoxLayout(transportPanel);
-  transportLayout->setContentsMargins(20, 14, 20, 14);
-  transportLayout->setSpacing(10);
+  transportLayout->setContentsMargins(16, 7, 16, 10);
+  transportLayout->setSpacing(6);
 
-  auto* const timelineHeader = new QHBoxLayout();
   auto* const progressCaption =
       new QLabel(QStringLiteral("播放进度"), transportPanel);
   progressCaption->setObjectName(QStringLiteral("transportCaptionLabel"));
+  progressCaption->hide();
   positionLabel_ = new QLabel(QStringLiteral("00:00 / --:--"), transportPanel);
   positionLabel_->setObjectName(QStringLiteral("positionLabel"));
-  timelineHeader->addWidget(progressCaption);
-  timelineHeader->addStretch(1);
-  timelineHeader->addWidget(positionLabel_);
-  transportLayout->addLayout(timelineHeader);
 
   progressSlider_ = new SeekSlider(Qt::Horizontal, transportPanel);
   progressSlider_->setObjectName(QStringLiteral("progressSlider"));
@@ -1007,9 +1128,11 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   progressSlider_->setToolTip(
       QStringLiteral("可拖动或单击定位，左右方向键调整进度"));
 
-  auto* const timelineRow = new QHBoxLayout();
-  timelineRow->setSpacing(6);
-  timelineRow->addWidget(progressSlider_, 1);
+  auto* const progressRow = new QHBoxLayout();
+  progressRow->setSpacing(10);
+  progressRow->addWidget(progressSlider_, 1);
+  progressRow->addWidget(positionLabel_);
+  transportLayout->addLayout(progressRow);
 
   volumeButton_ = new HoverOptionButton(transportPanel);
   volumeButton_->setObjectName(QStringLiteral("volumeButton"));
@@ -1127,6 +1250,8 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   playPauseButton_->setProperty("primaryTransport", true);
   configureTransportButton(playPauseButton_, QStringLiteral("播放"),
                            QStringLiteral("播放（空格）"), ControlIcon::Play);
+  playPauseButton_->setFixedSize(40, 40);
+  playPauseButton_->setIconSize(QSize(22, 22));
   nextButton_ = new QToolButton(transportPanel);
   nextButton_->setObjectName(QStringLiteral("nextButton"));
   configureTransportButton(nextButton_, QStringLiteral("下一首"),
@@ -1183,19 +1308,24 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
                            QStringLiteral("进入全屏（F11）"),
                            ControlIcon::FullScreen);
 
-  timelineRow->addWidget(previousButton_);
-  timelineRow->addWidget(playPauseButton_);
-  timelineRow->addWidget(nextButton_);
-  timelineRow->addWidget(stopButton_);
-  timelineRow->addWidget(networkRefreshButton_);
-  timelineRow->addWidget(volumeButton_);
-  timelineRow->addWidget(lyricsButton_);
-  timelineRow->addWidget(playbackRateButton_);
-  timelineRow->addWidget(keyboardSeekStepButton_);
-  timelineRow->addWidget(playbackModeButton_);
-  timelineRow->addWidget(fullScreenButton_);
-  transportLayout->addLayout(timelineRow);
-  rootLayout_->addWidget(transportPanel);
+  auto* const controlRow = new QHBoxLayout();
+  controlRow->setSpacing(6);
+  controlRow->addWidget(playbackModeButton_);
+  controlRow->addStretch(1);
+  controlRow->addWidget(previousButton_);
+  controlRow->addWidget(playPauseButton_);
+  controlRow->addWidget(nextButton_);
+  controlRow->addWidget(stopButton_);
+  controlRow->addWidget(networkRefreshButton_);
+  controlRow->addStretch(1);
+  controlRow->addWidget(volumeButton_);
+  controlRow->addWidget(lyricsButton_);
+  controlRow->addWidget(playbackRateButton_);
+  controlRow->addWidget(keyboardSeekStepButton_);
+  controlRow->addWidget(fullScreenButton_);
+  transportLayout->addLayout(controlRow);
+  playerDockLayout->addWidget(transportPanel);
+  rootLayout_->addWidget(playerDock);
 
   browserPage_ = new BrowserPage(*browserBackend_,
                                  std::move(browserProfileDirectory),
@@ -1215,7 +1345,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   fullScreenChrome_ = {displayModePanel_, headerPanel_, mediaCard_};
 
   setCentralWidget(centralSurface_);
-  setStyleSheet(mainWindowStyleSheet());
+  applyThemeSettings(themeSettings_);
 
   connect(openAction_, &QAction::triggered, this, &MainWindow::chooseLocalFile);
   connect(openNetworkAction_, &QAction::triggered, this,
@@ -1228,6 +1358,8 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
           [this] { emit displayModeSelected(DisplayMode::Live); });
   connect(webModeButton_, &QToolButton::clicked, this,
           [this] { emit displayModeSelected(DisplayMode::Web); });
+  connect(themeButton_, &QToolButton::clicked, this,
+          &MainWindow::showThemeSettings);
   connect(playlistKindTabs_, &QTabBar::currentChanged, this,
           [this](const int kindIndex) {
             showPlaylistKind(kindIndex);
@@ -1432,6 +1564,14 @@ MainWindow::~MainWindow() {
   browserPage_ = nullptr;
 }
 
+void MainWindow::setThemeSettings(const ThemeSettings& settings) {
+  applyThemeSettings(settings);
+}
+
+const ThemeSettings& MainWindow::themeSettings() const noexcept {
+  return themeSettings_;
+}
+
 void MainWindow::showDisplayMode(const DisplayMode mode) {
   const bool leavesWeb = displayMode_ == DisplayMode::Web &&
                          mode != DisplayMode::Web;
@@ -1484,42 +1624,93 @@ void MainWindow::applyPresentationMode(const UiPresentationMode mode) {
   presentationMode_ = mode;
   const QString modeKey = presentationModeKey(mode);
 
-  QList<QWidget*> themedWidgets = findChildren<QWidget*>();
+  QList<QWidget*> themedWidgets = nativePlaybackPage_->findChildren<QWidget*>();
+  themedWidgets.push_front(nativePlaybackPage_);
+  themedWidgets.push_front(centralSurface_);
+  themedWidgets.push_front(menuBar());
   themedWidgets.push_front(this);
   for (auto* const widget : themedWidgets) {
     widget->setProperty("themeMode", modeKey);
   }
   switch (mode) {
     case UiPresentationMode::LocalAudio:
-      eyebrowLabel_->setText(QStringLiteral("LOCAL MUSIC / LISTEN"));
-      titleLabel_->setText(QStringLiteral("沉浸音乐"));
+      eyebrowLabel_->clear();
+      titleLabel_->setText(QStringLiteral("本地媒体"));
       subtitleLabel_->setText(
-          QStringLiteral("让波形、歌词与播放列表围绕正在播放的声音展开。"));
-      modeBadgeLabel_->setText(QStringLiteral("MUSIC"));
+          QStringLiteral("播放音频、查看歌词并管理当前队列"));
+      modeBadgeLabel_->setText(QStringLiteral("音频"));
       break;
     case UiPresentationMode::LocalVideo:
-      eyebrowLabel_->setText(QStringLiteral("LOCAL VIDEO / CINEMA"));
-      titleLabel_->setText(QStringLiteral("沉浸播放"));
+      eyebrowLabel_->clear();
+      titleLabel_->setText(QStringLiteral("本地媒体"));
       subtitleLabel_->setText(
-          QStringLiteral("深色影院画布聚焦本地视频，控制与信息保持在手边。"));
-      modeBadgeLabel_->setText(QStringLiteral("VIDEO"));
+          QStringLiteral("播放本地音视频并管理当前队列"));
+      modeBadgeLabel_->setText(QStringLiteral("视频"));
       break;
     case UiPresentationMode::Live:
-      eyebrowLabel_->setText(QStringLiteral("LIVE STREAM / CONTROL"));
-      titleLabel_->setText(QStringLiteral("直播控制台"));
+      eyebrowLabel_->clear();
+      titleLabel_->setText(QStringLiteral("直播"));
       subtitleLabel_->setText(
-          QStringLiteral("紧凑查看频道、连接状态与当前直播，快速刷新或切换。"));
-      modeBadgeLabel_->setText(QStringLiteral("LIVE"));
+          QStringLiteral("载入频道清单、切换直播源并查看连接状态"));
+      modeBadgeLabel_->setText(QStringLiteral("直播"));
       break;
   }
   videoOutput_->setPresentationMode(mode);
-  setNativeDarkTitleBar(this, mode != UiPresentationMode::LocalAudio);
+  setNativeDarkTitleBar(
+      this, themeSettings_.appearanceMode != QStringLiteral("light"));
 
   // 动态属性只影响视觉；重新抛光现有控件，不重建对象或信号连接。
   for (auto* const widget : themedWidgets) {
     widget->style()->unpolish(widget);
     widget->style()->polish(widget);
     widget->update();
+  }
+}
+
+void MainWindow::refreshControlIcons() {
+  const UiThemePalette palette = resolvedThemePalette(themeSettings_);
+  if (fileMenuButton_ != nullptr) {
+    fileMenuButton_->setIcon(controlIcon(ControlIcon::File, controlIconColor_));
+    viewMenuButton_->setIcon(controlIcon(ControlIcon::View, controlIconColor_));
+    helpMenuButton_->setIcon(controlIcon(ControlIcon::Help, controlIconColor_));
+    themeButton_->setIcon(controlIcon(ControlIcon::Theme, palette.accent));
+  }
+  if (previousButton_ == nullptr) {
+    return;
+  }
+
+  previousButton_->setIcon(
+      controlIcon(ControlIcon::Previous, controlIconColor_));
+  nextButton_->setIcon(controlIcon(ControlIcon::Next, controlIconColor_));
+  stopButton_->setIcon(controlIcon(ControlIcon::Stop, controlIconColor_));
+  networkRefreshButton_->setIcon(
+      controlIcon(ControlIcon::Refresh, controlIconColor_));
+  const bool showsPause =
+      playPauseButton_->accessibleName() == QStringLiteral("暂停");
+  playPauseButton_->setIcon(
+      controlIcon(showsPause ? ControlIcon::Pause : ControlIcon::Play,
+                  QColor(QStringLiteral("#ffffff"))));
+  const bool isMuted =
+      volumeButton_->accessibleName() == QStringLiteral("已静音");
+  volumeButton_->setIcon(
+      controlIcon(isMuted ? ControlIcon::Muted : ControlIcon::Volume,
+                  controlIconColor_));
+  fullScreenButton_->setIcon(controlIcon(
+      isFullScreen() ? ControlIcon::ExitFullScreen : ControlIcon::FullScreen,
+      controlIconColor_));
+  playlistToggleButton_->setIcon(
+      controlIcon(isPlaylistExpanded_ ? ControlIcon::CollapseRight
+                                      : ControlIcon::ExpandLeft,
+                  controlIconColor_));
+  const int modeIndex =
+      playbackModeButton_->property("playbackModeIndex").toInt();
+  selectPlaybackMode(playbackModeButton_, modeIndex, controlIconColor_);
+  for (QAction* const action : playbackModeButton_->menu()->actions()) {
+    if (action->isCheckable()) {
+      action->setIcon(
+          controlIcon(playbackModeIcon(action->data().toInt()),
+                      controlIconColor_));
+    }
   }
 }
 
@@ -1539,12 +1730,13 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   livePlaylistLoadButton_->setEnabled(true);
   livePlaylistLoadButton_->setText(viewState.isLivePlaylistLoading
                                        ? QStringLiteral("取消载入")
-                                       : QStringLiteral("载入 / 刷新清单"));
+                                       : QStringLiteral("载入清单"));
   livePlaylistStatusLabel_->setText(viewState.livePlaylistStatusText);
   playPauseButton_->setEnabled(viewState.canPlay || viewState.canPause);
   const bool showsPause = viewState.canPause;
   playPauseButton_->setIcon(
-      controlIcon(showsPause ? ControlIcon::Pause : ControlIcon::Play));
+      controlIcon(showsPause ? ControlIcon::Pause : ControlIcon::Play,
+                  QColor(QStringLiteral("#ffffff"))));
   playPauseButton_->setAccessibleName(showsPause ? QStringLiteral("暂停")
                                                  : QStringLiteral("播放"));
   playPauseButton_->setToolTip(showsPause ? QStringLiteral("暂停（空格）")
@@ -1577,7 +1769,8 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   progressSlider_->setEnabled(viewState.canSeek);
   progressSlider_->setValue(viewState.progressValue);
   volumeSlider_->setValue(viewState.volumeValue);
-  selectPlaybackMode(playbackModeButton_, viewState.playbackModeIndex);
+  selectPlaybackMode(playbackModeButton_, viewState.playbackModeIndex,
+                     controlIconColor_);
   selectPlaybackRate(playbackRateButton_, viewState.isTemporaryFastPlayback
                                               ? 2.0
                                               : viewState.playbackRate);
@@ -1587,8 +1780,9 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
   statusLabel_->setText(viewState.statusText);
   positionLabel_->setText(viewState.positionText);
   volumeLabel_->setText(QStringLiteral("%1%").arg(viewState.volumeValue));
-  volumeButton_->setIcon(controlIcon(viewState.isMuted ? ControlIcon::Muted
-                                                       : ControlIcon::Volume));
+  volumeButton_->setIcon(
+      controlIcon(viewState.isMuted ? ControlIcon::Muted : ControlIcon::Volume,
+                  controlIconColor_));
   volumeButton_->setAccessibleName(viewState.isMuted ? QStringLiteral("已静音")
                                                      : viewState.volumeText);
   volumeButton_->setToolTip(
@@ -1808,7 +2002,7 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
   playlistView_->setContextMenuPolicy(Qt::CustomContextMenu);
   playlistTitleLabel_->setText(showsLivePlaylist
                                    ? QStringLiteral("直播频道")
-                                   : QStringLiteral("播放列表"));
+                                   : QStringLiteral("本地队列"));
   livePlaylistTools_->setVisible(showsLivePlaylist);
   livePlaylistUrlEdit_->setVisible(showsLivePlaylist);
   livePlaylistHistoryButton_->setVisible(showsLivePlaylist);
@@ -1919,7 +2113,7 @@ void MainWindow::updatePlaylistResponsiveStyle() {
   }
 
   const int responsiveWidth = std::clamp(
-      width() * 3 / 10, kPlaylistMinimumWidth, kPlaylistMaximumWidth);
+      width() * 27 / 100, kPlaylistMinimumWidth, kPlaylistMaximumWidth);
   if (playlistPanel_->width() != responsiveWidth) {
     playlistPanel_->setFixedWidth(responsiveWidth);
   }
@@ -2129,6 +2323,78 @@ void MainWindow::showShortcutHelp() {
   dialog.exec();
 }
 
+void MainWindow::showThemeSettings() {
+  const ThemeSettings originalSettings = themeSettings_;
+  ThemeSettingsDialog dialog(originalSettings, this);
+  connect(&dialog, &ThemeSettingsDialog::previewChanged, this,
+          &MainWindow::applyThemeSettings);
+  if (dialog.exec() != QDialog::Accepted) {
+    applyThemeSettings(originalSettings);
+    return;
+  }
+
+  applyThemeSettings(dialog.settings());
+  if (themeSettings_ != originalSettings) {
+    emit themeSettingsChanged(themeSettings_);
+  }
+}
+
+void MainWindow::applyThemeSettings(const ThemeSettings& settings) {
+  const ThemeSettings normalized = normalizedThemeSettings(settings);
+  if (normalized == themeSettings_ && !styleSheet().isEmpty()) {
+    return;
+  }
+  const bool hadCustomBackground =
+      !themeSettings_.backgroundImagePath.isEmpty();
+  const bool hasCustomBackground =
+      !normalized.backgroundImagePath.isEmpty();
+  const bool updatesStyle =
+      styleSheet().isEmpty() || normalized.accentKey != themeSettings_.accentKey ||
+      normalized.appearanceMode != themeSettings_.appearanceMode ||
+      normalized.customAccentColor != themeSettings_.customAccentColor ||
+      hasCustomBackground != hadCustomBackground;
+  themeSettings_ = normalized;
+  centralSurface_->setProperty("accentKey", themeSettings_.accentKey);
+  centralSurface_->setProperty("appearanceMode",
+                               themeSettings_.appearanceMode);
+  centralSurface_->setProperty("backgroundBlur",
+                               themeSettings_.backgroundBlur);
+  centralSurface_->setProperty("backgroundOpacity",
+                               themeSettings_.backgroundOpacity);
+  centralSurface_->setProperty("customBackground", hasCustomBackground);
+  for (QWidget* const widget :
+       {static_cast<QWidget*>(playlistPanel_),
+        mediaCard_ != nullptr ? mediaCard_->parentWidget() : nullptr,
+        mediaDisplay_}) {
+    if (widget != nullptr) {
+      widget->setProperty("customBackground", hasCustomBackground);
+    }
+  }
+  themeBackground_->setThemeSettings(themeSettings_);
+  videoOutput_->setThemeSettings(themeSettings_);
+  lyricsView_->setThemeSettings(themeSettings_);
+  if (updatesStyle) {
+    const QString overrideStyle = themeOverrideStyleSheet(themeSettings_);
+    setStyleSheet(mainWindowStyleSheet() + overrideStyle);
+    nativePlaybackPage_->setStyleSheet(overrideStyle);
+    displayModePanel_->setStyleSheet(overrideStyle);
+    for (QMenu* const menu :
+         {fileMenu_, viewMenu_, helpMenu_, recentLocalMediaMenu_,
+          playlistContextMenu_, livePlaylistContextMenu_}) {
+      if (menu != nullptr) {
+        menu->setStyleSheet(overrideStyle);
+      }
+    }
+    for (QMenu* const menu : nativePlaybackPage_->findChildren<QMenu*>()) {
+      menu->setStyleSheet(overrideStyle);
+    }
+  }
+  controlIconColor_ = resolvedThemePalette(themeSettings_).text;
+  refreshControlIcons();
+  setNativeDarkTitleBar(
+      this, themeSettings_.appearanceMode != QStringLiteral("light"));
+}
+
 void MainWindow::dragEnterEvent(QDragEnterEvent* const event) {
   if (!localFilePaths(event->mimeData()).isEmpty()) {
     event->acceptProposedAction();
@@ -2190,7 +2456,7 @@ void MainWindow::updateFullScreenText() {
   }
 
   const bool isNowFullScreen = isFullScreen();
-  menuBar()->setVisible(!isNowFullScreen);
+  menuBar()->hide();
   for (auto* const widget : fullScreenChrome_) {
     widget->setVisible(!isNowFullScreen);
   }
@@ -2210,7 +2476,8 @@ void MainWindow::updateFullScreenText() {
                                              : QStringLiteral("进入全屏(&F)");
   fullScreenAction_->setText(actionText);
   fullScreenButton_->setIcon(controlIcon(
-      isNowFullScreen ? ControlIcon::ExitFullScreen : ControlIcon::FullScreen));
+      isNowFullScreen ? ControlIcon::ExitFullScreen : ControlIcon::FullScreen,
+      controlIconColor_));
   fullScreenButton_->setAccessibleName(isNowFullScreen
                                            ? QStringLiteral("退出全屏")
                                            : QStringLiteral("进入全屏"));
@@ -2230,9 +2497,10 @@ void MainWindow::updatePlaylistToggleAppearance() {
   const QString actionText = isPlaylistExpanded_
                                  ? QStringLiteral("收起播放列表")
                                  : QStringLiteral("展开播放列表");
-  playlistToggleButton_->setIcon(controlIcon(isPlaylistExpanded_
-                                                 ? ControlIcon::CollapseRight
-                                                 : ControlIcon::ExpandLeft));
+  playlistToggleButton_->setIcon(
+      controlIcon(isPlaylistExpanded_ ? ControlIcon::CollapseRight
+                                      : ControlIcon::ExpandLeft,
+                  controlIconColor_));
   playlistToggleButton_->setAccessibleName(actionText);
   playlistToggleButton_->setToolTip(actionText);
 }

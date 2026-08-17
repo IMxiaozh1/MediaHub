@@ -4,6 +4,7 @@
 #include <QtGlobal>
 
 #include "lyrics_service.h"
+#include "theme_settings.h"
 
 class QLabel;
 class QResizeEvent;
@@ -25,6 +26,8 @@ class LyricsView final : public QWidget {
   void setResult(const LyricsResult& result);
   void setMediaName(const QString& mediaName);
   void setPosition(qint64 positionMilliseconds);
+  // 调用线程：GUI 主线程。更新歌词页配色和自定义背景遮罩。
+  void setThemeSettings(const ThemeSettings& settings);
   [[nodiscard]] qint64 timingOffsetMilliseconds() const noexcept;
 
  protected:
@@ -58,6 +61,7 @@ class LyricsView final : public QWidget {
   qint64 timingOffsetMilliseconds_{0};
   QString timingSettingsKey_;
   QString timingSettingsVersionKey_;
+  ThemeSettings themeSettings_;
   int currentLineIndex_{-1};
 };
 

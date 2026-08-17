@@ -49,84 +49,79 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
   setWindowTitle(QStringLiteral("MediaHub 快捷键"));
   setWindowFlag(Qt::WindowContextHelpButtonHint, false);
   setModal(true);
-  resize(680, 590);
-  setMinimumSize(520, 430);
+  resize(700, 600);
+  setMinimumSize(560, 460);
   setStyleSheet(QStringLiteral(R"(
       QDialog#shortcutHelpDialog {
-          background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                      stop:0 #0d1412, stop:0.55 #111b17,
-                                      stop:1 #17231e);
-          color: #edf5f1;
+          background: #121417;
+          color: #e7e9ec;
           font-family: "Microsoft YaHei UI";
       }
       QFrame#shortcutHelpHeader {
-          background: rgba(26, 40, 34, 228);
-          border: 1px solid #30483e;
-          border-radius: 14px;
+          background: transparent;
+          border: none;
+          border-bottom: 1px solid #2a2e34;
       }
       QLabel#shortcutHelpEyebrow {
-          color: #55dda2;
-          font-family: "Bahnschrift SemiCondensed";
-          font-size: 11px;
-          font-weight: 700;
+          color: #7f8790;
+          font-size: 10px;
       }
       QLabel#shortcutHelpTitle {
-          color: #f4faf7;
-          font-size: 25px;
-          font-weight: 700;
+          color: #f1f3f5;
+          font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
+          font-size: 22px;
+          font-weight: 600;
       }
       QLabel#shortcutHelpIntroduction {
-          color: #98aaa2;
+          color: #89919a;
           font-size: 12px;
       }
       QLabel#shortcutHelpCountBadge {
-          background: #213b31;
-          border: 1px solid #32664f;
-          border-radius: 14px;
-          color: #7ce5b6;
+          background: transparent;
+          border: none;
+          color: #89919a;
           font-size: 11px;
-          font-weight: 700;
-          padding: 7px 11px;
+          padding: 0;
       }
       QTableWidget#shortcutHelpTable {
-          alternate-background-color: #15201c;
-          background: #111916;
-          border: 1px solid #2b3d35;
-          border-radius: 10px;
-          color: #dce8e2;
+          alternate-background-color: #15181c;
+          background: #101216;
+          border: 1px solid #2a2e34;
+          border-radius: 5px;
+          color: #d7dbe0;
           gridline-color: transparent;
           outline: none;
       }
       QTableWidget#shortcutHelpTable::item {
-          border-bottom: 1px solid #22322b;
-          padding: 7px 12px;
+          border-bottom: 1px solid #22262c;
+          padding: 7px 11px;
       }
       QTableWidget#shortcutHelpTable::item:hover {
-          background: #1b2d25;
+          background: #1d2228;
           color: #ffffff;
       }
       QHeaderView::section {
-          background: #1b2923;
+          background: #181b20;
           border: none;
-          border-bottom: 1px solid #365044;
-          color: #8fa59b;
+          border-bottom: 1px solid #30353c;
+          color: #9299a2;
           font-size: 11px;
-          font-weight: 700;
+          font-weight: 600;
           padding: 9px 12px;
       }
       QScrollBar:vertical {
-          background: #101814;
+          background: #101216;
           border: none;
-          margin: 5px 3px;
-          width: 9px;
+          margin: 0;
+          width: 8px;
       }
       QScrollBar::handle:vertical {
-          background: #3f5f50;
-          border-radius: 4px;
-          min-height: 32px;
+          background: #3b4047;
+          border-radius: 3px;
+          min-height: 28px;
       }
       QScrollBar::handle:vertical:hover {
-          background: #55b98a;
+          background: #59616a;
       }
       QScrollBar::add-line:vertical,
       QScrollBar::sub-line:vertical {
@@ -137,31 +132,31 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
           background: transparent;
       }
       QLabel#shortcutHelpFooterHint {
-          color: #71847b;
+          color: #747c85;
           font-size: 11px;
       }
   )"));
 
   auto* const layout = new QVBoxLayout(this);
-  layout->setContentsMargins(22, 22, 22, 18);
-  layout->setSpacing(14);
+  layout->setContentsMargins(22, 20, 22, 18);
+  layout->setSpacing(12);
 
   auto* const header = new QFrame(this);
   header->setObjectName(QStringLiteral("shortcutHelpHeader"));
   auto* const headerLayout = new QHBoxLayout(header);
-  headerLayout->setContentsMargins(20, 16, 18, 16);
-  headerLayout->setSpacing(18);
+  headerLayout->setContentsMargins(0, 0, 0, 14);
+  headerLayout->setSpacing(16);
 
   auto* const titleLayout = new QVBoxLayout();
   titleLayout->setContentsMargins(0, 0, 0, 0);
   titleLayout->setSpacing(3);
-  auto* const eyebrow =
-      new QLabel(QStringLiteral("MEDIAHUB  /  KEY MAP"), header);
+  auto* const eyebrow = new QLabel(header);
   eyebrow->setObjectName(QStringLiteral("shortcutHelpEyebrow"));
-  auto* const title = new QLabel(QStringLiteral("快捷键速查"), header);
+  eyebrow->hide();
+  auto* const title = new QLabel(QStringLiteral("快捷键"), header);
   title->setObjectName(QStringLiteral("shortcutHelpTitle"));
   auto* const introduction =
-      new QLabel(QStringLiteral("把常用播放操作留在键盘上。"), header);
+      new QLabel(QStringLiteral("播放器和网页模式可用的键盘操作"), header);
   introduction->setObjectName(QStringLiteral("shortcutHelpIntroduction"));
   titleLayout->addWidget(eyebrow);
   titleLayout->addWidget(title);
@@ -173,6 +168,7 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
       QStringLiteral("%1 项操作").arg(descriptions.size()), header);
   countBadge->setObjectName(QStringLiteral("shortcutHelpCountBadge"));
   countBadge->setAlignment(Qt::AlignCenter);
+  countBadge->setMaximumHeight(24);
   headerLayout->addWidget(countBadge, 0, Qt::AlignVCenter);
   layout->addWidget(header);
 
@@ -202,13 +198,13 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
         new QTableWidgetItem(descriptions.at(row).shortcut);
     shortcutItem->setTextAlignment(Qt::AlignCenter);
     shortcutItem->setFont(shortcutFont);
-    shortcutItem->setForeground(QColor(QStringLiteral("#67e5ad")));
-    shortcutItem->setBackground(QColor(QStringLiteral("#1b2c25")));
+    shortcutItem->setForeground(QColor(QStringLiteral("#78baf0")));
+    shortcutItem->setBackground(QColor(QStringLiteral("#171b20")));
     table->setItem(row, 0, shortcutItem);
 
     auto* const operationItem =
         new QTableWidgetItem(descriptions.at(row).operation);
-    operationItem->setForeground(QColor(QStringLiteral("#dce8e2")));
+    operationItem->setForeground(QColor(QStringLiteral("#d7dbe0")));
     table->setItem(row, 1, operationItem);
   }
   layout->addWidget(table, 1);
@@ -228,30 +224,32 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
   okButton->setText(QStringLiteral("确定"));
   okButton->setCursor(Qt::PointingHandCursor);
   okButton->setDefault(true);
-  okButton->setMinimumSize(168, 50);
+  okButton->setMinimumSize(96, 34);
+  okButton->setMaximumHeight(36);
   okButton->setStyleSheet(QStringLiteral(R"(
       QPushButton#shortcutHelpOkButton {
-          background-color: #147df5;
-          border: 3px solid #d7ebff;
-          border-radius: 9px;
+          background-color: #2f78b7;
+          border: 1px solid #438dca;
+          border-radius: 4px;
           color: #ffffff;
           font-family: "Microsoft YaHei UI";
-          font-size: 16px;
-          font-weight: 700;
-          min-height: 50px;
-          min-width: 168px;
-          padding: 0 26px;
+          font-size: 13px;
+          font-weight: 600;
+          min-height: 34px;
+          min-width: 96px;
+          max-height: 36px;
+          padding: 0 18px;
       }
       QPushButton#shortcutHelpOkButton:hover {
-          background-color: #45a2ff;
-          border-color: #ffffff;
+          background-color: #3d89c8;
+          border-color: #65a8dd;
       }
       QPushButton#shortcutHelpOkButton:pressed {
-          background-color: #0c60c4;
-          border-color: #b8dcff;
+          background-color: #26679f;
+          border-color: #397cad;
       }
       QPushButton#shortcutHelpOkButton:focus {
-          border-color: #ffffff;
+          border-color: #8bc6f3;
       }
   )"));
   connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);

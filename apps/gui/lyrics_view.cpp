@@ -15,6 +15,8 @@
 #include <limits>
 #include <memory>
 
+#include "ui_theme.h"
+
 namespace mediahub::gui {
 namespace {
 
@@ -62,17 +64,126 @@ ResponsiveLyricFontSizes responsiveLyricFontSizes(const int width,
   };
 }
 
-QString synchronizedLabelStyle(const bool isCurrent, const int fontPixels) {
+QString rgbaColor(const QColor& color, const int alpha) {
+  return QStringLiteral("rgba(%1, %2, %3, %4)")
+      .arg(color.red())
+      .arg(color.green())
+      .arg(color.blue())
+      .arg(alpha);
+}
+
+QString synchronizedLabelStyle(const bool isCurrent, const int fontPixels,
+                               const UiThemePalette& palette) {
   if (isCurrent) {
     return QStringLiteral(
-               "color: #19aa67; font-size: %1px; font-weight: 700;"
+               "color: %1; font-size: %2px; font-weight: 700;"
                "background: transparent;")
+        .arg(palette.accent.name())
         .arg(fontPixels);
   }
   return QStringLiteral(
-             "color: rgba(34, 55, 46, 145); font-size: %1px; font-weight: 500;"
+             "color: %1; font-size: %2px; font-weight: 500;"
              "background: transparent;")
+      .arg(rgbaColor(palette.mutedText, palette.isDark ? 170 : 205))
       .arg(fontPixels);
+}
+
+QString lyricsStyleSheet(const ThemeSettings& settings) {
+  const ThemeSettings normalized = normalizedThemeSettings(settings);
+  const UiThemePalette palette = resolvedThemePalette(normalized);
+  const bool hasBackground = !normalized.backgroundImagePath.isEmpty();
+  QString style = QStringLiteral(R"(
+      QWidget#lyricsView {
+          background: @ROOT@;
+          border: 1px solid @BORDER@;
+          border-radius: 6px;
+      }
+      QLabel#lyricsMediaNameLabel {
+          color: @TEXT@;
+          font-family: "Microsoft YaHei UI";
+          font-size: 15px;
+          font-weight: 600;
+      }
+      QLabel#lyricsSourceLabel {
+          color: @MUTED@;
+          background: transparent;
+          border: none;
+          border-radius: 0;
+          padding: 0;
+          font-size: 11px;
+          font-weight: 600;
+      }
+      QLabel#lyricsMessageTitle {
+          color: @TEXT@;
+          font-size: 22px;
+          font-weight: 600;
+      }
+      QLabel#lyricsMessageDetail {
+          color: @MUTED@;
+          font-size: 13px;
+          margin-top: 8px;
+      }
+      QWidget#lyricsTimingControls {
+          background: @CONTROL@;
+          border: 1px solid @BORDER@;
+          border-radius: 4px;
+      }
+      QLabel#lyricsTimingOffsetLabel {
+          color: @MUTED@;
+          border: none;
+          font-size: 11px;
+          font-weight: 600;
+          padding: 0 4px;
+      }
+      QToolButton#lyricsTimingSlowButton,
+      QToolButton#lyricsTimingFastButton,
+      QToolButton#lyricsTimingResetButton {
+          color: @TEXT@;
+          background: transparent;
+          border: 1px solid @BORDER@;
+          border-radius: 3px;
+          min-height: 22px;
+          padding: 0 7px;
+          font-size: 11px;
+          font-weight: 600;
+      }
+      QToolButton#lyricsTimingSlowButton:hover,
+      QToolButton#lyricsTimingFastButton:hover,
+      QToolButton#lyricsTimingResetButton:hover {
+          background: @HOVER@;
+          border-color: @ACCENT@;
+          color: @TEXT@;
+      }
+      QTextBrowser#plainLyricsBrowser {
+          color: @TEXT@;
+          background: @PLAIN@;
+          border: 1px solid @BORDER@;
+          border-radius: 4px;
+          padding: 18px 22px;
+          font-family: "Microsoft YaHei UI";
+          font-size: 16px;
+          line-height: 1.6;
+          selection-background-color: @ACCENT@;
+      }
+  )");
+  style.replace(QStringLiteral("@ROOT@"),
+                hasBackground
+                    ? rgbaColor(palette.canvas, palette.isDark ? 138 : 156)
+                    : palette.canvas.name());
+  style.replace(QStringLiteral("@CONTROL@"),
+                hasBackground
+                    ? rgbaColor(palette.panelAlt, palette.isDark ? 196 : 214)
+                    : palette.panelAlt.name());
+  style.replace(QStringLiteral("@PLAIN@"),
+                hasBackground
+                    ? rgbaColor(palette.panel, palette.isDark ? 172 : 194)
+                    : palette.panel.name());
+  style.replace(QStringLiteral("@TEXT@"), palette.text.name());
+  style.replace(QStringLiteral("@MUTED@"), palette.mutedText.name());
+  style.replace(QStringLiteral("@BORDER@"), palette.border.name());
+  style.replace(QStringLiteral("@HOVER@"), palette.hover.name());
+  style.replace(QStringLiteral("@ACCENT@"), palette.accent.name());
+  return style;
 }
 
 }  // namespace
@@ -181,82 +292,7 @@ LyricsView::LyricsView(QWidget* const parent) : QWidget(parent) {
   contentStack_->addWidget(plainPage_);
   rootLayout->addWidget(contentHost, 1);
 
-  setStyleSheet(QStringLiteral(R"(
-      QWidget#lyricsView {
-          background: qradialgradient(cx:0.72, cy:0.18, radius:1.0,
-                                      fx:0.72, fy:0.18,
-                                      stop:0 #d8f0e4, stop:0.48 #eef8f3,
-                                      stop:1 #dfeee7);
-          border: 1px solid #bad8ca;
-          border-radius: 18px;
-      }
-      QLabel#lyricsMediaNameLabel {
-          color: #172820;
-          font-family: "Microsoft YaHei UI";
-          font-size: 15px;
-          font-weight: 700;
-      }
-      QLabel#lyricsSourceLabel {
-          color: #147e52;
-          background: rgba(219, 244, 231, 210);
-          border: 1px solid #afd9c2;
-          border-radius: 10px;
-          padding: 3px 9px;
-          font-size: 11px;
-          font-weight: 700;
-      }
-      QLabel#lyricsMessageTitle {
-          color: #183128;
-          font-size: 22px;
-          font-weight: 700;
-      }
-      QLabel#lyricsMessageDetail {
-          color: #63766e;
-          font-size: 13px;
-          margin-top: 8px;
-      }
-      QWidget#lyricsTimingControls {
-          background: rgba(255, 255, 255, 150);
-          border: 1px solid rgba(186, 216, 202, 190);
-          border-radius: 12px;
-      }
-      QLabel#lyricsTimingOffsetLabel {
-          color: #4f6b60;
-          border: none;
-          font-size: 11px;
-          font-weight: 700;
-          padding: 0 4px;
-      }
-      QToolButton#lyricsTimingSlowButton,
-      QToolButton#lyricsTimingFastButton,
-      QToolButton#lyricsTimingResetButton {
-          color: #1f6f4d;
-          background: #f7fbf9;
-          border: 1px solid #bed8cc;
-          border-radius: 9px;
-          min-height: 22px;
-          padding: 0 7px;
-          font-size: 11px;
-          font-weight: 700;
-      }
-      QToolButton#lyricsTimingSlowButton:hover,
-      QToolButton#lyricsTimingFastButton:hover,
-      QToolButton#lyricsTimingResetButton:hover {
-          background: #dff5ea;
-          border-color: #62c995;
-      }
-      QTextBrowser#plainLyricsBrowser {
-          color: #243b32;
-          background: rgba(255, 255, 255, 180);
-          border: 1px solid rgba(186, 216, 202, 175);
-          border-radius: 14px;
-          padding: 18px 22px;
-          font-family: "Microsoft YaHei UI";
-          font-size: 16px;
-          line-height: 1.6;
-          selection-background-color: #ccefdc;
-      }
-  )"));
+  setThemeSettings(themeSettings_);
 
   clearLyrics();
 }
@@ -331,6 +367,12 @@ void LyricsView::setPosition(const qint64 positionMilliseconds) {
   if (!synchronizedLines_.isEmpty()) {
     updateSynchronizedLines();
   }
+}
+
+void LyricsView::setThemeSettings(const ThemeSettings& settings) {
+  themeSettings_ = normalizedThemeSettings(settings);
+  setStyleSheet(lyricsStyleSheet(themeSettings_));
+  updateSynchronizedStyles();
 }
 
 qint64 LyricsView::timingOffsetMilliseconds() const noexcept {
@@ -451,12 +493,13 @@ void LyricsView::updateTimingOffsetLabel() {
 void LyricsView::updateSynchronizedStyles() {
   const ResponsiveLyricFontSizes fontSizes =
       responsiveLyricFontSizes(width(), height());
+  const UiThemePalette palette = resolvedThemePalette(themeSettings_);
   for (int index = 0; index < synchronizedLabels_.size(); ++index) {
     const bool isCurrent = index == kCurrentLineOffset;
     const int fontPixels = isCurrent ? fontSizes.current : fontSizes.context;
     synchronizedLabels_[index]->setMinimumHeight(qRound(fontPixels * 1.35));
     synchronizedLabels_[index]->setStyleSheet(
-        synchronizedLabelStyle(isCurrent, fontPixels));
+        synchronizedLabelStyle(isCurrent, fontPixels, palette));
   }
   plainLyricsBrowser_->setStyleSheet(
       QStringLiteral("font-size: %1px;").arg(fontSizes.plain));

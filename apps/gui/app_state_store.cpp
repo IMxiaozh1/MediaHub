@@ -171,6 +171,19 @@ AppStateSnapshot QSettingsAppStateStore::load() {
                            .trimmed()});
   }
   settings_->endArray();
+  snapshot.themeSettings = normalizedThemeSettings(ThemeSettings{
+      settings_->value(QStringLiteral("themeAccentKey"),
+                       QStringLiteral("default"))
+          .toString(),
+      settings_->value(QStringLiteral("themeBackgroundImagePath"))
+          .toString(),
+      settings_->value(QStringLiteral("themeBackgroundBlur"), 0).toInt(),
+      settings_->value(QStringLiteral("themeBackgroundOpacity"), 55).toInt(),
+      settings_->value(QStringLiteral("themeAppearanceMode"),
+                       QStringLiteral("dark"))
+          .toString(),
+      settings_->value(QStringLiteral("themeCustomAccentColor")).toString(),
+  });
   settings_->endGroup();
   return snapshot;
 }
@@ -229,6 +242,20 @@ void QSettingsAppStateStore::save(const AppStateSnapshot& snapshot) {
     settings_->setValue(QStringLiteral("note"), memo.note);
   }
   settings_->endArray();
+  const ThemeSettings themeSettings =
+      normalizedThemeSettings(snapshot.themeSettings);
+  settings_->setValue(QStringLiteral("themeAccentKey"),
+                      themeSettings.accentKey);
+  settings_->setValue(QStringLiteral("themeBackgroundImagePath"),
+                      themeSettings.backgroundImagePath);
+  settings_->setValue(QStringLiteral("themeBackgroundBlur"),
+                      themeSettings.backgroundBlur);
+  settings_->setValue(QStringLiteral("themeBackgroundOpacity"),
+                      themeSettings.backgroundOpacity);
+  settings_->setValue(QStringLiteral("themeAppearanceMode"),
+                      themeSettings.appearanceMode);
+  settings_->setValue(QStringLiteral("themeCustomAccentColor"),
+                      themeSettings.customAccentColor);
   settings_->endGroup();
   settings_->sync();
 }

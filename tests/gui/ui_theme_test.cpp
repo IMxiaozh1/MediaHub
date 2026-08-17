@@ -22,6 +22,8 @@ class UiThemeTest final : public QObject {
     void distinguishesPrimaryWarningAndDestructiveActions();
     void appliesRepresentativeBrowserSurfaceColors();
     void keepsBrowserAuxiliarySurfacesResponsive();
+    void appliesFlatNativePlayerSurfacesWithoutChangingBrowserTheme();
+    void buildsScopedThemeOverridesAndNormalizesControls();
 };
 
 void UiThemeTest::coversBrowserAuxiliarySurfaces() {
@@ -185,6 +187,96 @@ void UiThemeTest::keepsBrowserAuxiliarySurfacesResponsive() {
         "QWidget#browserPage[responsiveSize=\"large\"] QDialog QListWidget")));
     QVERIFY(styleSheet.contains(QStringLiteral(
         "QWidget#browserPage[responsiveSize=\"extraLarge\"] QDialog QLineEdit")));
+}
+
+void UiThemeTest::appliesFlatNativePlayerSurfacesWithoutChangingBrowserTheme() {
+    const QString& styleSheet = mainWindowStyleSheet();
+    QVERIFY(styleSheet.contains(QStringLiteral("QLabel#brandLabel")));
+    QVERIFY(styleSheet.contains(QStringLiteral("QFrame#playerDock")));
+    QVERIFY(styleSheet.contains(
+        QStringLiteral("QToolButton[topChromeButton=\"true\"]")));
+    QVERIFY(styleSheet.contains(QStringLiteral(
+        "QFrame#playlistPanel[customBackground=\"true\"]")));
+    QVERIFY(styleSheet.contains(QStringLiteral("QPushButton[compactAction=\"true\"]")));
+    QVERIFY(styleSheet.contains(QStringLiteral(
+        "QListView#playlistView QScrollBar:horizontal {\n"
+        "          background: #101216;")));
+    QVERIFY(styleSheet.contains(QStringLiteral(
+        "QListView#playlistView QScrollBar::handle:horizontal {\n"
+        "          background: #3b4047;")));
+
+    QWidget centralSurface;
+    centralSurface.setObjectName(QStringLiteral("centralSurface"));
+    centralSurface.setProperty("themeMode", QStringLiteral("audio"));
+    centralSurface.setStyleSheet(styleSheet);
+    centralSurface.ensurePolished();
+    QCOMPARE(centralSurface.palette().color(QPalette::Window),
+             QColor("#0e1013"));
+
+    QFrame playerDock;
+    playerDock.setObjectName(QStringLiteral("playerDock"));
+    playerDock.setStyleSheet(styleSheet);
+    playerDock.ensurePolished();
+    QCOMPARE(playerDock.palette().color(QPalette::Window), QColor("#121419"));
+
+    QFrame playlistPanel;
+    playlistPanel.setObjectName(QStringLiteral("playlistPanel"));
+    playlistPanel.setProperty("themeMode", QStringLiteral("live"));
+    playlistPanel.setStyleSheet(styleSheet);
+    playlistPanel.ensurePolished();
+    QCOMPARE(playlistPanel.palette().color(QPalette::Window),
+             QColor("#15171b"));
+
+    QFrame browserChrome;
+    browserChrome.setObjectName(QStringLiteral("browserChrome"));
+    browserChrome.setStyleSheet(styleSheet);
+    browserChrome.ensurePolished();
+    QCOMPARE(browserChrome.palette().color(QPalette::Window),
+             QColor("#f4f6f8"));
+}
+
+void UiThemeTest::buildsScopedThemeOverridesAndNormalizesControls() {
+    QVERIFY(themeOverrideStyleSheet(ThemeSettings{}).isEmpty());
+
+    const QString greenOverride = themeOverrideStyleSheet(ThemeSettings{
+        QStringLiteral("green"), QString{}, 0, 55});
+    QVERIFY(greenOverride.contains(QStringLiteral("#58b989")));
+    QVERIFY(greenOverride.contains(QStringLiteral("#101815")));
+    QVERIFY(greenOverride.contains(
+        QStringLiteral("QToolButton[topChromeButton=\"true\"]")));
+    QVERIFY(greenOverride.contains(QStringLiteral(
+        "QListView#playlistView[themeMode=\"live\"]::item:selected")));
+    QVERIFY(!greenOverride.contains(QStringLiteral("#browserChrome")));
+
+    const ThemeSettings normalized = normalizedThemeSettings(ThemeSettings{
+        QStringLiteral("unknown"), QStringLiteral("  C:/theme.png  "), -8,
+        145, QStringLiteral("sepia"), QStringLiteral("invalid")});
+    QCOMPARE(normalized.accentKey, QStringLiteral("default"));
+    QCOMPARE(normalized.backgroundImagePath, QStringLiteral("C:/theme.png"));
+    QCOMPARE(normalized.backgroundBlur, 0);
+    QCOMPARE(normalized.backgroundOpacity, 100);
+    QCOMPARE(normalized.appearanceMode, QStringLiteral("dark"));
+    QVERIFY(normalized.customAccentColor.isEmpty());
+
+    const ThemeSettings lightSettings{
+        QStringLiteral("green"), QString{}, 10, 70,
+        QStringLiteral("light"), QString{}};
+    const UiThemePalette lightPalette = resolvedThemePalette(lightSettings);
+    QVERIFY(!lightPalette.isDark);
+    QCOMPARE(lightPalette.window, QColor(QStringLiteral("#eef6f1")));
+    QCOMPARE(lightPalette.accent, QColor(QStringLiteral("#2f8c68")));
+    const QString lightOverride = themeOverrideStyleSheet(lightSettings);
+    QVERIFY(lightOverride.contains(QStringLiteral("#eef6f1")));
+    QVERIFY(lightOverride.contains(QStringLiteral("#2f8c68")));
+    QVERIFY(lightOverride.contains(QStringLiteral("QMenu#optionPopup")));
+    QVERIFY(lightOverride.contains(QStringLiteral(
+        "QListView#playlistView[themeMode=\"audio\"]")));
+
+    const ThemeSettings customSettings{
+        QStringLiteral("custom"), QString{}, 0, 55,
+        QStringLiteral("light"), QStringLiteral("#4080c0")};
+    QCOMPARE(resolvedThemePalette(customSettings).accent,
+             QColor(QStringLiteral("#4080c0")));
 }
 
 }  // namespace mediahub::gui

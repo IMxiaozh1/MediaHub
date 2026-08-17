@@ -286,6 +286,7 @@ void BrowserPage::activate() {
         return;
     }
     isActivated_ = true;
+    updateBackendBounds();
     const bool isVisible =
         !isInitialized_ || contentStack_->currentWidget() == browserHost_;
     backendVisibility_ = isVisible;

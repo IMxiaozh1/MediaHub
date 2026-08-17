@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QMainWindow>
+#include <QColor>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -46,6 +47,7 @@ class BrowserPage;
 class BrowserPermissionStore;
 class BrowserSessionStore;
 class BrowserStartupSettingsStore;
+class ThemeBackgroundWidget;
 class VideoOutputWidget;
 class LyricsView;
 struct LyricsResult;
@@ -107,6 +109,9 @@ class MainWindow final : public QMainWindow {
   void releaseVideoSurface(void* nativeHandle);
   // 调用线程：GUI 主线程。切换页面栈但不自动恢复任何媒体播放。
   void showDisplayMode(DisplayMode mode);
+  // 调用线程：GUI 主线程。应用主题但不触发持久化信号。
+  void setThemeSettings(const ThemeSettings& settings);
+  [[nodiscard]] const ThemeSettings& themeSettings() const noexcept;
 
  signals:
   void localFilesSelected(const QStringList& filePaths);
@@ -145,6 +150,7 @@ class MainWindow final : public QMainWindow {
   void playbackModeRequested(int modeIndex);
   void videoSurfaceReady(void* nativeHandle);
   void displayModeSelected(DisplayMode mode);
+  void themeSettingsChanged(const ThemeSettings& settings);
   void closing();
 
  protected:
@@ -167,6 +173,8 @@ class MainWindow final : public QMainWindow {
   void showLiveUrlHistory();
   void showLiveSourceMemo();
   void showShortcutHelp();
+  void showThemeSettings();
+  void applyThemeSettings(const ThemeSettings& settings);
   void toggleFullScreen();
   void exitFullScreen();
   void handleWebFullScreenChanged(bool isFullScreen);
@@ -176,6 +184,7 @@ class MainWindow final : public QMainWindow {
   void togglePlaylistVisibility();
   void updatePlaylistToggleAppearance();
   void updatePlaylistResponsiveStyle();
+  void refreshControlIcons();
   void applyPresentationMode(UiPresentationMode mode);
   void showPlaylistContextMenu(const QPoint& position);
   void renameContextPlaylistItem();
@@ -201,6 +210,9 @@ class MainWindow final : public QMainWindow {
   QAction* livePlaylistStopAction_{nullptr};
   QAction* livePlaylistMarkAction_{nullptr};
   QAction* livePlaylistFavoriteAction_{nullptr};
+  QMenu* fileMenu_{nullptr};
+  QMenu* viewMenu_{nullptr};
+  QMenu* helpMenu_{nullptr};
   QMenu* recentLocalMediaMenu_{nullptr};
   QSlider* progressSlider_{nullptr};
   QSlider* volumeSlider_{nullptr};
@@ -220,6 +232,10 @@ class MainWindow final : public QMainWindow {
   QToolButton* localModeButton_{nullptr};
   QToolButton* liveModeButton_{nullptr};
   QToolButton* webModeButton_{nullptr};
+  QToolButton* fileMenuButton_{nullptr};
+  QToolButton* viewMenuButton_{nullptr};
+  QToolButton* helpMenuButton_{nullptr};
+  QToolButton* themeButton_{nullptr};
   QTabBar* playlistKindTabs_{nullptr};
   QLineEdit* livePlaylistUrlEdit_{nullptr};
   QLineEdit* livePlaylistSearchEdit_{nullptr};
@@ -235,6 +251,7 @@ class MainWindow final : public QMainWindow {
   QFrame* transportPanel_{nullptr};
   QFrame* displayModePanel_{nullptr};
   QWidget* centralSurface_{nullptr};
+  ThemeBackgroundWidget* themeBackground_{nullptr};
   QWidget* nativePlaybackPage_{nullptr};
   QWidget* mediaDisplay_{nullptr};
   VideoOutputWidget* videoOutput_{nullptr};
@@ -264,6 +281,8 @@ class MainWindow final : public QMainWindow {
   QStringList livePlaylistHistoryUrls_;
   QVector<LiveSourceMemo> liveSourceMemos_;
   QString playlistResponsiveSize_;
+  ThemeSettings themeSettings_;
+  QColor controlIconColor_{QStringLiteral("#d5d9df")};
   QAbstractItemModel* localPlaylistModel_{nullptr};
   QAbstractItemModel* livePlaylistModel_{nullptr};
   int keyboardSeekStepSeconds_{5};

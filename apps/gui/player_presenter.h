@@ -122,6 +122,7 @@ class PlayerPresenter final : public QObject {
   void rememberLivePlaylistUrl(const QString& url);
   void updateLivePlaylistHistory(const QStringList& urls);
   void updateLiveSourceMemos(const QVector<LiveSourceMemo>& memos);
+  void updateThemeSettings(const ThemeSettings& settings);
   void openRecentLocalMedia(const QString& filePath);
   void clearRecentLocalMedia();
   void rememberCurrentLocalMedia();
@@ -181,6 +182,7 @@ class PlayerPresenter final : public QObject {
   QStringList recentNetworkUrls_;
   QStringList livePlaylistUrlHistory_;
   QVector<LiveSourceMemo> liveSourceMemos_;
+  ThemeSettings themeSettings_;
   std::vector<LocalPlaybackRecord> recentLocalMedia_;
   QString lastLivePlaylistUrl_;
   QString activeLivePlaylistRequestSource_;

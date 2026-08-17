@@ -25,6 +25,7 @@
 #include <QListView>
 #include <QListWidget>
 #include <QMenu>
+#include <QMenuBar>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -63,6 +64,8 @@
 #include "player_presenter.h"
 #include "playlist_model.h"
 #include "shutdown_watchdog.h"
+#include "theme_background_widget.h"
+#include "theme_settings_dialog.h"
 #include "video_output_widget.h"
 #include "window_icon_manager.h"
 
@@ -259,6 +262,8 @@ private slots:
   void pausesOnlyActiveNativePlaybackWhenEnteringWeb();
   void showsAudibleWebTabCountAcrossDisplayModes();
   void stylesDisplayModesAsStableSegmentedControl();
+  void opensMatureThemeCustomizerAndAppliesBackgroundControls();
+  void coalescesRapidInteractiveThemePreviews();
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
@@ -328,7 +333,7 @@ private slots:
   void rendersBottomUpwardAudioWaveformAndTogglesFullScreen();
   void togglesLyricsBesideVolumeAndTracksSynchronizedLine();
   void collapsesAndExpandsPlaylistWithMediaResize();
-  void keepsPlaylistGeometryStableAndScalesTypography();
+  void scalesPlaylistTypographyAcrossWindowBreakpoints();
   void keepsPresentationModesInsideResponsiveBounds();
   void resizesVideoSurfaceAndTogglesFullScreen();
   void togglesFullScreenWithF11();
@@ -476,6 +481,7 @@ void MainWindowTest::showsAudibleWebTabCountAcrossDisplayModes() {
 
 void MainWindowTest::stylesDisplayModesAsStableSegmentedControl() {
   GuiHarness harness;
+  auto* const brand = requiredChild<QLabel>(harness.window, "brandLabel");
   auto* const rail = requiredChild<QFrame>(harness.window, "displayModeRail");
   auto* const local =
       requiredChild<QToolButton>(harness.window, "localModeButton");
@@ -487,7 +493,7 @@ void MainWindowTest::stylesDisplayModesAsStableSegmentedControl() {
   const QList<QToolButton*> segments{local, live, web};
   for (QToolButton* const segment : segments) {
     QCOMPARE(segment->parentWidget(), rail);
-    QCOMPARE(segment->size(), QSize(128, 36));
+    QCOMPARE(segment->size(), QSize(88, 32));
     QCOMPARE(segment->property("modeSegment").toBool(), true);
     QVERIFY(!segment->accessibleName().isEmpty());
     QVERIFY(!segment->toolTip().isEmpty());
@@ -495,12 +501,236 @@ void MainWindowTest::stylesDisplayModesAsStableSegmentedControl() {
   QCOMPARE(local->accessibleName(), QStringLiteral("本地模式"));
   QCOMPARE(live->accessibleName(), QStringLiteral("直播模式"));
   QCOMPARE(web->accessibleName(), QStringLiteral("网页模式"));
+  QCOMPARE(brand->text(), QStringLiteral("MediaHub"));
+  harness.window.show();
+  QCoreApplication::processEvents();
+  QVERIFY(brand->geometry().left() < rail->geometry().left());
 
   const QString& styleSheet = mainWindowStyleSheet();
   QVERIFY(styleSheet.contains(QStringLiteral("QFrame#displayModeRail")));
   QVERIFY(styleSheet.contains(QStringLiteral("QToolButton#localModeButton:checked")));
   QVERIFY(styleSheet.contains(QStringLiteral("QToolButton#liveModeButton:checked")));
   QVERIFY(styleSheet.contains(QStringLiteral("QToolButton#webModeButton:checked")));
+}
+
+void MainWindowTest::opensMatureThemeCustomizerAndAppliesBackgroundControls() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString backgroundPath =
+      QDir(directory.path()).filePath(QStringLiteral("theme-background.png"));
+  QImage background(96, 64, QImage::Format_RGB32);
+  background.fill(QColor(QStringLiteral("#386b8f")));
+  QVERIFY(background.save(backgroundPath, "PNG"));
+
+  FakeAppStateStore store;
+  GuiHarness harness(&store);
+  auto* const themeButton =
+      harness.window.findChild<QToolButton*>(QStringLiteral("themeButton"));
+  QVERIFY(themeButton != nullptr);
+  QVERIFY(themeButton->text().isEmpty());
+  QVERIFY(!themeButton->icon().isNull());
+  QCOMPARE(themeButton->size(), QSize(32, 32));
+  for (const char* const objectName : {"fileMenuButton", "viewMenuButton",
+                                       "helpMenuButton"}) {
+    auto* const button = harness.window.findChild<QToolButton*>(
+        QString::fromLatin1(objectName));
+    QVERIFY(button != nullptr);
+    QVERIFY(button->text().isEmpty());
+    QVERIFY(!button->icon().isNull());
+    QVERIFY(button->menu() != nullptr);
+    QCOMPARE(button->size(), QSize(32, 32));
+  }
+  QVERIFY(!harness.window.menuBar()->isVisible());
+  bool inspectedDialog = false;
+
+  QTimer::singleShot(0, [&] {
+    auto* const dialog =
+        qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (dialog == nullptr) {
+      return;
+    }
+    auto* const title = dialog->findChild<QLabel*>(
+        QStringLiteral("themeSettingsTitle"));
+    auto* const greenPreset = dialog->findChild<QToolButton*>(
+        QStringLiteral("themePresetGreenButton"));
+    auto* const lightMode = dialog->findChild<QToolButton*>(
+        QStringLiteral("themeModeLightButton"));
+    auto* const redSlider = dialog->findChild<QSlider*>(
+        QStringLiteral("themeRedSlider"));
+    auto* const greenSlider = dialog->findChild<QSlider*>(
+        QStringLiteral("themeGreenSlider"));
+    auto* const blueSlider = dialog->findChild<QSlider*>(
+        QStringLiteral("themeBlueSlider"));
+    auto* const blurSlider = dialog->findChild<QSlider*>(
+        QStringLiteral("themeBlurSlider"));
+    auto* const opacitySlider = dialog->findChild<QSlider*>(
+        QStringLiteral("themeOpacitySlider"));
+    auto* const applyButton = dialog->findChild<QPushButton*>(
+        QStringLiteral("themeApplyButton"));
+    if (title == nullptr || greenPreset == nullptr || lightMode == nullptr ||
+        redSlider == nullptr || greenSlider == nullptr ||
+        blueSlider == nullptr || blurSlider == nullptr ||
+        opacitySlider == nullptr || applyButton == nullptr) {
+      dialog->reject();
+      return;
+    }
+    QCOMPARE(dialog->objectName(), QStringLiteral("themeSettingsDialog"));
+    QCOMPARE(title->text(), QStringLiteral("个性化主题"));
+    QCOMPARE(blurSlider->orientation(), Qt::Horizontal);
+    QCOMPARE(opacitySlider->orientation(), Qt::Horizontal);
+    QCOMPARE(blurSlider->minimum(), 0);
+    QCOMPARE(blurSlider->maximum(), 100);
+    QCOMPARE(opacitySlider->minimum(), 0);
+    QCOMPARE(opacitySlider->maximum(), 100);
+    QCOMPARE(redSlider->maximum(), 255);
+    QCOMPARE(greenSlider->maximum(), 255);
+    QCOMPARE(blueSlider->maximum(), 255);
+    QTest::mouseClick(lightMode, Qt::LeftButton);
+    QTest::mouseClick(greenPreset, Qt::LeftButton);
+    QVERIFY(!greenPreset->icon().isNull());
+    redSlider->setValue(64);
+    greenSlider->setValue(128);
+    blueSlider->setValue(192);
+    bool acceptedBackground = false;
+    QVERIFY(QMetaObject::invokeMethod(
+        dialog, "setBackgroundImagePath", Qt::DirectConnection,
+        Q_RETURN_ARG(bool, acceptedBackground), Q_ARG(QString, backgroundPath)));
+    QVERIFY(acceptedBackground);
+    blurSlider->setValue(42);
+    opacitySlider->setValue(68);
+    inspectedDialog = true;
+    applyButton->click();
+  });
+  QTest::mouseClick(themeButton, Qt::LeftButton);
+
+  QVERIFY(inspectedDialog);
+  auto* const centralSurface =
+      requiredChild<QWidget>(harness.window, "centralSurface");
+  QCOMPARE(centralSurface->property("accentKey").toString(),
+           QStringLiteral("custom"));
+  QCOMPARE(centralSurface->property("appearanceMode").toString(),
+           QStringLiteral("light"));
+  QCOMPARE(centralSurface->property("backgroundBlur").toInt(), 42);
+  QCOMPARE(centralSurface->property("backgroundOpacity").toInt(), 68);
+  QVERIFY(centralSurface->property("customBackground").toBool());
+  QVERIFY(store.saveCount >= 1);
+  QCOMPARE(store.snapshot.themeSettings.accentKey, QStringLiteral("custom"));
+  QCOMPARE(store.snapshot.themeSettings.appearanceMode,
+           QStringLiteral("light"));
+  QCOMPARE(store.snapshot.themeSettings.customAccentColor,
+           QStringLiteral("#4080c0"));
+  QCOMPARE(store.snapshot.themeSettings.backgroundImagePath, backgroundPath);
+  QCOMPARE(store.snapshot.themeSettings.backgroundBlur, 42);
+  QCOMPARE(store.snapshot.themeSettings.backgroundOpacity, 68);
+
+  GuiHarness restored(&store);
+  QCOMPARE(restored.window.themeSettings().accentKey,
+           store.snapshot.themeSettings.accentKey);
+  QCOMPARE(restored.window.themeSettings().appearanceMode,
+           QStringLiteral("light"));
+  QCOMPARE(restored.window.themeSettings().customAccentColor,
+           QStringLiteral("#4080c0"));
+  QCOMPARE(restored.window.themeSettings().backgroundImagePath,
+           store.snapshot.themeSettings.backgroundImagePath);
+  QCOMPARE(restored.window.themeSettings().backgroundBlur, 42);
+  QCOMPARE(restored.window.themeSettings().backgroundOpacity, 68);
+  QCOMPARE(requiredChild<QWidget>(restored.window, "centralSurface")
+               ->property("customBackground")
+               .toBool(),
+           true);
+  restored.window.show();
+  QCoreApplication::processEvents();
+  auto* const restoredPlaylist =
+      requiredChild<QListView>(restored.window, "playlistView");
+  restoredPlaylist->ensurePolished();
+  QCOMPARE(restoredPlaylist->palette().color(QPalette::Base),
+           QColor(QStringLiteral("#e5eef2")));
+  auto* const optionPopup =
+      requiredChild<QMenu>(restored.window, "optionPopup");
+  optionPopup->ensurePolished();
+  QCOMPARE(optionPopup->palette().color(QPalette::Window),
+           QColor(QStringLiteral("#ffffff")));
+  QVERIFY(requiredChild<LyricsView>(restored.window, "lyricsView")
+              ->styleSheet()
+              .contains(QStringLiteral("rgba(")));
+  auto* const restoredCentral =
+      requiredChild<QWidget>(restored.window, "centralSurface");
+  auto* const backgroundWidget =
+      static_cast<ThemeBackgroundWidget*>(restoredCentral);
+  auto* const videoOutput =
+      requiredChild<VideoOutputWidget>(restored.window, "videoOutputWidget");
+  const QImage alignedBackground =
+      backgroundWidget->alignedBackgroundFor(videoOutput);
+  QCOMPARE(alignedBackground.size(), videoOutput->size());
+  QVERIFY(!alignedBackground.isNull());
+  QVERIFY(alignedBackground.pixelColor(0, 0).alpha() > 0);
+  QVERIFY(alignedBackground.pixelColor(alignedBackground.width() - 1,
+                                       alignedBackground.height() - 1)
+              .alpha() > 0);
+}
+
+void MainWindowTest::coalescesRapidInteractiveThemePreviews() {
+  ThemeSettingsDialog dialog(ThemeSettings{});
+  dialog.show();
+  QCoreApplication::processEvents();
+  auto* const redSlider =
+      dialog.findChild<QSlider*>(QStringLiteral("themeRedSlider"));
+  auto* const greenSlider =
+      dialog.findChild<QSlider*>(QStringLiteral("themeGreenSlider"));
+  auto* const blueSlider =
+      dialog.findChild<QSlider*>(QStringLiteral("themeBlueSlider"));
+  auto* const previewTimer =
+      dialog.findChild<QTimer*>(QStringLiteral("themePreviewTimer"));
+  QVERIFY(redSlider != nullptr);
+  QVERIFY(greenSlider != nullptr);
+  QVERIFY(blueSlider != nullptr);
+  QVERIFY(previewTimer != nullptr);
+
+  QSignalSpy previewSpy(&dialog, &ThemeSettingsDialog::previewChanged);
+  for (int value = 32; value <= 160; value += 8) {
+    redSlider->setValue(value);
+    greenSlider->setValue(255 - value);
+    blueSlider->setValue(value / 2);
+  }
+
+  QCOMPARE(previewSpy.count(), 0);
+  QVERIFY(previewTimer->isActive());
+  QTRY_COMPARE_WITH_TIMEOUT(previewSpy.count(), 1, 500);
+  QCOMPARE(dialog.settings().customAccentColor,
+           QColor(redSlider->value(), greenSlider->value(), blueSlider->value())
+               .name(QColor::HexRgb));
+
+  const int directTarget = 30;
+  const int clickX = qRound((redSlider->width() - 1) *
+                            static_cast<double>(directTarget) / 255.0);
+  const QPoint clickPosition(clickX, redSlider->height() / 2);
+  QMouseEvent pressEvent(QEvent::MouseButtonPress, clickPosition,
+                         Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(redSlider, &pressEvent);
+  QVERIFY(redSlider->isSliderDown());
+  QVERIFY(qAbs(redSlider->value() - directTarget) <= 1);
+  QCOMPARE(previewSpy.count(), 1);
+  QVERIFY(!previewTimer->isActive());
+
+  const int dragTarget = 200;
+  const int dragX = qRound((redSlider->width() - 1) *
+                           static_cast<double>(dragTarget) / 255.0);
+  const QPoint dragPosition(dragX, redSlider->height() / 2);
+  QMouseEvent moveEvent(QEvent::MouseMove, dragPosition, Qt::NoButton,
+                        Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(redSlider, &moveEvent);
+  QVERIFY(qAbs(redSlider->value() - dragTarget) <= 1);
+  QCOMPARE(previewSpy.count(), 1);
+  QVERIFY(!previewTimer->isActive());
+
+  QMouseEvent releaseEvent(QEvent::MouseButtonRelease, dragPosition,
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(redSlider, &releaseEvent);
+  QCOMPARE(previewSpy.count(), 2);
+  QCOMPARE(dialog.settings().customAccentColor,
+           QColor(redSlider->value(), greenSlider->value(), blueSlider->value())
+               .name(QColor::HexRgb));
+  QVERIFY(!previewTimer->isActive());
 }
 
 void MainWindowTest::loadsReplaceableWindowIconsFromFixedSlots() {
@@ -667,6 +897,17 @@ void MainWindowTest::hasFormalInitialLayout() {
   QCOMPARE(requiredChild<QPushButton>(harness.window, "openFileButton")
                ->parentWidget(),
            requiredChild<QWidget>(harness.window, "playlistPanel"));
+  QCOMPARE(requiredChild<QPushButton>(harness.window, "openFileButton")->text(),
+           QStringLiteral("添加媒体"));
+  QVERIFY(requiredChild<QTabBar>(harness.window, "playlistKindTabs")
+              ->isHidden());
+  auto* const playerDock =
+      requiredChild<QWidget>(harness.window, "playerDock");
+  QCOMPARE(requiredChild<QWidget>(harness.window, "mediaCard")->parentWidget(),
+           playerDock);
+  QCOMPARE(
+      requiredChild<QWidget>(harness.window, "transportPanel")->parentWidget(),
+      playerDock);
   QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
 
   auto *const videoOutput =
@@ -704,15 +945,17 @@ void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
            QStringLiteral("video"));
   QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
            QStringLiteral("video"));
-  QCOMPARE(modeBadge->text(), QStringLiteral("VIDEO"));
-  QVERIFY(titleLabel->text().contains(QStringLiteral("播放")));
+  QCOMPARE(modeBadge->text(), QStringLiteral("视频"));
+  QVERIFY(modeBadge->isHidden());
+  QCOMPARE(titleLabel->text(), QStringLiteral("本地媒体"));
 
   harness.presenter.openLocalFile(QStringLiteral("C:/music/theme-song.mp3"));
   QTRY_COMPARE(centralSurface->property("themeMode").toString(),
                QStringLiteral("audio"));
   QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
            QStringLiteral("audio"));
-  QCOMPARE(modeBadge->text(), QStringLiteral("MUSIC"));
+  QCOMPARE(modeBadge->text(), QStringLiteral("音频"));
+  QCOMPARE(titleLabel->text(), QStringLiteral("本地媒体"));
   QCOMPARE(requiredChild<QToolButton>(harness.window, "playPauseButton"),
            playPauseButton);
   QCOMPARE(requiredChild<QSlider>(harness.window, "progressSlider"),
@@ -725,7 +968,7 @@ void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
                QStringLiteral("video"));
   QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
            QStringLiteral("video"));
-  QCOMPARE(modeBadge->text(), QStringLiteral("VIDEO"));
+  QCOMPARE(modeBadge->text(), QStringLiteral("视频"));
 
   auto *const playlistTabs =
       requiredChild<QTabBar>(harness.window, "playlistKindTabs");
@@ -736,8 +979,8 @@ void MainWindowTest::switchesVisualModesWithoutRebuildingControls() {
                QStringLiteral("live"));
   QCOMPARE(presentationModeKey(videoOutput->presentationMode()),
            QStringLiteral("live"));
-  QCOMPARE(modeBadge->text(), QStringLiteral("LIVE"));
-  QVERIFY(titleLabel->text().contains(QStringLiteral("直播")));
+  QCOMPARE(modeBadge->text(), QStringLiteral("直播"));
+  QCOMPARE(titleLabel->text(), QStringLiteral("直播"));
   QCOMPARE(requiredChild<QToolButton>(harness.window, "playPauseButton"),
            playPauseButton);
   QCOMPARE(requiredChild<QSlider>(harness.window, "progressSlider"),
@@ -1051,7 +1294,7 @@ void MainWindowTest::separatesLocalAndLiveListsWithoutStoppingPlayback() {
       requiredChild<QPushButton>(harness.window, "livePlaylistLocateButton");
 
   QCOMPARE(tabs->currentIndex(), 0);
-  QCOMPARE(playlistTitle->text(), QStringLiteral("播放列表"));
+  QCOMPARE(playlistTitle->text(), QStringLiteral("本地队列"));
   QVERIFY(!openButton->isHidden());
   QVERIFY(livePlaylistTools->isHidden());
   QVERIFY(playlistUrlEdit->isHidden());
@@ -1082,7 +1325,7 @@ void MainWindowTest::separatesLocalAndLiveListsWithoutStoppingPlayback() {
   QCOMPARE(playlistView->model()->rowCount(), 2);
   QCOMPARE(playlistView->selectionMode(), QAbstractItemView::ExtendedSelection);
   QCOMPARE(playlistView->contextMenuPolicy(), Qt::CustomContextMenu);
-  QCOMPARE(playlistTitle->text(), QStringLiteral("播放列表"));
+  QCOMPARE(playlistTitle->text(), QStringLiteral("本地队列"));
   QVERIFY(livePlaylistTools->isHidden());
   QCOMPARE(harness.engine.commands().size(), commandCountBeforeSwitch);
 
@@ -1472,7 +1715,7 @@ void MainWindowTest::replacesRemoteLiveListAtomicallyAndKeepsItOnFailure() {
   harness.livePlaylistService.complete(std::move(firstResult));
 
   QVERIFY(loadButton->isEnabled());
-  QCOMPARE(loadButton->text(), QStringLiteral("载入 / 刷新清单"));
+  QCOMPARE(loadButton->text(), QStringLiteral("载入清单"));
   QCOMPARE(playlistView->model()->rowCount(), 2);
   QCOMPARE(playlistView->model()->index(0, 0).data(Qt::UserRole).toString(),
            QStringLiteral("第一路"));
@@ -1883,6 +2126,10 @@ void MainWindowTest::roundTripsAppStateThroughSettingsFile() {
       LiveSourceMemo{QStringLiteral("rtmp://live.example/backup"),
                      QStringLiteral("备用源")},
   };
+  expected.themeSettings = ThemeSettings{
+      QStringLiteral("custom"),
+      QStringLiteral("C:/Users/example/Pictures/theme.jpg"), 37, 64,
+      QStringLiteral("light"), QStringLiteral("#4c86b8")};
 
   {
     QSettingsAppStateStore store(settingsFile);
@@ -1920,6 +2167,17 @@ void MainWindowTest::roundTripsAppStateThroughSettingsFile() {
     QCOMPARE(restored.liveSourceMemos.at(index).note,
              expected.liveSourceMemos.at(index).note);
   }
+  QCOMPARE(restored.themeSettings.accentKey, expected.themeSettings.accentKey);
+  QCOMPARE(restored.themeSettings.backgroundImagePath,
+           expected.themeSettings.backgroundImagePath);
+  QCOMPARE(restored.themeSettings.backgroundBlur,
+           expected.themeSettings.backgroundBlur);
+  QCOMPARE(restored.themeSettings.backgroundOpacity,
+           expected.themeSettings.backgroundOpacity);
+  QCOMPARE(restored.themeSettings.appearanceMode,
+           expected.themeSettings.appearanceMode);
+  QCOMPARE(restored.themeSettings.customAccentColor,
+           expected.themeSettings.customAccentColor);
 }
 
 void MainWindowTest::loadsLegacyV04StateWithoutNewFields() {
@@ -1953,6 +2211,12 @@ void MainWindowTest::loadsLegacyV04StateWithoutNewFields() {
            QStringLiteral("https://example.test/legacy.m3u"));
   QVERIFY(restored.recentLocalMedia.empty());
   QVERIFY(restored.favoriteLiveSourceUrls.isEmpty());
+  QCOMPARE(restored.themeSettings.accentKey, QStringLiteral("default"));
+  QVERIFY(restored.themeSettings.backgroundImagePath.isEmpty());
+  QCOMPARE(restored.themeSettings.backgroundBlur, 0);
+  QCOMPARE(restored.themeSettings.backgroundOpacity, 55);
+  QCOMPARE(restored.themeSettings.appearanceMode, QStringLiteral("dark"));
+  QVERIFY(restored.themeSettings.customAccentColor.isEmpty());
 }
 
 void MainWindowTest::restoresPersistedStateWithoutStartingPlayback() {
@@ -2346,7 +2610,9 @@ void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
   QVERIFY(helpMenu != nullptr);
   QVERIFY(helpMenu->title().contains(QStringLiteral("帮助")));
   bool inspectedDialog = false;
+  bool usesDesktopToolStyling = false;
   bool cancelledSavePrompt = false;
+  bool styledSavePrompt = false;
   bool acceptedSavePrompt = false;
   bool discardedClosePrompt = false;
 
@@ -2368,15 +2634,31 @@ void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
         QStringLiteral("liveSourceMemoSaveShortcut"));
     auto *const notice = dialog->findChild<QLabel *>(
         QStringLiteral("liveSourceMemoNotice"));
+    auto *const eyebrow = dialog->findChild<QLabel *>(
+        QStringLiteral("liveSourceMemoEyebrow"));
+    auto *const title = dialog->findChild<QLabel *>(
+        QStringLiteral("liveSourceMemoTitle"));
+    auto *const countLabel = dialog->findChild<QLabel *>(
+        QStringLiteral("liveSourceMemoCountBadge"));
     if (table == nullptr || addButton == nullptr || saveButton == nullptr ||
-        returnButton == nullptr || saveShortcut == nullptr || notice == nullptr) {
+        returnButton == nullptr || saveShortcut == nullptr || notice == nullptr ||
+        eyebrow == nullptr || title == nullptr || countLabel == nullptr) {
       return;
     }
     QVERIFY(!dialog->windowFlags().testFlag(
         Qt::WindowContextHelpButtonHint));
     QVERIFY(!dialog->styleSheet().isEmpty());
-    QCOMPARE(dialog->windowTitle(), QStringLiteral("直播源"));
-    QCOMPARE(notice->text(), QStringLiteral("本窗口为方便用户保存直播源"));
+    usesDesktopToolStyling =
+        dialog->windowTitle() == QStringLiteral("直播源备忘") &&
+        eyebrow->isHidden() &&
+        title->text() == QStringLiteral("直播源备忘") &&
+        notice->text() ==
+            QStringLiteral("仅保存在本机，不会自动载入或播放") &&
+        countLabel->maximumHeight() <= 28 &&
+        addButton->text() == QStringLiteral("新增") &&
+        saveButton->text() == QStringLiteral("保存") &&
+        addButton->maximumHeight() <= 38 &&
+        saveButton->maximumHeight() <= 38;
     QCOMPARE(table->columnCount(), 2);
     QCOMPARE(table->horizontalHeaderItem(0)->text(),
              QStringLiteral("直播源地址"));
@@ -2412,10 +2694,15 @@ void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
       }
       auto *const rejectButton = confirmation->findChild<QPushButton *>(
           QStringLiteral("memoConfirmationRejectButton"));
+      auto *const confirmationEyebrow = confirmation->findChild<QLabel *>(
+          QStringLiteral("memoConfirmationEyebrow"));
       cancelledSavePrompt =
           confirmation->objectName() ==
               QStringLiteral("liveSourceMemoSaveConfirmation") &&
           rejectButton != nullptr;
+      styledSavePrompt =
+          confirmationEyebrow != nullptr && confirmationEyebrow->isHidden() &&
+          !confirmation->styleSheet().contains(QStringLiteral("qlineargradient"));
       if (rejectButton != nullptr) {
         rejectButton->click();
       } else {
@@ -2479,6 +2766,8 @@ void MainWindowTest::managesLiveSourceMemosWithSaveShortcutAndReturnPrompt() {
   memoAction->trigger();
 
   QVERIFY(inspectedDialog);
+  QVERIFY(usesDesktopToolStyling);
+  QVERIFY(styledSavePrompt);
   QCOMPARE(store.snapshot.liveSourceMemos.size(), 2);
   QCOMPARE(store.snapshot.liveSourceMemos.at(1).note,
            QStringLiteral("新增备用"));
@@ -2579,7 +2868,7 @@ void MainWindowTest::cancelsLivePlaylistLoadingAndIgnoresLateResult() {
   QVERIFY(!urlEdit->isEnabled());
   QTest::mouseClick(loadButton, Qt::LeftButton);
   QCOMPARE(harness.livePlaylistService.cancelCount, 1);
-  QCOMPARE(loadButton->text(), QStringLiteral("载入 / 刷新清单"));
+  QCOMPARE(loadButton->text(), QStringLiteral("载入清单"));
   QVERIFY(urlEdit->isEnabled());
   QCOMPARE(statusLabel->text(), QStringLiteral("已取消载入直播清单"));
 
@@ -4307,6 +4596,38 @@ void MainWindowTest::rendersBottomUpwardAudioWaveformAndTogglesFullScreen() {
   QVERIFY(releasedIntensity > continuedIntensity * 0.6F);
   QVERIFY(releasedIntensity < continuedIntensity * 0.65F);
 
+  core::AudioWaveform renderedWaveform;
+  renderedWaveform.samples.fill(0.85F);
+  renderedWaveform.intensity = 1.0F;
+  for (int frame = 0; frame < 12; ++frame) {
+    harness.engine.emitAudioWaveformChanged(renderedWaveform);
+  }
+  QCoreApplication::processEvents();
+  const QImage renderedWaveformImage = videoOutput->grab().toImage();
+  int upperSignalPixels = 0;
+  int lowerSignalPixels = 0;
+  for (int y = 12; y < renderedWaveformImage.height() - 12; ++y) {
+    for (int x = 12; x < renderedWaveformImage.width() - 12; ++x) {
+      const QColor color = renderedWaveformImage.pixelColor(x, y);
+      const bool isWaveformSignal =
+          color.blue() >= 130 && color.blue() >= color.green() + 35 &&
+          color.green() >= color.red() + 35;
+      if (!isWaveformSignal) {
+        continue;
+      }
+      if (y < renderedWaveformImage.height() / 2) {
+        ++upperSignalPixels;
+      } else {
+        ++lowerSignalPixels;
+      }
+    }
+  }
+  QVERIFY(upperSignalPixels > 30);
+  QVERIFY2(upperSignalPixels * 5 > lowerSignalPixels * 6,
+           qPrintable(QStringLiteral("upper=%1 lower=%2")
+                          .arg(upperSignalPixels)
+                          .arg(lowerSignalPixels)));
+
   harness.engine.emitStateChanged(core::PlaybackState::Paused);
   QTRY_VERIFY(!videoOutput->isAudioVisualizationAnimating());
   QTest::mouseClick(fullScreenButton, Qt::LeftButton);
@@ -4524,7 +4845,7 @@ void MainWindowTest::collapsesAndExpandsPlaylistWithMediaResize() {
   QCOMPARE(toggleButton->accessibleName(), QStringLiteral("收起播放列表"));
 }
 
-void MainWindowTest::keepsPlaylistGeometryStableAndScalesTypography() {
+void MainWindowTest::scalesPlaylistTypographyAcrossWindowBreakpoints() {
   GuiHarness harness;
   harness.window.show();
   QCoreApplication::processEvents();
@@ -4545,6 +4866,7 @@ void MainWindowTest::keepsPlaylistGeometryStableAndScalesTypography() {
                                   QSize(960, 720), QSize(1200, 800),
                                   QSize(1600, 900)};
   std::array<int, 4> panelWidths{};
+  std::array<int, 4> titleFontSizes{};
   std::array<int, 4> listFontHeights{};
   std::array<int, 4> searchFontHeights{};
   for (std::size_t index = 0; index < sizes.size(); ++index) {
@@ -4568,16 +4890,19 @@ void MainWindowTest::keepsPlaylistGeometryStableAndScalesTypography() {
     QCOMPARE(playlistTabs->fontMetrics().height(), localTabHeight);
     QCOMPARE(playlistView->fontMetrics().height(), localListHeight);
     panelWidths.at(index) = playlistPanel->width();
+    titleFontSizes.at(index) = playlistTitle->font().pixelSize();
     listFontHeights.at(index) = playlistView->fontMetrics().height();
     searchFontHeights.at(index) =
         livePlaylistSearch->fontMetrics().height();
   }
 
   for (std::size_t index = 1; index < sizes.size(); ++index) {
-    QVERIFY(panelWidths.at(index - 1) < panelWidths.at(index));
+    QVERIFY(panelWidths.at(index - 1) <= panelWidths.at(index));
+    QVERIFY(titleFontSizes.at(index - 1) < titleFontSizes.at(index));
     QVERIFY(listFontHeights.at(index - 1) < listFontHeights.at(index));
     QVERIFY(searchFontHeights.at(index - 1) < searchFontHeights.at(index));
   }
+  QVERIFY(panelWidths.front() < panelWidths.back());
 }
 
 void MainWindowTest::keepsPresentationModesInsideResponsiveBounds() {
@@ -4724,25 +5049,24 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   auto *const playlistView =
       requiredChild<QListView>(harness.window, "playlistView");
   const std::array<QWidget *, 10> timelineControls{
-      previousButton,     playPauseButton,  nextButton,         stopButton,
-      volumeButton,       lyricsButton,     playbackRateButton, seekStepButton,
-      playbackModeButton, fullScreenButton,
+      playbackModeButton, previousButton,     playPauseButton, nextButton,
+      stopButton,         volumeButton,       lyricsButton,    playbackRateButton,
+      seekStepButton,     fullScreenButton,
   };
   QTRY_VERIFY(harness.window.rect().contains(
       geometryInsideWindow(*openButton, harness.window)));
   QVERIFY(harness.window.rect().contains(
       geometryInsideWindow(*progressSlider, harness.window)));
-  const int timelineCenter =
-      verticalCenterInsideWindow(*progressSlider, harness.window);
-  QVERIFY(
-      geometryInsideWindow(*progressSlider, harness.window).right() <
-      geometryInsideWindow(*timelineControls.front(), harness.window).left());
+  const int controlsCenter =
+      verticalCenterInsideWindow(*timelineControls.front(), harness.window);
+  QVERIFY(geometryInsideWindow(*progressSlider, harness.window).bottom() <
+          geometryInsideWindow(*timelineControls.front(), harness.window).top());
   for (std::size_t index = 0; index < timelineControls.size(); ++index) {
     auto *const control = timelineControls.at(index);
     QVERIFY(harness.window.rect().contains(
         geometryInsideWindow(*control, harness.window)));
     QVERIFY(qAbs(verticalCenterInsideWindow(*control, harness.window) -
-                 timelineCenter) <= 1);
+                 controlsCenter) <= 2);
     if (index + 1 < timelineControls.size()) {
       QVERIFY(
           geometryInsideWindow(*control, harness.window).right() <
@@ -4823,6 +5147,7 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
   auto *const helpAction =
       requiredChild<QAction>(harness.window, "shortcutHelpAction");
   bool inspectedDialog = false;
+  bool usesDesktopToolStyling = false;
   QTimer::singleShot(0, [&] {
     auto *const dialog =
         qobject_cast<QDialog *>(QApplication::activeModalWidget());
@@ -4834,13 +5159,23 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
     QVERIFY(!dialog->styleSheet().isEmpty());
     QVERIFY(dialog->findChild<QFrame *>(
                 QStringLiteral("shortcutHelpHeader")) != nullptr);
+    auto *const eyebrow = dialog->findChild<QLabel *>(
+        QStringLiteral("shortcutHelpEyebrow"));
+    auto *const title = dialog->findChild<QLabel *>(
+        QStringLiteral("shortcutHelpTitle"));
+    auto *const countLabel = dialog->findChild<QLabel *>(
+        QStringLiteral("shortcutHelpCountBadge"));
     auto *const table = dialog->findChild<QTableWidget *>(
         QStringLiteral("shortcutHelpTable"));
     auto *const buttons = dialog->findChild<QDialogButtonBox *>(
         QStringLiteral("shortcutHelpButtons"));
-    if (table == nullptr || buttons == nullptr) {
+    if (eyebrow == nullptr || title == nullptr || countLabel == nullptr ||
+        table == nullptr || buttons == nullptr) {
       return;
     }
+    usesDesktopToolStyling =
+        eyebrow->isHidden() && title->text() == QStringLiteral("快捷键") &&
+        countLabel->maximumHeight() <= 28;
     QStringList shortcuts;
     for (int row = 0; row < table->rowCount(); ++row) {
       shortcuts.append(table->item(row, 0)->text());
@@ -4872,8 +5207,9 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
     QCOMPARE(okButton->objectName(), QStringLiteral("shortcutHelpOkButton"));
     QCOMPARE(okButton->text(), QStringLiteral("确定"));
     QVERIFY(okButton->isDefault());
-    QVERIFY(okButton->minimumHeight() >= 50);
-    QVERIFY(okButton->minimumWidth() >= 168);
+    usesDesktopToolStyling =
+        usesDesktopToolStyling && okButton->minimumHeight() >= 34 &&
+        okButton->minimumWidth() >= 96 && okButton->maximumHeight() <= 38;
     QVERIFY(!okButton->styleSheet().isEmpty());
     QCoreApplication::processEvents();
     const QImage renderedButton = okButton->grab().toImage();
@@ -4886,6 +5222,7 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
   });
   helpAction->trigger();
   QVERIFY(inspectedDialog);
+  QVERIFY(usesDesktopToolStyling);
 }
 
 void MainWindowTest::stopsForwardingBeforeWindowCloses() {

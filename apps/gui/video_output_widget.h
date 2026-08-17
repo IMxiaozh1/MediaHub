@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QPixmap>
+#include <QPoint>
 #include <QSize>
 #include <QString>
 #include <QWidget>
@@ -19,6 +20,8 @@ class QShowEvent;
 
 namespace mediahub::gui {
 
+class ThemeBackgroundWidget;
+
 // 父控件绘制占位内容，每次视频会话使用只承载 vout 的独立原生子窗口。
 class VideoOutputWidget final : public QWidget {
   Q_OBJECT
@@ -31,6 +34,10 @@ class VideoOutputWidget final : public QWidget {
 
   // 调用线程：GUI 主线程。只更新画布配色，不改变视频句柄或播放状态。
   void setPresentationMode(UiPresentationMode mode);
+  // 调用线程：GUI 主线程。更新音频画布的配色和本地背景图缓存。
+  void setThemeSettings(const ThemeSettings& settings);
+  // 调用线程：GUI 主线程。共享整窗背景的裁切坐标，避免页面切换时图片错位。
+  void setThemeBackgroundSource(ThemeBackgroundWidget* backgroundSource);
   // 调用线程：GUI 主线程。视频、音频波纹和静态占位三种画面互斥。
   void setPresentation(bool isVideoActive, bool isAudioVisualizationActive,
                        bool isAudioVisualizationPlaying, int progressValue,
@@ -85,6 +92,10 @@ class VideoOutputWidget final : public QWidget {
   int animationFrame_{0};
   int waveformTargetFramesRemaining_{0};
   UiPresentationMode presentationMode_{UiPresentationMode::LocalVideo};
+  ThemeSettings themeSettings_;
+  ThemeBackgroundWidget* themeBackgroundSource_{nullptr};
+  QPoint cachedBackgroundOrigin_;
+  QSize cachedBackgroundSourceSize_;
   bool isVideoActive_{false};
   bool isAudioVisualizationActive_{false};
   bool isAudioVisualizationPlaying_{false};
