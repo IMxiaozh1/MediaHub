@@ -269,6 +269,8 @@ class RetirementGate final {
     std::unique_lock lock(mutex_);
     ++reachedStopCount_;
     ++activeWaiterCount_;
+    maxActiveWaiterCount_ =
+        std::max(maxActiveWaiterCount_, activeWaiterCount_);
     changed_.notify_all();
     changed_.wait(lock, [this] { return canStop_; });
     --activeWaiterCount_;
@@ -297,11 +299,17 @@ class RetirementGate final {
                              [this] { return activeWaiterCount_ == 0; });
   }
 
+  [[nodiscard]] std::size_t maxActiveWaiterCount() const {
+    const std::lock_guard lock(mutex_);
+    return maxActiveWaiterCount_;
+  }
+
  private:
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable changed_;
   std::size_t reachedStopCount_{0};
   std::size_t activeWaiterCount_{0};
+  std::size_t maxActiveWaiterCount_{0};
   bool canStop_{false};
 };
 
@@ -406,7 +414,8 @@ TEST(VlcPlayerEngineTest, QueuesNetworkControlsWithoutBlockingCaller) {
   ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 2));
 }
 
-TEST(VlcPlayerEngineTest, RepeatedNetworkSwitchesReuseInstanceAndSurface) {
+TEST(VlcPlayerEngineTest,
+     RepeatedNetworkSwitchesUseFreshInstancesAndKeepSurface) {
   RecordingListener listener;
   VideoSurfaceRecorder surfaceRecorder;
   std::atomic<int> instanceCreatedCount{0};
@@ -439,7 +448,7 @@ TEST(VlcPlayerEngineTest, RepeatedNetworkSwitchesReuseInstanceAndSurface) {
 
   EXPECT_TRUE(surfaceRecorder.waitForCount(embeddedSurface, 3));
   EXPECT_FALSE(surfaceRecorder.waitFor(nullptr, 500ms));
-  EXPECT_EQ(instanceCreatedCount.load(), 2);
+  EXPECT_EQ(instanceCreatedCount.load(), 4);
 }
 
 TEST(VlcPlayerEngineTest,
@@ -539,7 +548,8 @@ TEST(VlcPlayerEngineTest, ReleasesPreviousSurfaceAfterSynchronousLocalSwitch) {
 }
 
 TEST(VlcPlayerEngineTest,
-     BoundsBlockedRetirementsAndKeepsOneStopSlotAvailable) {
+     QueuesBlockedRetirementsAndKeepsNetworkLocalAndStopResponsive) {
+  GeneratedWav media(2s);
   RecordingListener listener;
   RetirementGate retirementGate;
   auto options = testOptions();
@@ -548,17 +558,18 @@ TEST(VlcPlayerEngineTest,
   };
   VlcPlayerEngine engine(std::move(options));
   engine.setEventListener(&listener);
-  const std::array<void*, 5> surfaces{
+  const std::array<void*, 7> surfaces{
       reinterpret_cast<void*>(0x1000), reinterpret_cast<void*>(0x2000),
       reinterpret_cast<void*>(0x3000), reinterpret_cast<void*>(0x4000),
-      reinterpret_cast<void*>(0x5000)};
+      reinterpret_cast<void*>(0x5000), reinterpret_cast<void*>(0x6000),
+      reinterpret_cast<void*>(0x7000)};
 
   engine.open(core::MediaItem{"http://127.0.0.1:1/first.ts",
                               core::MediaSourceKind::NetworkStream,
                               "first.ts"},
               surfaces[0]);
   ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Opening, 1));
-  for (std::size_t index = 1; index < 4; ++index) {
+  for (std::size_t index = 1; index < 5; ++index) {
     engine.open(core::MediaItem{
                     "http://127.0.0.1:1/next.ts",
                     core::MediaSourceKind::NetworkStream, "next.ts"},
@@ -568,24 +579,28 @@ TEST(VlcPlayerEngineTest,
     ASSERT_TRUE(retirementGate.waitUntilReached(index));
   }
 
-  engine.open(core::MediaItem{"http://127.0.0.1:1/rejected.ts",
+  engine.open(core::MediaItem{"http://127.0.0.1:1/queued.ts",
                               core::MediaSourceKind::NetworkStream,
-                              "rejected.ts"},
-              surfaces[4]);
-  ASSERT_TRUE(listener.waitForError());
-  EXPECT_EQ(listener.lastError().kind, core::PlaybackErrorKind::EngineBusy);
-  EXPECT_EQ(listener.lastError().userMessage,
-            "多个旧直播仍在退出，请稍候后重试。");
-  EXPECT_FALSE(
-      listener.waitForStateCount(core::PlaybackState::Opening, 5, 100ms));
-  EXPECT_TRUE(listener.waitForReleasedVideoSurface(surfaces[4]));
+                              "queued.ts"},
+              surfaces[5]);
+  ASSERT_TRUE(
+      listener.waitForStateCount(core::PlaybackState::Opening, 6, 500ms));
+  EXPECT_FALSE(listener.waitForError(100ms));
+
+  engine.open(core::makeMediaItem(media.source()), surfaces[6]);
+  engine.play();
+  ASSERT_TRUE(
+      listener.waitForStateCount(core::PlaybackState::Opening, 7, 500ms));
+  ASSERT_TRUE(
+      listener.waitForStateCount(core::PlaybackState::Playing, 1, 1s));
 
   engine.stop();
   EXPECT_TRUE(listener.waitForStateCount(core::PlaybackState::Stopped, 1,
-                                         500ms));
-  EXPECT_TRUE(retirementGate.waitUntilReached(4));
+                                          500ms));
   retirementGate.allowStop();
+  EXPECT_TRUE(retirementGate.waitUntilReached(6));
   EXPECT_TRUE(retirementGate.waitUntilIdle());
+  EXPECT_EQ(retirementGate.maxActiveWaiterCount(), 4);
 }
 
 TEST(VlcPlayerEngineTest, SwitchesFromNetworkDescriptorToLocalAudio) {
