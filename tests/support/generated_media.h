@@ -9,7 +9,9 @@ namespace mediahub::test {
 // 在系统临时目录生成测试媒体，析构时只清理自己创建的唯一目录。
 class GeneratedWav final {
 public:
-    explicit GeneratedWav(std::chrono::milliseconds duration);
+    explicit GeneratedWav(
+        std::chrono::milliseconds duration,
+        std::wstring fileName = L"测试 音频.wav");
     ~GeneratedWav();
 
     GeneratedWav(const GeneratedWav&) = delete;

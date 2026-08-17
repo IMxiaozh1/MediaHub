@@ -367,8 +367,8 @@ v0.6 最终联合候选的记录结果如下：
 | 项目 | 结果 |
 |---|---|
 | BrowserPage Qt Test | `84/84` 通过 |
-| Debug 全量 CTest | `91/91` 通过 |
-| Release 全量 CTest | `91/91` 通过 |
+| Debug 全量 CTest | `92/92` 通过 |
+| Release 全量 CTest | `92/92` 通过 |
 | Core-only | `52/52` 通过 |
 | 无测试 Release | 构建成功，CTest 为 `0` 项 |
 | Release WebView2 Runtime | `57/57` 通过，零失败、零跳过 |
@@ -407,10 +407,10 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.6.0-win64" `
 - 不存在符号链接、junction、reparse point 和动态 `WebView2Loader.dll`。
 
 当前本机最终发布目录为 `dist/MediaHub-0.6.0-win64/`：400 个文件，总大小
-198,508,012 字节（189.31 MiB）；`MediaHub.exe` 大小为 2,660,864 字节，SHA-256 为：
+197,940,964 字节（188.77 MiB）；`MediaHub.exe` 大小为 2,661,376 字节，SHA-256 为：
 
 ```text
-37B2A6D959B1422017612B99D7E8F3CD35FD3CCD40AA95DA9AA8B3E4CAF29CF3
+E11C80253B0189037FBD16893426FC8529187C0C267FF4234A49CDAA6D6607AC
 ```
 
 发布目录由 Git 忽略，不进入源码提交。Qt、VLC、插件、图标和法律材料必须与 EXE 一起
@@ -526,6 +526,8 @@ v0.6 的定义是“本地自用版本完成”，不是面向公众的正式发
   性能、构建矩阵和持续拖动门禁。
 - [docs/测试/35-内置浏览器Edge风格UI重构测试.md](docs/测试/35-内置浏览器Edge风格UI重构测试.md)：
   Edge 风格界面、Runtime 和最终视觉验收。
+- [docs/测试/36-v0.6-音频残留视频轨弹窗修复测试.md](docs/测试/36-v0.6-音频残留视频轨弹窗修复测试.md)：
+  音频模式禁用残留视频轨、真实文件验收和修复版发布包验证。
 - [docs/交付/09-v0.6.0-内置网页浏览器交付说明.md](docs/交付/09-v0.6.0-内置网页浏览器交付说明.md)：
   最终发布目录、验证结果和本地自用限制。
 

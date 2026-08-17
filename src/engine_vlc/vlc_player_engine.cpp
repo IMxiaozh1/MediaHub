@@ -40,6 +40,7 @@ constexpr std::size_t kMaxConcurrentRetirements = 4;
 constexpr std::size_t kMaxOpenRetirements = kMaxConcurrentRetirements - 1;
 constexpr float kWarmUnityPlaybackRate = 1.001F;
 constexpr unsigned kWaveformSampleRate = 48'000;
+constexpr char kDisableVideoOption[] = ":no-video";
 constexpr char kVideoFileCachingOption[] = ":file-caching=30";
 constexpr char kNetworkCachingOption[] = ":network-caching=1000";
 constexpr char kLiveCachingOption[] = ":live-caching=1000";
@@ -94,6 +95,19 @@ void applyVideoSurface(
   if (videoSurfaceObserver) {
     try {
       videoSurfaceObserver(nativeHandle);
+    } catch (...) {
+      // 测试观察器不得影响真实播放控制路径。
+    }
+  }
+}
+
+void addMediaOption(
+    libvlc_media_t* const media, const char* const option,
+    const std::function<void(std::string_view)>& mediaOptionObserver) noexcept {
+  libvlc_media_add_option(media, option);
+  if (mediaOptionObserver) {
+    try {
+      mediaOptionObserver(option);
     } catch (...) {
       // 测试观察器不得影响真实播放控制路径。
     }
@@ -528,8 +542,10 @@ class VlcPlayerEngine::Impl {
       }
 
       // 网络连接由 libVLC 播放线程执行；这里仅集中配置直播缓存并提交媒体描述。
-      libvlc_media_add_option(newMedia.get(), kNetworkCachingOption);
-      libvlc_media_add_option(newMedia.get(), kLiveCachingOption);
+      addMediaOption(newMedia.get(), kNetworkCachingOption,
+                     options_.mediaOptionObserver);
+      addMediaOption(newMedia.get(), kLiveCachingOption,
+                     options_.mediaOptionObserver);
       libvlc_media_player_set_media(player_.get(), newMedia.get());
       libvlc_media_player_set_media(analysisPlayer_.get(), nullptr);
       static_cast<void>(libvlc_media_player_set_rate(player_.get(), 1.0F));
@@ -611,9 +627,17 @@ class VlcPlayerEngine::Impl {
       }
     }
 
-    if (!audioOnlyMedia) {
+    if (audioOnlyMedia) {
+      // 音频扩展名代表用户选择的播放模式。即使文件内部仍残留视频轨，也不得让
+      // 主播放器或波形分析播放器创建独立视频窗口。
+      addMediaOption(newMedia.get(), kDisableVideoOption,
+                     options_.mediaOptionObserver);
+      addMediaOption(newAnalysisMedia.get(), kDisableVideoOption,
+                     options_.mediaOptionObserver);
+    } else {
       // 缩短本地视频的预解码时钟跨度，避免改倍率时清空约一秒的旧倍率队列。
-      libvlc_media_add_option(newMedia.get(), kVideoFileCachingOption);
+      addMediaOption(newMedia.get(), kVideoFileCachingOption,
+                     options_.mediaOptionObserver);
     }
     libvlc_media_player_set_media(player_.get(), newMedia.get());
     libvlc_media_player_set_media(analysisPlayer_.get(),

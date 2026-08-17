@@ -673,6 +673,30 @@ TEST(VlcPlayerEngineTest, PlaysQtStyleLocalPathWithForwardSlashes) {
   engine.setEventListener(nullptr);
 }
 
+TEST(VlcPlayerEngineTest, AudioModeDisablesVideoForPlaybackAndAnalysis) {
+  GeneratedWav media(300ms, L"扩展名不匹配的音频.mp3");
+  RecordingListener listener;
+  std::mutex optionsMutex;
+  std::vector<std::string> mediaOptions;
+  auto options = testOptions();
+  options.mediaOptionObserver = [&](const std::string_view option) {
+    const std::lock_guard lock(optionsMutex);
+    mediaOptions.emplace_back(option);
+  };
+  VlcPlayerEngine engine(std::move(options));
+  engine.setEventListener(&listener);
+
+  engine.open(core::makeMediaItem(media.source()));
+  engine.play();
+
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Playing, 1));
+  ASSERT_TRUE(listener.waitForNonSilentWaveform());
+  const std::lock_guard lock(optionsMutex);
+  EXPECT_EQ(std::count(mediaOptions.begin(), mediaOptions.end(), ":no-video"),
+            2);
+  engine.setEventListener(nullptr);
+}
+
 TEST(VlcPlayerEngineTest, ReportsCorruptAndDisguisedMediaAsUnsupportedFormat) {
   const std::vector<std::pair<std::wstring, std::string>> invalidFiles{
       {L"损坏 视频.mp4", std::string({char{0}, char{static_cast<char>(0xFF)},

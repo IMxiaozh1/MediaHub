@@ -51,9 +51,10 @@ void removeDirectory(const std::filesystem::path& directory) noexcept {
 
 }  // namespace
 
-GeneratedWav::GeneratedWav(const std::chrono::milliseconds duration)
+GeneratedWav::GeneratedWav(const std::chrono::milliseconds duration,
+                           std::wstring fileName)
     : directory_(uniqueDirectory(L"MediaHub 测试音频")),
-      path_(directory_ / std::filesystem::path(L"测试 音频.wav")) {
+      path_(directory_ / std::filesystem::path(std::move(fileName))) {
   try {
     std::filesystem::create_directories(directory_);
     writeFile(duration);
