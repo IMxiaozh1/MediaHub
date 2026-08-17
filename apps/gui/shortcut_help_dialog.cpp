@@ -8,12 +8,161 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPalette>
+#include <QPainter>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
+#include "ui_theme.h"
+
 namespace mediahub::gui {
+namespace {
+
+QString shortcutDialogStyleSheet(const ThemeSettings& settings) {
+  const UiThemePalette palette = resolvedThemePalette(settings);
+  QString style = QStringLiteral(R"(
+      #shortcutHelpDialog {
+          background: @WINDOW@;
+          color: @TEXT@;
+          font-family: "Microsoft YaHei UI";
+      }
+      QFrame#shortcutHelpHeader {
+          background: transparent;
+          border: none;
+          border-bottom: 1px solid @BORDER@;
+      }
+      QLabel#shortcutHelpEyebrow {
+          color: @MUTED_TEXT@;
+          font-size: 10px;
+      }
+      QLabel#shortcutHelpTitle {
+          color: @TEXT@;
+          font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
+          font-size: 22px;
+          font-weight: 600;
+      }
+      QLabel#shortcutHelpIntroduction,
+      QLabel#shortcutHelpCountBadge {
+          background: transparent;
+          border: none;
+          color: @MUTED_TEXT@;
+          font-size: 11px;
+          padding: 0;
+      }
+      QLabel#shortcutHelpIntroduction {
+          font-size: 12px;
+      }
+      QTableWidget#shortcutHelpTable {
+          alternate-background-color: @PANEL@;
+          background: @CANVAS@;
+          border: 1px solid @BORDER@;
+          border-radius: 5px;
+          color: @TEXT@;
+          gridline-color: transparent;
+          outline: none;
+      }
+      QTableWidget#shortcutHelpTable::item {
+          border-bottom: 1px solid @BORDER@;
+          padding: 7px 11px;
+      }
+      QTableWidget#shortcutHelpTable::item:hover {
+          background: @HOVER@;
+          color: @TEXT@;
+      }
+      QHeaderView::section {
+          background: @PANEL_ALT@;
+          border: none;
+          border-bottom: 1px solid @BORDER@;
+          color: @MUTED_TEXT@;
+          font-size: 11px;
+          font-weight: 600;
+          padding: 9px 12px;
+      }
+      QScrollBar:vertical {
+          background: @CANVAS@;
+          border: none;
+          margin: 0;
+          width: 8px;
+      }
+      QScrollBar::handle:vertical {
+          background: @SCROLL_HANDLE@;
+          border-radius: 3px;
+          min-height: 28px;
+      }
+      QScrollBar::handle:vertical:hover {
+          background: @SCROLL_HOVER@;
+      }
+      QScrollBar::add-line:vertical,
+      QScrollBar::sub-line:vertical {
+          height: 0;
+      }
+      QScrollBar::add-page:vertical,
+      QScrollBar::sub-page:vertical {
+          background: transparent;
+      }
+      QLabel#shortcutHelpFooterHint {
+          color: @MUTED_TEXT@;
+          font-size: 11px;
+      }
+  )");
+  const QColor scrollHandle = palette.isDark ? palette.border.lighter(145)
+                                              : palette.border.darker(112);
+  const QColor scrollHover = palette.isDark ? scrollHandle.lighter(135)
+                                             : scrollHandle.darker(125);
+  style.replace(QStringLiteral("@WINDOW@"), palette.window.name());
+  style.replace(QStringLiteral("@TEXT@"), palette.text.name());
+  style.replace(QStringLiteral("@MUTED_TEXT@"), palette.mutedText.name());
+  style.replace(QStringLiteral("@BORDER@"), palette.border.name());
+  style.replace(QStringLiteral("@PANEL@"), palette.panel.name());
+  style.replace(QStringLiteral("@PANEL_ALT@"), palette.panelAlt.name());
+  style.replace(QStringLiteral("@CANVAS@"), palette.canvas.name());
+  style.replace(QStringLiteral("@HOVER@"), palette.hover.name());
+  style.replace(QStringLiteral("@SCROLL_HANDLE@"), scrollHandle.name());
+  style.replace(QStringLiteral("@SCROLL_HOVER@"), scrollHover.name());
+  return style;
+}
+
+QString shortcutOkButtonStyleSheet(const ThemeSettings& settings) {
+  const UiThemePalette palette = resolvedThemePalette(settings);
+  QString style = QStringLiteral(R"(
+      QPushButton#shortcutHelpOkButton {
+          background-color: @ACCENT@;
+          border: 1px solid @ACCENT_HOVER@;
+          border-radius: 4px;
+          color: #ffffff;
+          font-family: "Microsoft YaHei UI";
+          font-size: 13px;
+          font-weight: 600;
+          min-height: 34px;
+          min-width: 96px;
+          max-height: 36px;
+          padding: 0 18px;
+      }
+      QPushButton#shortcutHelpOkButton:hover {
+          background-color: @ACCENT_HOVER@;
+          border-color: @FOCUS@;
+      }
+      QPushButton#shortcutHelpOkButton:pressed {
+          background-color: @ACCENT_PRESSED@;
+          border-color: @ACCENT_PRESSED@;
+      }
+      QPushButton#shortcutHelpOkButton:focus {
+          border-color: @FOCUS@;
+      }
+  )");
+  const QColor pressed = palette.accent.darker(112);
+  const QColor focus = palette.accentHover.lighter(125);
+  style.replace(QStringLiteral("@ACCENT@"), palette.accent.name());
+  style.replace(QStringLiteral("@ACCENT_HOVER@"),
+                palette.accentHover.name());
+  style.replace(QStringLiteral("@ACCENT_PRESSED@"), pressed.name());
+  style.replace(QStringLiteral("@FOCUS@"), focus.name());
+  return style;
+}
+
+}  // namespace
 
 const QVector<ShortcutHelpEntry>& ShortcutHelpDialog::entries() {
   static const QVector<ShortcutHelpEntry> kEntries{
@@ -51,91 +200,6 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
   setModal(true);
   resize(700, 600);
   setMinimumSize(560, 460);
-  setStyleSheet(QStringLiteral(R"(
-      QDialog#shortcutHelpDialog {
-          background: #121417;
-          color: #e7e9ec;
-          font-family: "Microsoft YaHei UI";
-      }
-      QFrame#shortcutHelpHeader {
-          background: transparent;
-          border: none;
-          border-bottom: 1px solid #2a2e34;
-      }
-      QLabel#shortcutHelpEyebrow {
-          color: #7f8790;
-          font-size: 10px;
-      }
-      QLabel#shortcutHelpTitle {
-          color: #f1f3f5;
-          font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
-          font-size: 22px;
-          font-weight: 600;
-      }
-      QLabel#shortcutHelpIntroduction {
-          color: #89919a;
-          font-size: 12px;
-      }
-      QLabel#shortcutHelpCountBadge {
-          background: transparent;
-          border: none;
-          color: #89919a;
-          font-size: 11px;
-          padding: 0;
-      }
-      QTableWidget#shortcutHelpTable {
-          alternate-background-color: #15181c;
-          background: #101216;
-          border: 1px solid #2a2e34;
-          border-radius: 5px;
-          color: #d7dbe0;
-          gridline-color: transparent;
-          outline: none;
-      }
-      QTableWidget#shortcutHelpTable::item {
-          border-bottom: 1px solid #22262c;
-          padding: 7px 11px;
-      }
-      QTableWidget#shortcutHelpTable::item:hover {
-          background: #1d2228;
-          color: #ffffff;
-      }
-      QHeaderView::section {
-          background: #181b20;
-          border: none;
-          border-bottom: 1px solid #30353c;
-          color: #9299a2;
-          font-size: 11px;
-          font-weight: 600;
-          padding: 9px 12px;
-      }
-      QScrollBar:vertical {
-          background: #101216;
-          border: none;
-          margin: 0;
-          width: 8px;
-      }
-      QScrollBar::handle:vertical {
-          background: #3b4047;
-          border-radius: 3px;
-          min-height: 28px;
-      }
-      QScrollBar::handle:vertical:hover {
-          background: #59616a;
-      }
-      QScrollBar::add-line:vertical,
-      QScrollBar::sub-line:vertical {
-          height: 0;
-      }
-      QScrollBar::add-page:vertical,
-      QScrollBar::sub-page:vertical {
-          background: transparent;
-      }
-      QLabel#shortcutHelpFooterHint {
-          color: #747c85;
-          font-size: 11px;
-      }
-  )"));
 
   auto* const layout = new QVBoxLayout(this);
   layout->setContentsMargins(22, 20, 22, 18);
@@ -172,24 +236,25 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
   headerLayout->addWidget(countBadge, 0, Qt::AlignVCenter);
   layout->addWidget(header);
 
-  auto* const table = new QTableWidget(descriptions.size(), 2, this);
-  table->setObjectName(QStringLiteral("shortcutHelpTable"));
-  table->setAccessibleName(QStringLiteral("快捷键列表"));
-  table->setHorizontalHeaderLabels(
+  table_ = new QTableWidget(descriptions.size(), 2, this);
+  table_->setObjectName(QStringLiteral("shortcutHelpTable"));
+  table_->setAccessibleName(QStringLiteral("快捷键列表"));
+  table_->setHorizontalHeaderLabels(
       {QStringLiteral("快捷键"), QStringLiteral("操作")});
-  table->verticalHeader()->setVisible(false);
-  table->verticalHeader()->setDefaultSectionSize(40);
-  table->horizontalHeader()->setFixedHeight(38);
-  table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-  table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-  table->setAlternatingRowColors(true);
-  table->setShowGrid(false);
-  table->setCornerButtonEnabled(false);
-  table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-  table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-  table->setSelectionMode(QAbstractItemView::NoSelection);
-  table->setFocusPolicy(Qt::NoFocus);
+  table_->verticalHeader()->setVisible(false);
+  table_->verticalHeader()->setDefaultSectionSize(40);
+  table_->horizontalHeader()->setFixedHeight(38);
+  table_->horizontalHeader()->setSectionResizeMode(
+      0, QHeaderView::ResizeToContents);
+  table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+  table_->setAlternatingRowColors(true);
+  table_->setShowGrid(false);
+  table_->setCornerButtonEnabled(false);
+  table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  table_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+  table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  table_->setSelectionMode(QAbstractItemView::NoSelection);
+  table_->setFocusPolicy(Qt::NoFocus);
   QFont shortcutFont(QStringLiteral("Cascadia Mono"));
   shortcutFont.setStyleHint(QFont::Monospace);
   shortcutFont.setBold(true);
@@ -198,16 +263,13 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
         new QTableWidgetItem(descriptions.at(row).shortcut);
     shortcutItem->setTextAlignment(Qt::AlignCenter);
     shortcutItem->setFont(shortcutFont);
-    shortcutItem->setForeground(QColor(QStringLiteral("#78baf0")));
-    shortcutItem->setBackground(QColor(QStringLiteral("#171b20")));
-    table->setItem(row, 0, shortcutItem);
+    table_->setItem(row, 0, shortcutItem);
 
     auto* const operationItem =
         new QTableWidgetItem(descriptions.at(row).operation);
-    operationItem->setForeground(QColor(QStringLiteral("#d7dbe0")));
-    table->setItem(row, 1, operationItem);
+    table_->setItem(row, 1, operationItem);
   }
-  layout->addWidget(table, 1);
+  layout->addWidget(table_, 1);
 
   auto* const footerLayout = new QHBoxLayout();
   footerLayout->setContentsMargins(2, 0, 0, 0);
@@ -219,42 +281,48 @@ ShortcutHelpDialog::ShortcutHelpDialog(QWidget* const parent)
   auto* const buttons =
       new QDialogButtonBox(QDialogButtonBox::Ok, Qt::Horizontal, this);
   buttons->setObjectName(QStringLiteral("shortcutHelpButtons"));
-  auto* const okButton = buttons->button(QDialogButtonBox::Ok);
-  okButton->setObjectName(QStringLiteral("shortcutHelpOkButton"));
-  okButton->setText(QStringLiteral("确定"));
-  okButton->setCursor(Qt::PointingHandCursor);
-  okButton->setDefault(true);
-  okButton->setMinimumSize(96, 34);
-  okButton->setMaximumHeight(36);
-  okButton->setStyleSheet(QStringLiteral(R"(
-      QPushButton#shortcutHelpOkButton {
-          background-color: #2f78b7;
-          border: 1px solid #438dca;
-          border-radius: 4px;
-          color: #ffffff;
-          font-family: "Microsoft YaHei UI";
-          font-size: 13px;
-          font-weight: 600;
-          min-height: 34px;
-          min-width: 96px;
-          max-height: 36px;
-          padding: 0 18px;
-      }
-      QPushButton#shortcutHelpOkButton:hover {
-          background-color: #3d89c8;
-          border-color: #65a8dd;
-      }
-      QPushButton#shortcutHelpOkButton:pressed {
-          background-color: #26679f;
-          border-color: #397cad;
-      }
-      QPushButton#shortcutHelpOkButton:focus {
-          border-color: #8bc6f3;
-      }
-  )"));
+  okButton_ = buttons->button(QDialogButtonBox::Ok);
+  okButton_->setObjectName(QStringLiteral("shortcutHelpOkButton"));
+  okButton_->setText(QStringLiteral("确定"));
+  okButton_->setCursor(Qt::PointingHandCursor);
+  okButton_->setDefault(true);
+  okButton_->setMinimumSize(96, 34);
+  okButton_->setMaximumHeight(36);
   connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
   footerLayout->addWidget(buttons);
   layout->addLayout(footerLayout);
+  applyTheme();
+}
+
+void ShortcutHelpDialog::setThemeSettings(const ThemeSettings& settings) {
+  themeSettings_ = normalizedThemeSettings(settings);
+  applyTheme();
+}
+
+void ShortcutHelpDialog::paintEvent(QPaintEvent* const event) {
+  QDialog::paintEvent(event);
+  QPainter painter(this);
+  painter.fillRect(rect(), resolvedThemePalette(themeSettings_).window);
+}
+
+void ShortcutHelpDialog::applyTheme() {
+  const UiThemePalette palette = resolvedThemePalette(themeSettings_);
+  setStyleSheet(shortcutDialogStyleSheet(themeSettings_));
+  setAttribute(Qt::WA_StyledBackground, true);
+
+  QPalette tablePalette = table_->palette();
+  tablePalette.setColor(QPalette::Base, palette.canvas);
+  tablePalette.setColor(QPalette::AlternateBase, palette.panel);
+  tablePalette.setColor(QPalette::Text, palette.text);
+  tablePalette.setColor(QPalette::Highlight, palette.accent);
+  tablePalette.setColor(QPalette::HighlightedText, QColor(Qt::white));
+  table_->setPalette(tablePalette);
+  okButton_->setStyleSheet(shortcutOkButtonStyleSheet(themeSettings_));
+  for (int row = 0; row < table_->rowCount(); ++row) {
+    table_->item(row, 0)->setForeground(palette.accent);
+    table_->item(row, 0)->setBackground(palette.panelAlt);
+    table_->item(row, 1)->setForeground(palette.text);
+  }
 }
 
 }  // namespace mediahub::gui

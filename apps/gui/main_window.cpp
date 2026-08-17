@@ -2310,6 +2310,7 @@ void MainWindow::showLiveUrlHistory() {
 
 void MainWindow::showLiveSourceMemo() {
   LiveSourceMemoDialog dialog(liveSourceMemos_, this);
+  dialog.setThemeSettings(themeSettings_);
   connect(&dialog, &LiveSourceMemoDialog::memosSaved, this,
           [this](const QVector<LiveSourceMemo>& memos) {
             liveSourceMemos_ = memos;
@@ -2320,6 +2321,7 @@ void MainWindow::showLiveSourceMemo() {
 
 void MainWindow::showShortcutHelp() {
   ShortcutHelpDialog dialog(this);
+  dialog.setThemeSettings(themeSettings_);
   dialog.exec();
 }
 

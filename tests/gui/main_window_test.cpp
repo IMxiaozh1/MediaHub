@@ -66,6 +66,7 @@
 #include "shutdown_watchdog.h"
 #include "theme_background_widget.h"
 #include "theme_settings_dialog.h"
+#include "ui_theme.h"
 #include "video_output_widget.h"
 #include "window_icon_manager.h"
 
@@ -338,6 +339,7 @@ private slots:
   void resizesVideoSurfaceAndTogglesFullScreen();
   void togglesFullScreenWithF11();
   void showsSupportedShortcutsFromHelpMenu();
+  void themesHelpDialogsWithCurrentAppearance();
   void confirmsBeforeClosingWithActiveWebDownloads();
   void stopsForwardingBeforeWindowCloses();
   void runsShutdownFallbackOnlyAfterTimeout();
@@ -5223,6 +5225,137 @@ void MainWindowTest::showsSupportedShortcutsFromHelpMenu() {
   helpAction->trigger();
   QVERIFY(inspectedDialog);
   QVERIFY(usesDesktopToolStyling);
+}
+
+void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
+  GuiHarness harness;
+  auto* const shortcutAction =
+      requiredChild<QAction>(harness.window, "shortcutHelpAction");
+  auto* const memoAction =
+      requiredChild<QAction>(harness.window, "liveSourceMemoAction");
+
+  const auto verifyShortcutDialog = [&](const ThemeSettings& settings) {
+    harness.window.setThemeSettings(settings);
+    QCOMPARE(harness.window.themeSettings().appearanceMode,
+             settings.appearanceMode);
+    QCOMPARE(harness.window.themeSettings().accentKey, settings.accentKey);
+    const UiThemePalette expected = resolvedThemePalette(settings);
+    bool inspected = false;
+    QString dialogStyle;
+    QColor renderedWindowColor;
+    QColor shortcutColor;
+    QColor shortcutBackground;
+    QTimer::singleShot(0, [&] {
+      auto* const dialog =
+          qobject_cast<QDialog*>(QApplication::activeModalWidget());
+      if (dialog == nullptr) {
+        return;
+      }
+      auto* const table = dialog->findChild<QTableWidget*>(
+          QStringLiteral("shortcutHelpTable"));
+      if (table == nullptr) {
+        dialog->reject();
+        return;
+      }
+      dialog->ensurePolished();
+      table->ensurePolished();
+      dialogStyle = dialog->styleSheet();
+      renderedWindowColor = dialog->grab().toImage().pixelColor(5, 5);
+      shortcutColor = table->item(0, 0)->foreground().color();
+      shortcutBackground = table->item(0, 0)->background().color();
+      inspected = true;
+      dialog->accept();
+    });
+    shortcutAction->trigger();
+    QVERIFY(inspected);
+    QVERIFY(dialogStyle.contains(expected.window.name()));
+    QVERIFY(dialogStyle.contains(expected.text.name()));
+    QVERIFY(dialogStyle.contains(expected.canvas.name()));
+    QVERIFY(dialogStyle.contains(expected.panelAlt.name()));
+    QCOMPARE(renderedWindowColor, expected.window);
+    QCOMPARE(shortcutColor, expected.accent);
+    QCOMPARE(shortcutBackground, expected.panelAlt);
+  };
+
+  const auto verifyMemoDialog = [&](const ThemeSettings& settings) {
+    harness.window.setThemeSettings(settings);
+    QCOMPARE(harness.window.themeSettings().appearanceMode,
+             settings.appearanceMode);
+    QCOMPARE(harness.window.themeSettings().accentKey, settings.accentKey);
+    const UiThemePalette expected = resolvedThemePalette(settings);
+    bool inspected = false;
+    bool inspectedConfirmation = false;
+    QString dialogStyle;
+    QColor renderedWindowColor;
+    QString confirmationName;
+    QString confirmationStyle;
+    QColor renderedConfirmationColor;
+    QTimer::singleShot(0, [&] {
+      auto* const dialog =
+          qobject_cast<QDialog*>(QApplication::activeModalWidget());
+      if (dialog == nullptr) {
+        return;
+      }
+      auto* const table = dialog->findChild<QTableWidget*>(
+          QStringLiteral("liveSourceMemoTable"));
+      auto* const addButton = dialog->findChild<QPushButton*>(
+          QStringLiteral("liveSourceMemoAddButton"));
+      auto* const saveButton = dialog->findChild<QPushButton*>(
+          QStringLiteral("liveSourceMemoSaveButton"));
+      if (table == nullptr || addButton == nullptr || saveButton == nullptr) {
+        dialog->reject();
+        return;
+      }
+      dialog->ensurePolished();
+      table->ensurePolished();
+      dialogStyle = dialog->styleSheet();
+      renderedWindowColor = dialog->grab().toImage().pixelColor(5, 5);
+      inspected = true;
+
+      addButton->click();
+      QTimer::singleShot(20, [&] {
+        auto* const confirmation =
+            qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (confirmation == nullptr) {
+          return;
+        }
+        confirmation->ensurePolished();
+        confirmationName = confirmation->objectName();
+        confirmationStyle = confirmation->styleSheet();
+        renderedConfirmationColor =
+            confirmation->grab().toImage().pixelColor(5, 5);
+        inspectedConfirmation = true;
+        confirmation->reject();
+      });
+      saveButton->click();
+      dialog->reject();
+    });
+    memoAction->trigger();
+    QVERIFY(inspected);
+    QVERIFY(inspectedConfirmation);
+    QVERIFY(dialogStyle.contains(expected.window.name()));
+    QVERIFY(dialogStyle.contains(expected.text.name()));
+    QVERIFY(dialogStyle.contains(expected.canvas.name()));
+    QVERIFY(dialogStyle.contains(expected.accent.name()));
+    QCOMPARE(renderedWindowColor, expected.window);
+    QCOMPARE(confirmationName,
+             QStringLiteral("liveSourceMemoSaveConfirmation"));
+    QVERIFY(confirmationStyle.contains(expected.panel.name()));
+    QVERIFY(confirmationStyle.contains(expected.text.name()));
+    QCOMPARE(renderedConfirmationColor, expected.panel);
+  };
+
+  ThemeSettings lightSettings;
+  lightSettings.appearanceMode = QStringLiteral("light");
+  lightSettings.accentKey = QStringLiteral("green");
+  verifyShortcutDialog(lightSettings);
+  verifyMemoDialog(lightSettings);
+
+  ThemeSettings darkSettings;
+  darkSettings.appearanceMode = QStringLiteral("dark");
+  darkSettings.accentKey = QStringLiteral("rose");
+  verifyShortcutDialog(darkSettings);
+  verifyMemoDialog(darkSettings);
 }
 
 void MainWindowTest::stopsForwardingBeforeWindowCloses() {

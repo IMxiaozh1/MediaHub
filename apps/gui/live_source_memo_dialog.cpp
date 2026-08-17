@@ -8,6 +8,8 @@
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
+#include <QPalette>
+#include <QPainter>
 #include <QPushButton>
 #include <QShortcut>
 #include <QTableWidget>
@@ -15,89 +17,109 @@
 #include <QVBoxLayout>
 #include <utility>
 
+#include "ui_theme.h"
+
 namespace mediahub::gui {
 namespace {
 
-const QString& dialogStyleSheet() {
-  static const QString styleSheet = QStringLiteral(R"(
-      QDialog#liveSourceMemoDialog {
-          background: #121417;
-          color: #e7e9ec;
+class ThemeConfirmationDialog final : public QDialog {
+ public:
+  ThemeConfirmationDialog(const ThemeSettings& settings,
+                          QWidget* const parent)
+      : QDialog(parent), backgroundColor_(resolvedThemePalette(settings).panel) {}
+
+ protected:
+  void paintEvent(QPaintEvent* const event) override {
+    QDialog::paintEvent(event);
+    QPainter painter(this);
+    painter.fillRect(rect(), backgroundColor_);
+  }
+
+ private:
+  QColor backgroundColor_;
+};
+
+QString dialogStyleSheet(const ThemeSettings& settings) {
+  const UiThemePalette palette = resolvedThemePalette(settings);
+  QString style = QStringLiteral(R"(
+      #liveSourceMemoDialog {
+          background: @WINDOW@;
+          color: @TEXT@;
           font-family: "Microsoft YaHei UI";
       }
       QFrame#liveSourceMemoHeader {
           background: transparent;
           border: none;
-          border-bottom: 1px solid #2a2e34;
+          border-bottom: 1px solid @BORDER@;
       }
       QLabel#liveSourceMemoEyebrow {
-          color: #7f8790;
+          color: @MUTED_TEXT@;
           font-size: 10px;
       }
       QLabel#liveSourceMemoTitle {
-          color: #f1f3f5;
+          color: @TEXT@;
           font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
           font-size: 22px;
           font-weight: 600;
       }
       QLabel#liveSourceMemoIntroduction {
-          color: #89919a;
+          color: @MUTED_TEXT@;
           font-size: 12px;
       }
       QLabel#liveSourceMemoNotice {
           background: transparent;
           border: none;
-          color: #858d96;
+          color: @MUTED_TEXT@;
           font-size: 11px;
           padding: 0;
       }
       QLabel#liveSourceMemoCountBadge {
           background: transparent;
           border: none;
-          color: #89919a;
+          color: @MUTED_TEXT@;
           font-size: 11px;
           padding: 0;
       }
       QTableWidget#liveSourceMemoTable {
-          alternate-background-color: #15181c;
-          background: #101216;
-          border: 1px solid #2a2e34;
+          alternate-background-color: @PANEL@;
+          background: @CANVAS@;
+          border: 1px solid @BORDER@;
           border-radius: 5px;
-          color: #d7dbe0;
-          gridline-color: #22262c;
+          color: @TEXT@;
+          gridline-color: @BORDER@;
           outline: none;
-          selection-background-color: #253b4e;
+          selection-background-color: @ACCENT@;
           selection-color: #ffffff;
       }
       QTableWidget#liveSourceMemoTable::item {
-          border-bottom: 1px solid #22262c;
+          border-bottom: 1px solid @BORDER@;
           padding: 8px 11px;
       }
       QTableWidget#liveSourceMemoTable::item:hover {
-          background: #1d2228;
+          background: @HOVER@;
       }
       QHeaderView::section {
-          background: #181b20;
+          background: @PANEL_ALT@;
           border: none;
-          border-bottom: 1px solid #30353c;
-          color: #9299a2;
+          border-bottom: 1px solid @BORDER@;
+          color: @MUTED_TEXT@;
           font-size: 12px;
           font-weight: 600;
           padding: 9px 11px;
       }
       QScrollBar:vertical {
-          background: #101216;
+          background: @CANVAS@;
           border: none;
           margin: 0;
           width: 8px;
       }
       QScrollBar::handle:vertical {
-          background: #3b4047;
+          background: @SCROLL_HANDLE@;
           border-radius: 3px;
           min-height: 28px;
       }
       QScrollBar::handle:vertical:hover {
-          background: #59616a;
+          background: @SCROLL_HOVER@;
       }
       QScrollBar::add-line:vertical,
       QScrollBar::sub-line:vertical {
@@ -108,14 +130,14 @@ const QString& dialogStyleSheet() {
           background: transparent;
       }
       QLabel#liveSourceMemoStatus {
-          color: #858d96;
+          color: @MUTED_TEXT@;
           font-size: 11px;
       }
       QPushButton {
-          background: #20242a;
-          border: 1px solid #3a4048;
+          background: @PANEL_ALT@;
+          border: 1px solid @BORDER@;
           border-radius: 4px;
-          color: #d7dbe0;
+          color: @TEXT@;
           font-size: 13px;
           font-weight: 600;
           min-height: 34px;
@@ -124,86 +146,120 @@ const QString& dialogStyleSheet() {
           padding: 0 14px;
       }
       QPushButton#liveSourceMemoAddButton {
-          background: #202a34;
-          border-color: #385c78;
-          color: #9bc9ef;
+          background: @PANEL_ALT@;
+          border-color: @ACCENT@;
+          color: @ACCENT@;
       }
       QPushButton#liveSourceMemoAddButton:hover {
-          background: #273746;
-          border-color: #4f789b;
-          color: #d9efff;
+          background: @HOVER@;
+          border-color: @ACCENT_HOVER@;
+          color: @ACCENT_HOVER@;
       }
       QPushButton#liveSourceMemoDeleteButton {
-          background: #2b1d20;
-          border-color: #5d3439;
-          color: #e9979e;
+          background: @DANGER_SURFACE@;
+          border-color: @DANGER_BORDER@;
+          color: @DANGER_TEXT@;
       }
       QPushButton#liveSourceMemoDeleteButton:hover:enabled {
-          background: #3a2428;
-          border-color: #7a4249;
-          color: #ffc1c6;
+          background: @DANGER_HOVER@;
+          border-color: @DANGER_TEXT@;
+          color: @DANGER_TEXT@;
       }
       QPushButton#liveSourceMemoDeleteButton:disabled {
-          background: #1a1d21;
-          border-color: #2b3036;
-          color: #606770;
+          background: @PANEL_ALT@;
+          border-color: @BORDER@;
+          color: @MUTED_TEXT@;
       }
       QPushButton#liveSourceMemoReturnButton {
-          background: #20242a;
-          border-color: #3a4048;
-          color: #cfd3d7;
+          background: @PANEL_ALT@;
+          border-color: @BORDER@;
+          color: @TEXT@;
       }
       QPushButton#liveSourceMemoReturnButton:hover {
-          background: #292e35;
-          border-color: #505862;
+          background: @HOVER@;
+          border-color: @ACCENT@;
       }
       QPushButton#liveSourceMemoSaveButton {
-          background: #2f78b7;
-          border-color: #438dca;
+          background: @ACCENT@;
+          border-color: @ACCENT_HOVER@;
           color: #ffffff;
           min-width: 92px;
       }
       QPushButton#liveSourceMemoSaveButton:hover {
-          background: #3d89c8;
-          border-color: #65a8dd;
+          background: @ACCENT_HOVER@;
+          border-color: @ACCENT_HOVER@;
       }
       QPushButton:pressed {
           padding-top: 2px;
       }
   )");
-  return styleSheet;
+  const QColor scrollHandle = palette.isDark ? palette.border.lighter(145)
+                                              : palette.border.darker(112);
+  const QColor scrollHover = palette.isDark ? scrollHandle.lighter(135)
+                                             : scrollHandle.darker(125);
+  const QColor dangerSurface =
+      palette.isDark ? QColor(QStringLiteral("#321c21"))
+                     : QColor(QStringLiteral("#fff0f1"));
+  const QColor dangerHover =
+      palette.isDark ? QColor(QStringLiteral("#48252c"))
+                     : QColor(QStringLiteral("#f9dfe3"));
+  const QColor dangerBorder =
+      palette.isDark ? QColor(QStringLiteral("#68333d"))
+                     : QColor(QStringLiteral("#e0adb4"));
+  const QColor dangerText =
+      palette.isDark ? QColor(QStringLiteral("#ef929d"))
+                     : QColor(QStringLiteral("#9d3e4d"));
+  style.replace(QStringLiteral("@WINDOW@"), palette.window.name());
+  style.replace(QStringLiteral("@TEXT@"), palette.text.name());
+  style.replace(QStringLiteral("@MUTED_TEXT@"), palette.mutedText.name());
+  style.replace(QStringLiteral("@BORDER@"), palette.border.name());
+  style.replace(QStringLiteral("@PANEL@"), palette.panel.name());
+  style.replace(QStringLiteral("@PANEL_ALT@"), palette.panelAlt.name());
+  style.replace(QStringLiteral("@CANVAS@"), palette.canvas.name());
+  style.replace(QStringLiteral("@HOVER@"), palette.hover.name());
+  style.replace(QStringLiteral("@ACCENT@"), palette.accent.name());
+  style.replace(QStringLiteral("@ACCENT_HOVER@"),
+                palette.accentHover.name());
+  style.replace(QStringLiteral("@SCROLL_HANDLE@"), scrollHandle.name());
+  style.replace(QStringLiteral("@SCROLL_HOVER@"), scrollHover.name());
+  style.replace(QStringLiteral("@DANGER_SURFACE@"), dangerSurface.name());
+  style.replace(QStringLiteral("@DANGER_HOVER@"), dangerHover.name());
+  style.replace(QStringLiteral("@DANGER_BORDER@"), dangerBorder.name());
+  style.replace(QStringLiteral("@DANGER_TEXT@"), dangerText.name());
+  return style;
 }
 
-const QString& confirmationStyleSheet() {
-  static const QString styleSheet = QStringLiteral(R"(
+QString confirmationStyleSheet(const ThemeSettings& settings) {
+  const UiThemePalette palette = resolvedThemePalette(settings);
+  QString style = QStringLiteral(R"(
       QDialog {
-          background: #15171b;
-          color: #e7e9ec;
+          background: @PANEL@;
+          color: @TEXT@;
           font-family: "Microsoft YaHei UI";
       }
       QLabel#memoConfirmationEyebrow {
-          color: #7f8790;
+          color: @MUTED_TEXT@;
           font-size: 10px;
       }
       QLabel#memoConfirmationTitle {
-          color: #f1f3f5;
+          color: @TEXT@;
           font-family: "Segoe UI Semibold", "Microsoft YaHei UI";
           font-size: 18px;
           font-weight: 600;
       }
       QLabel#memoConfirmationMessage {
-          background: #111317;
-          border: 1px solid #2b3036;
+          background: @CANVAS@;
+          border: 1px solid @BORDER@;
           border-radius: 4px;
-          color: #c5cad0;
+          color: @TEXT@;
           font-size: 13px;
           padding: 12px 13px;
       }
       QPushButton {
-          background: #24282e;
-          border: 1px solid #3d434b;
+          background: @PANEL_ALT@;
+          border: 1px solid @BORDER@;
           border-radius: 4px;
-          color: #d7dbe0;
+          color: @TEXT@;
           font-size: 13px;
           font-weight: 600;
           min-height: 34px;
@@ -212,34 +268,46 @@ const QString& confirmationStyleSheet() {
           padding: 0 14px;
       }
       QPushButton:hover {
-          background: #2e333a;
-          border-color: #565f69;
+          background: @HOVER@;
+          border-color: @ACCENT@;
       }
       QPushButton#memoConfirmationAcceptButton {
-          background: #2f78b7;
-          border-color: #438dca;
+          background: @ACCENT@;
+          border-color: @ACCENT_HOVER@;
           color: #ffffff;
       }
       QPushButton#memoConfirmationAcceptButton:hover {
-          background: #3d89c8;
-          border-color: #65a8dd;
+          background: @ACCENT_HOVER@;
+          border-color: @ACCENT_HOVER@;
       }
   )");
-  return styleSheet;
+  style.replace(QStringLiteral("@PANEL@"), palette.panel.name());
+  style.replace(QStringLiteral("@TEXT@"), palette.text.name());
+  style.replace(QStringLiteral("@MUTED_TEXT@"), palette.mutedText.name());
+  style.replace(QStringLiteral("@CANVAS@"), palette.canvas.name());
+  style.replace(QStringLiteral("@BORDER@"), palette.border.name());
+  style.replace(QStringLiteral("@PANEL_ALT@"), palette.panelAlt.name());
+  style.replace(QStringLiteral("@HOVER@"), palette.hover.name());
+  style.replace(QStringLiteral("@ACCENT@"), palette.accent.name());
+  style.replace(QStringLiteral("@ACCENT_HOVER@"),
+                palette.accentHover.name());
+  return style;
 }
 
 bool showConfirmation(QWidget* const parent, const QString& objectName,
                       const QString& title, const QString& message,
                       const QString& detail, const QString& acceptText,
-                      const QString& rejectText) {
-  QDialog dialog(parent);
+                      const QString& rejectText,
+                      const ThemeSettings& themeSettings) {
+  ThemeConfirmationDialog dialog(themeSettings, parent);
   dialog.setObjectName(objectName);
   dialog.setWindowTitle(title);
   dialog.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
   dialog.setWindowFlag(Qt::WindowCloseButtonHint, false);
   dialog.setModal(true);
   dialog.setFixedWidth(450);
-  dialog.setStyleSheet(confirmationStyleSheet());
+  dialog.setStyleSheet(confirmationStyleSheet(themeSettings));
+  dialog.setAttribute(Qt::WA_StyledBackground, true);
 
   auto* const layout = new QVBoxLayout(&dialog);
   layout->setContentsMargins(22, 20, 22, 18);
@@ -281,32 +349,36 @@ bool showConfirmation(QWidget* const parent, const QString& objectName,
   return dialog.exec() == QDialog::Accepted;
 }
 
-bool confirmsExplicitSave(QWidget* const parent) {
+bool confirmsExplicitSave(QWidget* const parent,
+                          const ThemeSettings& themeSettings) {
   return showConfirmation(
       parent, QStringLiteral("liveSourceMemoSaveConfirmation"),
       QStringLiteral("确认保存"),
       QStringLiteral("是否保存当前编辑的直播源？"),
       QStringLiteral("选择“确定”后，地址和备注会写入本机配置。"),
-      QStringLiteral("确定"), QStringLiteral("取消"));
+      QStringLiteral("确定"), QStringLiteral("取消"), themeSettings);
 }
 
-bool confirmsSaveBeforeClose(QWidget* const parent) {
+bool confirmsSaveBeforeClose(QWidget* const parent,
+                             const ThemeSettings& themeSettings) {
   return showConfirmation(
       parent, QStringLiteral("liveSourceMemoCloseConfirmation"),
       QStringLiteral("还有未保存的修改"),
       QStringLiteral("你还没有保存，是否保存后关闭窗口？"),
       QStringLiteral("选择“否”会放弃本次未保存的修改。"),
-      QStringLiteral("是，保存并关闭"), QStringLiteral("否，直接关闭"));
+      QStringLiteral("是，保存并关闭"), QStringLiteral("否，直接关闭"),
+      themeSettings);
 }
 
-void showMissingAddressWarning(QWidget* const parent, const int row) {
+void showMissingAddressWarning(QWidget* const parent, const int row,
+                               const ThemeSettings& themeSettings) {
   static_cast<void>(showConfirmation(
       parent, QStringLiteral("liveSourceMemoValidationWarning"),
       QStringLiteral("直播源地址不能为空"),
       QStringLiteral("第 %1 行填写了备注，但还没有直播源地址。")
           .arg(row + 1),
       QStringLiteral("请补全地址后再保存。"), QStringLiteral("知道了"),
-      QString{}));
+      QString{}, themeSettings));
 }
 
 }  // namespace
@@ -320,7 +392,6 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
   setModal(true);
   resize(860, 600);
   setMinimumSize(650, 460);
-  setStyleSheet(dialogStyleSheet());
 
   auto* const layout = new QVBoxLayout(this);
   layout->setContentsMargins(22, 20, 22, 18);
@@ -446,7 +517,13 @@ LiveSourceMemoDialog::LiveSourceMemoDialog(QVector<LiveSourceMemo> memos,
           &LiveSourceMemoDialog::requestSave);
 
   isInitializing_ = false;
-  updateControls();
+  applyTheme();
+}
+
+void LiveSourceMemoDialog::setThemeSettings(
+    const ThemeSettings& settings) {
+  themeSettings_ = normalizedThemeSettings(settings);
+  applyTheme();
 }
 
 void LiveSourceMemoDialog::closeEvent(QCloseEvent* const event) {
@@ -456,6 +533,12 @@ void LiveSourceMemoDialog::closeEvent(QCloseEvent* const event) {
     return;
   }
   event->ignore();
+}
+
+void LiveSourceMemoDialog::paintEvent(QPaintEvent* const event) {
+  QDialog::paintEvent(event);
+  QPainter painter(this);
+  painter.fillRect(rect(), resolvedThemePalette(themeSettings_).window);
 }
 
 void LiveSourceMemoDialog::appendRow(const LiveSourceMemo& memo) {
@@ -500,17 +583,35 @@ void LiveSourceMemoDialog::markDirty() {
 }
 
 void LiveSourceMemoDialog::updateControls() {
+  const UiThemePalette palette = resolvedThemePalette(themeSettings_);
   countBadge_->setText(QStringLiteral("%1 条记录").arg(table_->rowCount()));
   deleteButton_->setEnabled(table_->currentRow() >= 0);
   if (isDirty_) {
     statusLabel_->setText(QStringLiteral("有未保存的修改"));
-    statusLabel_->setStyleSheet(QStringLiteral("color: #d9a441;"));
+    statusLabel_->setStyleSheet(
+        QStringLiteral("color: %1;").arg(palette.secondary.name()));
   } else {
     statusLabel_->setText(
         QStringLiteral("已保存 %1 条  |  双击单元格编辑")
             .arg(savedMemos_.size()));
-    statusLabel_->setStyleSheet(QStringLiteral("color: #7f8790;"));
+    statusLabel_->setStyleSheet(
+        QStringLiteral("color: %1;").arg(palette.mutedText.name()));
   }
+}
+
+void LiveSourceMemoDialog::applyTheme() {
+  const UiThemePalette palette = resolvedThemePalette(themeSettings_);
+  setStyleSheet(dialogStyleSheet(themeSettings_));
+  setAttribute(Qt::WA_StyledBackground, true);
+
+  QPalette tablePalette = table_->palette();
+  tablePalette.setColor(QPalette::Base, palette.canvas);
+  tablePalette.setColor(QPalette::AlternateBase, palette.panel);
+  tablePalette.setColor(QPalette::Text, palette.text);
+  tablePalette.setColor(QPalette::Highlight, palette.accent);
+  tablePalette.setColor(QPalette::HighlightedText, QColor(Qt::white));
+  table_->setPalette(tablePalette);
+  updateControls();
 }
 
 void LiveSourceMemoDialog::commitActiveEditor() {
@@ -539,7 +640,8 @@ bool LiveSourceMemoDialog::saveMemos(const bool asksForConfirmation) {
   if (!collectMemos(&memos)) {
     return false;
   }
-  if (asksForConfirmation && !confirmsExplicitSave(this)) {
+  if (asksForConfirmation &&
+      !confirmsExplicitSave(this, themeSettings_)) {
     return false;
   }
   savedMemos_ = std::move(memos);
@@ -554,7 +656,7 @@ bool LiveSourceMemoDialog::confirmClose() {
   if (!isDirty_) {
     return true;
   }
-  if (!confirmsSaveBeforeClose(this)) {
+  if (!confirmsSaveBeforeClose(this, themeSettings_)) {
     return true;
   }
   return saveMemos(false);
@@ -573,7 +675,7 @@ bool LiveSourceMemoDialog::collectMemos(
     }
     if (sourceUrl.isEmpty()) {
       table_->setCurrentCell(row, 0);
-      showMissingAddressWarning(this, row);
+      showMissingAddressWarning(this, row, themeSettings_);
       return false;
     }
     memos->append(LiveSourceMemo{sourceUrl, note});
