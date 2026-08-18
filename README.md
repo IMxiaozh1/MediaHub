@@ -423,10 +423,10 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.7.0-win64" `
 - 不存在符号链接、junction、reparse point 和动态 `WebView2Loader.dll`。
 
 当前本机最终发布目录为 `dist/MediaHub-0.7.0-win64/`：400 个文件，总大小
-198,049,508 字节（188.87 MiB）；`MediaHub.exe` 大小为 2,769,920 字节，SHA-256 为：
+198,064,868 字节（188.89 MiB）；`MediaHub.exe` 大小为 2,785,280 字节，SHA-256 为：
 
 ```text
-0307F3F49E4AFED2BB8C6FC32A7391E2C385E2FAC04B7F6B167C16BA99023FDE
+D0FCD5DE709CF21AC5C37D46300B9568ED92E1CFF44AEE54803B9A783E7D02CB
 ```
 
 发布目录由 Git 忽略，不进入源码提交。Qt、VLC、插件、图标和法律材料必须与 EXE 一起
