@@ -8,7 +8,6 @@
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
-#include <QPalette>
 #include <QPainter>
 #include <QPushButton>
 #include <QShortcut>
@@ -17,6 +16,7 @@
 #include <QVBoxLayout>
 #include <utility>
 
+#include "native_window_theme.h"
 #include "ui_theme.h"
 
 namespace mediahub::gui {
@@ -92,11 +92,27 @@ QString dialogStyleSheet(const ThemeSettings& settings) {
           selection-color: #ffffff;
       }
       QTableWidget#liveSourceMemoTable::item {
+          background: @CANVAS@;
           border-bottom: 1px solid @BORDER@;
           padding: 8px 11px;
       }
+      QTableWidget#liveSourceMemoTable::item:alternate {
+          background: @PANEL@;
+      }
       QTableWidget#liveSourceMemoTable::item:hover {
           background: @HOVER@;
+      }
+      QTableWidget#liveSourceMemoTable::item:selected {
+          background: @ACCENT@;
+          color: #ffffff;
+      }
+      QTableWidget#liveSourceMemoTable QLineEdit {
+          background: @PANEL_ALT@;
+          border: 1px solid @ACCENT@;
+          color: @TEXT@;
+          padding: 6px 9px;
+          selection-background-color: @ACCENT@;
+          selection-color: #ffffff;
       }
       QHeaderView::section {
           background: @PANEL_ALT@;
@@ -229,6 +245,26 @@ QString dialogStyleSheet(const ThemeSettings& settings) {
   return style;
 }
 
+QString memoHeaderStyleSheet(const ThemeSettings& settings) {
+  const UiThemePalette palette = resolvedThemePalette(settings);
+  return QStringLiteral(R"(
+      QHeaderView {
+          background: %1;
+      }
+      QHeaderView::section {
+          background: %1;
+          border: none;
+          border-bottom: 1px solid %2;
+          color: %3;
+          font-size: 12px;
+          font-weight: 600;
+          padding: 9px 11px;
+      }
+  )")
+      .arg(palette.panelAlt.name(), palette.border.name(),
+           palette.mutedText.name());
+}
+
 QString confirmationStyleSheet(const ThemeSettings& settings) {
   const UiThemePalette palette = resolvedThemePalette(settings);
   QString style = QStringLiteral(R"(
@@ -308,6 +344,8 @@ bool showConfirmation(QWidget* const parent, const QString& objectName,
   dialog.setFixedWidth(450);
   dialog.setStyleSheet(confirmationStyleSheet(themeSettings));
   dialog.setAttribute(Qt::WA_StyledBackground, true);
+  setNativeDarkTitleBar(
+      &dialog, resolvedThemePalette(themeSettings).isDark);
 
   auto* const layout = new QVBoxLayout(&dialog);
   layout->setContentsMargins(22, 20, 22, 18);
@@ -601,16 +639,20 @@ void LiveSourceMemoDialog::updateControls() {
 
 void LiveSourceMemoDialog::applyTheme() {
   const UiThemePalette palette = resolvedThemePalette(themeSettings_);
-  setStyleSheet(dialogStyleSheet(themeSettings_));
+  const QString dialogStyle = dialogStyleSheet(themeSettings_);
+  setStyleSheet(dialogStyle);
   setAttribute(Qt::WA_StyledBackground, true);
-
-  QPalette tablePalette = table_->palette();
-  tablePalette.setColor(QPalette::Base, palette.canvas);
-  tablePalette.setColor(QPalette::AlternateBase, palette.panel);
-  tablePalette.setColor(QPalette::Text, palette.text);
-  tablePalette.setColor(QPalette::Highlight, palette.accent);
-  tablePalette.setColor(QPalette::HighlightedText, QColor(Qt::white));
-  table_->setPalette(tablePalette);
+  setNativeDarkTitleBar(this, palette.isDark);
+  table_->setStyleSheet(dialogStyle);
+  table_->viewport()->setObjectName(
+      QStringLiteral("liveSourceMemoViewport"));
+  table_->viewport()->setStyleSheet(
+      QStringLiteral(
+          "QWidget#liveSourceMemoViewport { background-color: %1; }")
+          .arg(palette.canvas.name()));
+  table_->horizontalHeader()->setStyleSheet(
+      memoHeaderStyleSheet(themeSettings_));
+  applyTablePalette(table_, palette);
   updateControls();
 }
 

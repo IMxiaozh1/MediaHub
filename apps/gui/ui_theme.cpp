@@ -1,6 +1,9 @@
 #include "ui_theme.h"
 
 #include <QColor>
+#include <QHeaderView>
+#include <QPalette>
+#include <QTableWidget>
 
 #include "player_view_state.h"
 
@@ -1970,6 +1973,38 @@ UiThemePalette resolvedThemePalette(const ThemeSettings& settings) {
                                          : palette.accent.darker(112);
   }
   return palette;
+}
+
+void applyTablePalette(QTableWidget* const table,
+                       const UiThemePalette& palette) {
+  if (table == nullptr) {
+    return;
+  }
+
+  QPalette themedPalette = table->palette();
+  for (const QPalette::ColorGroup group :
+       {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {
+    themedPalette.setColor(group, QPalette::Window, palette.canvas);
+    themedPalette.setColor(group, QPalette::Base, palette.canvas);
+    themedPalette.setColor(group, QPalette::AlternateBase, palette.panel);
+    themedPalette.setColor(group, QPalette::Text,
+                           group == QPalette::Disabled ? palette.mutedText
+                                                       : palette.text);
+    themedPalette.setColor(group, QPalette::WindowText, palette.text);
+    themedPalette.setColor(group, QPalette::Button, palette.panelAlt);
+    themedPalette.setColor(group, QPalette::ButtonText, palette.mutedText);
+    themedPalette.setColor(group, QPalette::Highlight, palette.accent);
+    themedPalette.setColor(group, QPalette::HighlightedText,
+                           QColor(Qt::white));
+  }
+
+  table->setPalette(themedPalette);
+  table->viewport()->setPalette(themedPalette);
+  table->viewport()->setAutoFillBackground(true);
+  table->horizontalHeader()->setPalette(themedPalette);
+  table->horizontalHeader()->setAutoFillBackground(true);
+  table->verticalHeader()->setPalette(themedPalette);
+  table->verticalHeader()->setAutoFillBackground(true);
 }
 
 namespace {

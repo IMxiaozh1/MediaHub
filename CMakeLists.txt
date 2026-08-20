@@ -231,6 +231,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         apps/gui/live_url_history_dialog.h
         apps/gui/main_window.cpp
         apps/gui/main_window.h
+        apps/gui/native_window_theme.cpp
+        apps/gui/native_window_theme.h
         apps/gui/player_presenter.cpp
         apps/gui/player_presenter.h
         apps/gui/player_view_state.h

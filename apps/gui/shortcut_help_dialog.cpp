@@ -8,13 +8,13 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPalette>
 #include <QPainter>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
+#include "native_window_theme.h"
 #include "ui_theme.h"
 
 namespace mediahub::gui {
@@ -64,8 +64,12 @@ QString shortcutDialogStyleSheet(const ThemeSettings& settings) {
           outline: none;
       }
       QTableWidget#shortcutHelpTable::item {
+          background: @CANVAS@;
           border-bottom: 1px solid @BORDER@;
           padding: 7px 11px;
+      }
+      QTableWidget#shortcutHelpTable::item:alternate {
+          background: @PANEL@;
       }
       QTableWidget#shortcutHelpTable::item:hover {
           background: @HOVER@;
@@ -122,6 +126,26 @@ QString shortcutDialogStyleSheet(const ThemeSettings& settings) {
   style.replace(QStringLiteral("@SCROLL_HANDLE@"), scrollHandle.name());
   style.replace(QStringLiteral("@SCROLL_HOVER@"), scrollHover.name());
   return style;
+}
+
+QString shortcutHeaderStyleSheet(const ThemeSettings& settings) {
+  const UiThemePalette palette = resolvedThemePalette(settings);
+  return QStringLiteral(R"(
+      QHeaderView {
+          background: %1;
+      }
+      QHeaderView::section {
+          background: %1;
+          border: none;
+          border-bottom: 1px solid %2;
+          color: %3;
+          font-size: 11px;
+          font-weight: 600;
+          padding: 9px 12px;
+      }
+  )")
+      .arg(palette.panelAlt.name(), palette.border.name(),
+           palette.mutedText.name());
 }
 
 QString shortcutOkButtonStyleSheet(const ThemeSettings& settings) {
@@ -307,16 +331,18 @@ void ShortcutHelpDialog::paintEvent(QPaintEvent* const event) {
 
 void ShortcutHelpDialog::applyTheme() {
   const UiThemePalette palette = resolvedThemePalette(themeSettings_);
-  setStyleSheet(shortcutDialogStyleSheet(themeSettings_));
+  const QString dialogStyle = shortcutDialogStyleSheet(themeSettings_);
+  setStyleSheet(dialogStyle);
   setAttribute(Qt::WA_StyledBackground, true);
-
-  QPalette tablePalette = table_->palette();
-  tablePalette.setColor(QPalette::Base, palette.canvas);
-  tablePalette.setColor(QPalette::AlternateBase, palette.panel);
-  tablePalette.setColor(QPalette::Text, palette.text);
-  tablePalette.setColor(QPalette::Highlight, palette.accent);
-  tablePalette.setColor(QPalette::HighlightedText, QColor(Qt::white));
-  table_->setPalette(tablePalette);
+  setNativeDarkTitleBar(this, palette.isDark);
+  table_->setStyleSheet(dialogStyle);
+  table_->viewport()->setObjectName(QStringLiteral("shortcutHelpViewport"));
+  table_->viewport()->setStyleSheet(
+      QStringLiteral("QWidget#shortcutHelpViewport { background-color: %1; }")
+          .arg(palette.canvas.name()));
+  table_->horizontalHeader()->setStyleSheet(
+      shortcutHeaderStyleSheet(themeSettings_));
+  applyTablePalette(table_, palette);
   okButton_->setStyleSheet(shortcutOkButtonStyleSheet(themeSettings_));
   for (int row = 0; row < table_->rowCount(); ++row) {
     table_->item(row, 0)->setForeground(palette.accent);

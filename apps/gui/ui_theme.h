@@ -5,6 +5,8 @@
 
 #include "theme_settings.h"
 
+class QTableWidget;
+
 namespace mediahub::gui {
 
 struct PlayerViewState;
@@ -40,5 +42,8 @@ struct UiThemePalette {
 [[nodiscard]] UiThemePalette resolvedThemePalette(
     const ThemeSettings& settings);
 [[nodiscard]] QString themeOverrideStyleSheet(const ThemeSettings& settings);
+
+// 将表格、视口和表头的调色板统一到同一套主题，避免平台样式漏出浅色底。
+void applyTablePalette(QTableWidget* table, const UiThemePalette& palette);
 
 }  // namespace mediahub::gui

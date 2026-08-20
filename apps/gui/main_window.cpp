@@ -56,20 +56,13 @@
 #include "lyrics_view.h"
 #include "live_source_memo_dialog.h"
 #include "live_url_history_dialog.h"
+#include "native_window_theme.h"
 #include "playlist_model.h"
 #include "seek_slider.h"
 #include "shortcut_help_dialog.h"
 #include "theme_background_widget.h"
 #include "theme_settings_dialog.h"
 #include "video_output_widget.h"
-
-#ifdef Q_OS_WIN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <dwmapi.h>
-#include <qt_windows.h>
-#endif
 
 namespace mediahub::gui {
 namespace {
@@ -619,18 +612,6 @@ QStringList localFilePaths(const QMimeData* const mimeData) {
     }
   }
   return paths;
-}
-
-void setNativeDarkTitleBar(QWidget* const window, const bool isDark) {
-#ifdef Q_OS_WIN
-  const BOOL enabled = isDark ? TRUE : FALSE;
-  const auto handle = reinterpret_cast<HWND>(window->winId());
-  static_cast<void>(DwmSetWindowAttribute(
-      handle, DWMWA_USE_IMMERSIVE_DARK_MODE, &enabled, sizeof(enabled)));
-#else
-  Q_UNUSED(window);
-  Q_UNUSED(isDark);
-#endif
 }
 
 }  // namespace

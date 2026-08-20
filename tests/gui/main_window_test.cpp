@@ -5233,6 +5233,13 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
       requiredChild<QAction>(harness.window, "shortcutHelpAction");
   auto* const memoAction =
       requiredChild<QAction>(harness.window, "liveSourceMemoAction");
+  const auto colorAtLogicalPoint = [](const QImage& image,
+                                      const QPoint& point) {
+    const qreal ratio = image.devicePixelRatio();
+    const int x = qBound(0, qRound(point.x() * ratio), image.width() - 1);
+    const int y = qBound(0, qRound(point.y() * ratio), image.height() - 1);
+    return image.pixelColor(x, y);
+  };
 
   const auto verifyShortcutDialog = [&](const ThemeSettings& settings) {
     harness.window.setThemeSettings(settings);
@@ -5243,8 +5250,12 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
     bool inspected = false;
     QString dialogStyle;
     QColor renderedWindowColor;
+    QColor renderedHeaderColor;
+    QColor renderedFirstRowColor;
+    QColor renderedSecondRowColor;
     QColor shortcutColor;
     QColor shortcutBackground;
+    bool usesDarkTitleBar = false;
     QTimer::singleShot(0, [&] {
       auto* const dialog =
           qobject_cast<QDialog*>(QApplication::activeModalWidget());
@@ -5259,10 +5270,31 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
       }
       dialog->ensurePolished();
       table->ensurePolished();
+      QCoreApplication::processEvents();
       dialogStyle = dialog->styleSheet();
-      renderedWindowColor = dialog->grab().toImage().pixelColor(5, 5);
+      renderedWindowColor = colorAtLogicalPoint(
+          dialog->grab().toImage(), QPoint(5, 5));
+      const QImage renderedHeader =
+          table->horizontalHeader()->grab().toImage();
+      const QImage renderedViewport = table->viewport()->grab().toImage();
+      const QRect firstRowRect =
+          table->visualItemRect(table->item(0, 1));
+      const QRect secondRowRect =
+          table->visualItemRect(table->item(1, 1));
+      renderedHeaderColor = colorAtLogicalPoint(
+          renderedHeader,
+          QPoint(table->horizontalHeader()->width() - 12,
+                 table->horizontalHeader()->height() / 2));
+      renderedFirstRowColor = colorAtLogicalPoint(
+          renderedViewport,
+          QPoint(firstRowRect.right() - 8, firstRowRect.center().y()));
+      renderedSecondRowColor = colorAtLogicalPoint(
+          renderedViewport,
+          QPoint(secondRowRect.right() - 8, secondRowRect.center().y()));
       shortcutColor = table->item(0, 0)->foreground().color();
       shortcutBackground = table->item(0, 0)->background().color();
+      usesDarkTitleBar =
+          dialog->property("nativeDarkTitleBar").toBool();
       inspected = true;
       dialog->accept();
     });
@@ -5273,8 +5305,12 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
     QVERIFY(dialogStyle.contains(expected.canvas.name()));
     QVERIFY(dialogStyle.contains(expected.panelAlt.name()));
     QCOMPARE(renderedWindowColor, expected.window);
+    QCOMPARE(renderedHeaderColor, expected.panelAlt);
+    QCOMPARE(renderedFirstRowColor, expected.canvas);
+    QCOMPARE(renderedSecondRowColor, expected.panel);
     QCOMPARE(shortcutColor, expected.accent);
     QCOMPARE(shortcutBackground, expected.panelAlt);
+    QCOMPARE(usesDarkTitleBar, expected.isDark);
   };
 
   const auto verifyMemoDialog = [&](const ThemeSettings& settings) {
@@ -5287,9 +5323,15 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
     bool inspectedConfirmation = false;
     QString dialogStyle;
     QColor renderedWindowColor;
+    QColor renderedHeaderColor;
+    QColor renderedEmptyTableColor;
+    QColor renderedSelectedRowColor;
+    QColor renderedEditorColor;
     QString confirmationName;
     QString confirmationStyle;
     QColor renderedConfirmationColor;
+    bool usesDarkTitleBar = false;
+    bool confirmationUsesDarkTitleBar = false;
     QTimer::singleShot(0, [&] {
       auto* const dialog =
           qobject_cast<QDialog*>(QApplication::activeModalWidget());
@@ -5308,11 +5350,41 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
       }
       dialog->ensurePolished();
       table->ensurePolished();
+      QCoreApplication::processEvents();
       dialogStyle = dialog->styleSheet();
-      renderedWindowColor = dialog->grab().toImage().pixelColor(5, 5);
+      renderedWindowColor = colorAtLogicalPoint(
+          dialog->grab().toImage(), QPoint(5, 5));
+      const QImage renderedHeader =
+          table->horizontalHeader()->grab().toImage();
+      const QImage renderedViewport = table->viewport()->grab().toImage();
+      renderedHeaderColor = colorAtLogicalPoint(
+          renderedHeader,
+          QPoint(table->horizontalHeader()->width() - 12,
+                 table->horizontalHeader()->height() / 2));
+      renderedEmptyTableColor = colorAtLogicalPoint(
+          renderedViewport,
+          QPoint(table->viewport()->width() / 2,
+                 table->viewport()->height() / 2));
+      usesDarkTitleBar =
+          dialog->property("nativeDarkTitleBar").toBool();
       inspected = true;
 
       addButton->click();
+      QCoreApplication::processEvents();
+      auto* const editor =
+          qobject_cast<QLineEdit*>(QApplication::focusWidget());
+      if (editor != nullptr) {
+        const QImage renderedEditor = editor->grab().toImage();
+        renderedEditorColor = colorAtLogicalPoint(
+            renderedEditor,
+            QPoint(editor->width() - 10, editor->height() / 2));
+      }
+      const QRect selectedRowRect =
+          table->visualItemRect(table->item(0, 1));
+      const QImage selectedViewport = table->viewport()->grab().toImage();
+      renderedSelectedRowColor = colorAtLogicalPoint(
+          selectedViewport,
+          QPoint(selectedRowRect.right() - 8, selectedRowRect.center().y()));
       QTimer::singleShot(20, [&] {
         auto* const confirmation =
             qobject_cast<QDialog*>(QApplication::activeModalWidget());
@@ -5322,8 +5394,10 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
         confirmation->ensurePolished();
         confirmationName = confirmation->objectName();
         confirmationStyle = confirmation->styleSheet();
-        renderedConfirmationColor =
-            confirmation->grab().toImage().pixelColor(5, 5);
+        renderedConfirmationColor = colorAtLogicalPoint(
+            confirmation->grab().toImage(), QPoint(5, 5));
+        confirmationUsesDarkTitleBar =
+            confirmation->property("nativeDarkTitleBar").toBool();
         inspectedConfirmation = true;
         confirmation->reject();
       });
@@ -5338,11 +5412,17 @@ void MainWindowTest::themesHelpDialogsWithCurrentAppearance() {
     QVERIFY(dialogStyle.contains(expected.canvas.name()));
     QVERIFY(dialogStyle.contains(expected.accent.name()));
     QCOMPARE(renderedWindowColor, expected.window);
+    QCOMPARE(renderedHeaderColor, expected.panelAlt);
+    QCOMPARE(renderedEmptyTableColor, expected.canvas);
+    QCOMPARE(renderedSelectedRowColor, expected.accent);
+    QCOMPARE(renderedEditorColor, expected.panelAlt);
+    QCOMPARE(usesDarkTitleBar, expected.isDark);
     QCOMPARE(confirmationName,
              QStringLiteral("liveSourceMemoSaveConfirmation"));
     QVERIFY(confirmationStyle.contains(expected.panel.name()));
     QVERIFY(confirmationStyle.contains(expected.text.name()));
     QCOMPARE(renderedConfirmationColor, expected.panel);
+    QCOMPARE(confirmationUsesDarkTitleBar, expected.isDark);
   };
 
   ThemeSettings lightSettings;
