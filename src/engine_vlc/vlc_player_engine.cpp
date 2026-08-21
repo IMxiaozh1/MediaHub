@@ -40,7 +40,7 @@ constexpr std::size_t kMaxRetirementWorkers = 4;
 constexpr float kWarmUnityPlaybackRate = 1.001F;
 constexpr unsigned kWaveformSampleRate = 48'000;
 constexpr char kDisableVideoOption[] = ":no-video";
-constexpr char kVideoFileCachingOption[] = ":file-caching=30";
+constexpr char kLocalFileCachingOption[] = ":file-caching=30";
 constexpr char kNetworkCachingOption[] = ":network-caching=1000";
 constexpr char kLiveCachingOption[] = ":live-caching=1000";
 
@@ -679,9 +679,14 @@ class VlcPlayerEngine::Impl {
                      options_.mediaOptionObserver);
       addMediaOption(newAnalysisMedia.get(), kDisableVideoOption,
                      options_.mediaOptionObserver);
+      // 改倍率会刷新音频队列；将默认约 1 秒的文件缓存收紧，避免刷新后出现长静音。
+      addMediaOption(newMedia.get(), kLocalFileCachingOption,
+                     options_.mediaOptionObserver);
+      addMediaOption(newAnalysisMedia.get(), kLocalFileCachingOption,
+                     options_.mediaOptionObserver);
     } else {
       // 缩短本地视频的预解码时钟跨度，避免改倍率时清空约一秒的旧倍率队列。
-      addMediaOption(newMedia.get(), kVideoFileCachingOption,
+      addMediaOption(newMedia.get(), kLocalFileCachingOption,
                      options_.mediaOptionObserver);
     }
     libvlc_media_player_set_media(player_.get(), newMedia.get());
@@ -810,6 +815,7 @@ class VlcPlayerEngine::Impl {
     }
   }
 
+  // 调用线程：唯一内核控制线程；仅操作 libVLC 播放器，不触碰 Qt 控件。
   void setPlaybackRateNow(const double rate) {
     if (!media_ || !std::isfinite(rate) || rate <= 0.0) {
       return;

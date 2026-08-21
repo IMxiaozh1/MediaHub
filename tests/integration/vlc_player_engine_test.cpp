@@ -64,6 +64,7 @@ class RecordingListener final : public core::PlayerEventListener {
 
   void onAudioWaveformChanged(core::AudioWaveform waveform) noexcept override {
     const std::lock_guard lock(mutex_);
+    waveformTimes_.push_back(std::chrono::steady_clock::now());
     waveform_ = std::move(waveform);
     ++waveformCount_;
     if (std::any_of(waveform_.samples.begin(), waveform_.samples.end(),
@@ -155,6 +156,25 @@ class RecordingListener final : public core::PlayerEventListener {
     return waveform_;
   }
 
+  [[nodiscard]] std::size_t waveformCount() const {
+    const std::lock_guard lock(mutex_);
+    return waveformCount_;
+  }
+
+  [[nodiscard]] bool waitForWaveformCount(
+      const std::size_t expected,
+      const std::chrono::milliseconds timeout = 5s) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout,
+                             [&] { return waveformCount_ >= expected; });
+  }
+
+  [[nodiscard]] std::chrono::steady_clock::time_point waveformTime(
+      const std::size_t index) const {
+    const std::lock_guard lock(mutex_);
+    return waveformTimes_.at(index);
+  }
+
   [[nodiscard]] bool waitForEnd(const std::chrono::milliseconds timeout = 5s) {
     std::unique_lock lock(mutex_);
     return changed_.wait_for(lock, timeout, [&] { return endCount_ > 0; });
@@ -221,6 +241,7 @@ class RecordingListener final : public core::PlayerEventListener {
   bool hasDurationEvent_{false};
   core::AudioWaveform waveform_;
   std::size_t waveformCount_{0};
+  std::vector<std::chrono::steady_clock::time_point> waveformTimes_;
   std::size_t nonSilentWaveformCount_{0};
   std::size_t endCount_{0};
   std::vector<core::PlaybackError> errors_;
@@ -709,6 +730,9 @@ TEST(VlcPlayerEngineTest, AudioModeDisablesVideoForPlaybackAndAnalysis) {
   const std::lock_guard lock(optionsMutex);
   EXPECT_EQ(std::count(mediaOptions.begin(), mediaOptions.end(), ":no-video"),
             2);
+  EXPECT_EQ(std::count(mediaOptions.begin(), mediaOptions.end(),
+                       ":file-caching=30"),
+            2);
   engine.setEventListener(nullptr);
 }
 
@@ -789,6 +813,33 @@ TEST(VlcPlayerEngineTest, PlaysPausesSeeksResumesAndStopsGeneratedWav) {
   ASSERT_TRUE(
       listener.waitForStateCount(core::PlaybackState::Stopped, stopped));
   EXPECT_EQ(engine.position().current, 0ms);
+  engine.setEventListener(nullptr);
+}
+
+TEST(VlcPlayerEngineTest, PlaybackRateChangeDoesNotCreateLongAudioGap) {
+  GeneratedWav media(8s);
+  RecordingListener listener;
+  VlcPlayerEngine engine(testOptions());
+  engine.setEventListener(&listener);
+  engine.open(core::makeMediaItem(media.source()));
+  engine.play();
+
+  ASSERT_TRUE(listener.waitForStateCount(core::PlaybackState::Playing, 1));
+  ASSERT_TRUE(listener.waitForNonSilentWaveform());
+  ASSERT_TRUE(listener.waitForNonSilentWaveformCount(12));
+  const auto beforeRate = listener.waveformCount();
+  engine.setPlaybackRate(2.0);
+  ASSERT_TRUE(listener.waitForWaveformCount(beforeRate + 12));
+
+  auto largestGap = 0ms;
+  for (std::size_t index = beforeRate + 1; index < listener.waveformCount();
+       ++index) {
+    largestGap = std::max(
+        largestGap,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            listener.waveformTime(index) - listener.waveformTime(index - 1)));
+  }
+  EXPECT_LT(largestGap, 500ms);
   engine.setEventListener(nullptr);
 }
 
