@@ -3,6 +3,7 @@
 /cmake-build-*/
 /out/
 /dist/
+/local_package_files/
 /.worktrees/
 
 # IDE 本机配置

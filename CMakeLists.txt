@@ -13,6 +13,9 @@ option(MEDIAHUB_PACKAGE_RELEASE "Enable the Windows Release installation rules" 
 set(MEDIAHUB_VLC_ROOT "" CACHE PATH "Path to an extracted VLC win64 archive")
 set(MEDIAHUB_WEBVIEW2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/Third_Party/webview2"
     CACHE PATH "Path to the fixed Microsoft WebView2 SDK")
+set(MEDIAHUB_LOCAL_PACKAGE_FILES_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/local_package_files" CACHE PATH
+    "Optional local-only files copied into the Release package root")
 
 if(NOT MEDIAHUB_CORE_ONLY AND NOT MEDIAHUB_VLC_ROOT)
     message(FATAL_ERROR
@@ -403,6 +406,18 @@ if(NOT MEDIAHUB_CORE_ONLY)
             "${CMAKE_CURRENT_SOURCE_DIR}/licenses/THIRD-PARTY-NOTICES.md"
             DESTINATION licenses
         )
+        if(IS_DIRECTORY "${MEDIAHUB_LOCAL_PACKAGE_FILES_DIR}")
+            install(DIRECTORY "${MEDIAHUB_LOCAL_PACKAGE_FILES_DIR}/"
+                DESTINATION .
+                FILES_MATCHING
+                PATTERN "*.m3u"
+                PATTERN "*.m3u8"
+                PATTERN "*.txt"
+                PATTERN "*.M3U"
+                PATTERN "*.M3U8"
+                PATTERN "*.TXT"
+            )
+        endif()
         install(DIRECTORY "${MEDIAHUB_VLC_PLUGIN_DIR}/" DESTINATION plugins)
         install(FILES
             "${MEDIAHUB_VLC_RUNTIME}"

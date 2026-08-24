@@ -439,6 +439,17 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.8.0-win64" `
       -P tools/validate_release_package.cmake
 ```
 
+本机需要随正式包携带、但不能提交到 Git 的 `.m3u`、`.m3u8` 和 `.txt` 文件，统一放在
+仓库根目录的 `local_package_files/`。该目录已被 Git 忽略；启用正式打包后，CMake 会把
+其中允许的文件自动安装到发布目录根部，与 `MediaHub.exe` 放在一起。以后只维护
+`local_package_files/` 中的源文件，不要把唯一副本放在随时可能替换的 `dist/` 中。
+
+若要改用其他本机目录，可在配置时增加：
+
+```powershell
+-DMEDIAHUB_LOCAL_PACKAGE_FILES_DIR="<本机资料目录>"
+```
+
 发布包校验器会检查：
 
 - 顶层 `MediaHub.exe`、Qt 运行库、libVLC 两个 DLL 和完整的 365 个 VLC 插件。
