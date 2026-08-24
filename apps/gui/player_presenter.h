@@ -118,6 +118,9 @@ class PlayerPresenter final : public QObject {
   void handleError(core::PlaybackError error);
   void handleVideoSurfaceReleased(void* nativeHandle);
   void handleNetworkOpenTimeout();
+  void handleNetworkReconnectTimeout();
+  void scheduleNetworkReconnect(const char* reason);
+  void resetNetworkReconnect();
   void rememberNetworkUrl(const QString& url);
   void rememberLivePlaylistUrl(const QString& url);
   void updateLivePlaylistHistory(const QStringList& urls);
@@ -137,8 +140,10 @@ class PlayerPresenter final : public QObject {
   void persistAppState() noexcept;
   void openCurrentPlaylistItem(PlaylistKind playlistKind,
                                bool isNetworkRefresh = false,
-                               bool parsesLocalPlaylist = true);
-  void openCurrentPlaybackItem(bool isNetworkRefresh = false);
+                               bool parsesLocalPlaylist = true,
+                               bool isAutomaticReconnect = false);
+  void openCurrentPlaybackItem(bool isNetworkRefresh = false,
+                               bool isAutomaticReconnect = false);
   [[nodiscard]] core::Playlist& playlist(PlaylistKind playlistKind) noexcept;
   [[nodiscard]] const core::Playlist& playlist(
       PlaylistKind playlistKind) const noexcept;
@@ -160,6 +165,7 @@ class PlayerPresenter final : public QObject {
   LivePlaylistService* livePlaylistService_{nullptr};
   AppStateStore* appStateStore_{nullptr};
   QTimer* networkOpenTimeoutTimer_{nullptr};
+  QTimer* networkReconnectTimer_{nullptr};
   QTimer* appStatePersistTimer_{nullptr};
   core::PlaybackStateMachine stateMachine_;
   core::Playlist localPlaylist_;
@@ -192,6 +198,8 @@ class PlayerPresenter final : public QObject {
   QString livePlaylistStatusText_{QStringLiteral("输入远程 M3U/M3U8 清单 URL")};
   int volume_{100};
   int bufferingPercentage_{0};
+  int networkReconnectAttempt_{0};
+  int networkReconnectDelayMilliseconds_{0};
   double playbackRate_{1.0};
   double lastAppliedPlaybackRate_{1.0};
   bool isAutoPlayPending_{false};
@@ -208,6 +216,9 @@ class PlayerPresenter final : public QObject {
   bool ignoresCancelledNetworkEvents_{false};
   bool isNetworkRefreshPending_{false};
   bool isNetworkDisconnected_{false};
+  bool isNetworkReconnectPending_{false};
+  bool isNetworkReconnectInProgress_{false};
+  bool isNetworkReconnectExhausted_{false};
   bool isEngineBusy_{false};
   bool isLivePlaylistLoading_{false};
   bool isPreparingMedia_{false};

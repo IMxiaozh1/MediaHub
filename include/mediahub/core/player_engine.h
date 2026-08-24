@@ -65,9 +65,6 @@ class PlayerEngine {
       const = 0;
   // 调用线程：任意线程。
   [[nodiscard]] virtual bool isSeekable() const = 0;
-  // 调用线程：任意线程。仅网络媒体可返回统计；空值表示统计尚不可用或内核不支持。
-  [[nodiscard]] virtual std::optional<NetworkStreamActivity>
-  networkStreamActivity() const = 0;
 
   // 调用线程：应用控制线程。listener 不转移所有权，nullptr 用于解除监听。
   virtual void setEventListener(PlayerEventListener* listener) = 0;

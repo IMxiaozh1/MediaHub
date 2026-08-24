@@ -2,7 +2,7 @@
 
 #include <array>
 #include <chrono>
-#include <cstdint>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -53,19 +53,6 @@ struct PlaybackPosition {
   bool isSeekable{false};
 
   bool operator==(const PlaybackPosition&) const = default;
-};
-
-// 网络直播的数据和解码进度快照。任一计数增长都表示输入或音视频输出仍在前进；
-// 空快照表示当前内核无法提供可靠统计，调用方不得据此判定断流。
-struct NetworkStreamActivity {
-  std::uint64_t inputBytes{0};
-  std::uint64_t demuxBytes{0};
-  std::uint64_t decodedVideoFrames{0};
-  std::uint64_t decodedAudioFrames{0};
-  std::uint64_t displayedVideoFrames{0};
-  std::uint64_t playedAudioBuffers{0};
-
-  bool operator==(const NetworkStreamActivity&) const = default;
 };
 
 inline constexpr std::size_t kAudioWaveformSampleCount = 128;

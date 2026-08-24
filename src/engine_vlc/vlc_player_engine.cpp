@@ -33,7 +33,6 @@ using namespace std::chrono_literals;
 
 constexpr auto kPositionEventInterval = 200ms;
 constexpr auto kWaveformEventInterval = 66ms;
-constexpr auto kNetworkActivityPollInterval = 250ms;
 constexpr auto kShutdownTimeout = 2s;
 constexpr auto kShutdownPollInterval = 10ms;
 constexpr std::size_t kMaxRetirementWorkers = 4;
@@ -161,22 +160,6 @@ void runBeforeRetiredPlayerStopObserver(
   } catch (...) {
     // 测试观察器不得影响真实播放内核回收。
   }
-}
-
-std::uint64_t nonnegativeCounter(const int value) noexcept {
-  return static_cast<std::uint64_t>(std::max(value, 0));
-}
-
-core::NetworkStreamActivity networkActivityFromLibVlc(
-    const libvlc_media_stats_t& stats) noexcept {
-  return {
-      nonnegativeCounter(stats.i_read_bytes),
-      nonnegativeCounter(stats.i_demux_read_bytes),
-      nonnegativeCounter(stats.i_decoded_video),
-      nonnegativeCounter(stats.i_decoded_audio),
-      nonnegativeCounter(stats.i_displayed_pictures),
-      nonnegativeCounter(stats.i_played_abuffers),
-  };
 }
 
 core::AudioWaveform audioWaveformFromPcm(const std::int16_t* const samples,
@@ -518,11 +501,6 @@ class VlcPlayerEngine::Impl {
     return position_.isSeekable;
   }
 
-  std::optional<core::NetworkStreamActivity> networkStreamActivity() const {
-    const std::lock_guard lock(mutex_);
-    return networkStreamActivity_;
-  }
-
   void setEventListener(core::PlayerEventListener* const listener) {
     {
       const std::lock_guard lock(mutex_);
@@ -764,7 +742,6 @@ class VlcPlayerEngine::Impl {
         const std::lock_guard lock(mutex_);
         position_ = {};
         lastPositionNotification_ = {};
-        networkStreamActivity_.reset();
       }
       updateState(core::PlaybackState::Stopped);
     } else {
@@ -870,16 +847,15 @@ class VlcPlayerEngine::Impl {
     commandReady_.notify_one();
   }
 
+  // 调用线程：唯一内核控制线程。只在有明确控制请求时唤醒，避免用可能阻塞的
+  // libVLC 统计查询占住队列，导致卡住的直播拖延刷新、切台和停止。
   void runCommandWorker() noexcept {
     for (;;) {
       std::function<void()> command;
-      bool shouldRefreshNetworkActivity = false;
       {
         std::unique_lock lock(commandMutex_);
-        const bool commandReady = commandReady_.wait_for(
-            lock, kNetworkActivityPollInterval,
-            [this] { return commandWorkerStopping_ || !commands_.empty(); });
-        shouldRefreshNetworkActivity = !commandReady;
+        commandReady_.wait(
+            lock, [this] { return commandWorkerStopping_ || !commands_.empty(); });
         if (commands_.empty()) {
           if (commandWorkerStopping_) {
             return;
@@ -890,10 +866,6 @@ class VlcPlayerEngine::Impl {
         }
       }
 
-      if (shouldRefreshNetworkActivity) {
-        refreshNetworkStreamActivityNow();
-        continue;
-      }
       if (!command) {
         continue;
       }
@@ -914,28 +886,6 @@ class VlcPlayerEngine::Impl {
         } catch (...) {
         }
       }
-    }
-  }
-
-  void refreshNetworkStreamActivityNow() noexcept {
-    bool isNetworkMedia = false;
-    {
-      const std::lock_guard lock(mutex_);
-      isNetworkMedia = isNetworkMedia_;
-    }
-    if (!isNetworkMedia || !media_) {
-      return;
-    }
-
-    libvlc_media_stats_t stats{};
-    if (libvlc_media_get_stats(media_.get(), &stats) == 0) {
-      return;
-    }
-
-    const auto activity = networkActivityFromLibVlc(stats);
-    const std::lock_guard lock(mutex_);
-    if (isNetworkMedia_) {
-      networkStreamActivity_ = activity;
     }
   }
 
@@ -1400,7 +1350,6 @@ class VlcPlayerEngine::Impl {
       isNetworkMedia_ = false;
       currentDisplayName_ = std::move(displayName);
       position_ = {};
-      networkStreamActivity_.reset();
       lastPositionNotification_ = {};
       lastWaveformNotification_ = {};
     }
@@ -1484,7 +1433,6 @@ class VlcPlayerEngine::Impl {
   bool isShuttingDown_{false};
   core::PlaybackState state_{core::PlaybackState::Idle};
   core::PlaybackPosition position_;
-  std::optional<core::NetworkStreamActivity> networkStreamActivity_;
   std::string currentDisplayName_;
   std::chrono::steady_clock::time_point lastPositionNotification_;
   std::chrono::steady_clock::time_point lastWaveformNotification_;
@@ -1535,11 +1483,6 @@ std::optional<std::chrono::milliseconds> VlcPlayerEngine::duration() const {
 }
 
 bool VlcPlayerEngine::isSeekable() const { return impl_->isSeekable(); }
-
-std::optional<core::NetworkStreamActivity>
-VlcPlayerEngine::networkStreamActivity() const {
-  return impl_->networkStreamActivity();
-}
 
 void VlcPlayerEngine::setEventListener(
     core::PlayerEventListener* const listener) {

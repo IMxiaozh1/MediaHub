@@ -79,12 +79,6 @@ bool FakePlayerEngine::isSeekable() const {
   return position_.isSeekable;
 }
 
-std::optional<core::NetworkStreamActivity>
-FakePlayerEngine::networkStreamActivity() const {
-  const std::lock_guard lock(mutex_);
-  return networkStreamActivity_;
-}
-
 void FakePlayerEngine::setEventListener(
     core::PlayerEventListener* const listener) {
   const std::lock_guard lock(mutex_);
@@ -94,12 +88,6 @@ void FakePlayerEngine::setEventListener(
 std::vector<FakeEngineCommand> FakePlayerEngine::commands() const {
   const std::lock_guard lock(mutex_);
   return commands_;
-}
-
-void FakePlayerEngine::setNetworkStreamActivity(
-    std::optional<core::NetworkStreamActivity> activity) {
-  const std::lock_guard lock(mutex_);
-  networkStreamActivity_ = std::move(activity);
 }
 
 void FakePlayerEngine::emitOpenStarted(const core::OpenRequestId requestId) {

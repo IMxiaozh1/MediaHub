@@ -51,13 +51,9 @@ class FakePlayerEngine final : public core::PlayerEngine {
   [[nodiscard]] std::optional<std::chrono::milliseconds> duration()
       const override;
   [[nodiscard]] bool isSeekable() const override;
-  [[nodiscard]] std::optional<core::NetworkStreamActivity>
-  networkStreamActivity() const override;
   void setEventListener(core::PlayerEventListener* listener) override;
 
   [[nodiscard]] std::vector<FakeEngineCommand> commands() const;
-  void setNetworkStreamActivity(
-      std::optional<core::NetworkStreamActivity> activity);
 
   // 调用线程：测试线程。显式确认指定打开请求已进入内核处理阶段。
   void emitOpenStarted(core::OpenRequestId requestId);
@@ -86,7 +82,6 @@ class FakePlayerEngine final : public core::PlayerEngine {
   std::vector<FakeEngineCommand> commands_;
   core::PlaybackState state_{core::PlaybackState::Idle};
   core::PlaybackPosition position_;
-  std::optional<core::NetworkStreamActivity> networkStreamActivity_;
   core::PlayerEventListener* listener_{nullptr};
   core::OpenRequestId latestOpenRequestId_{0};
   core::OpenRequestId announcedOpenRequestId_{0};
