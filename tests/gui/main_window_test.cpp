@@ -342,7 +342,8 @@ private slots:
   void rendersBottomUpwardAudioWaveformAndTogglesFullScreen();
   void togglesLyricsBesideVolumeAndTracksSynchronizedLine();
   void collapsesAndExpandsPlaylistWithMediaResize();
-  void scalesPlaylistTypographyAcrossWindowBreakpoints();
+  void scalesPlaylistControlsAcrossWindowBreakpoints();
+  void keepsLivePlaylistCompactAcrossWindowBreakpoints();
   void keepsPresentationModesInsideResponsiveBounds();
   void resizesVideoSurfaceAndTogglesFullScreen();
   void togglesFullScreenWithF11();
@@ -5188,7 +5189,7 @@ void MainWindowTest::collapsesAndExpandsPlaylistWithMediaResize() {
   QCOMPARE(toggleButton->accessibleName(), QStringLiteral("收起播放列表"));
 }
 
-void MainWindowTest::scalesPlaylistTypographyAcrossWindowBreakpoints() {
+void MainWindowTest::scalesPlaylistControlsAcrossWindowBreakpoints() {
   GuiHarness harness;
   harness.window.show();
   QCoreApplication::processEvents();
@@ -5210,7 +5211,6 @@ void MainWindowTest::scalesPlaylistTypographyAcrossWindowBreakpoints() {
                                   QSize(1600, 900)};
   std::array<int, 4> panelWidths{};
   std::array<int, 4> titleFontSizes{};
-  std::array<int, 4> listFontHeights{};
   std::array<int, 4> searchFontHeights{};
   for (std::size_t index = 0; index < sizes.size(); ++index) {
     const QSize size = sizes.at(index);
@@ -5234,7 +5234,6 @@ void MainWindowTest::scalesPlaylistTypographyAcrossWindowBreakpoints() {
     QCOMPARE(playlistView->fontMetrics().height(), localListHeight);
     panelWidths.at(index) = playlistPanel->width();
     titleFontSizes.at(index) = playlistTitle->font().pixelSize();
-    listFontHeights.at(index) = playlistView->fontMetrics().height();
     searchFontHeights.at(index) =
         livePlaylistSearch->fontMetrics().height();
   }
@@ -5242,10 +5241,38 @@ void MainWindowTest::scalesPlaylistTypographyAcrossWindowBreakpoints() {
   for (std::size_t index = 1; index < sizes.size(); ++index) {
     QVERIFY(panelWidths.at(index - 1) <= panelWidths.at(index));
     QVERIFY(titleFontSizes.at(index - 1) < titleFontSizes.at(index));
-    QVERIFY(listFontHeights.at(index - 1) < listFontHeights.at(index));
     QVERIFY(searchFontHeights.at(index - 1) < searchFontHeights.at(index));
   }
   QVERIFY(panelWidths.front() < panelWidths.back());
+}
+
+void MainWindowTest::keepsLivePlaylistCompactAcrossWindowBreakpoints() {
+  GuiHarness harness;
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/compact.m3u8"));
+  harness.window.show();
+  QCoreApplication::processEvents();
+
+  auto* const centralSurface =
+      requiredChild<QWidget>(harness.window, "centralSurface");
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  QCOMPARE(playlistView->model()->rowCount(), 1);
+
+  const std::array<QSize, 4> sizes{harness.window.minimumSize(),
+                                  QSize(960, 720), QSize(1200, 800),
+                                  QSize(1600, 900)};
+  for (const QSize& size : sizes) {
+    harness.window.resize(size);
+    QTRY_COMPARE(harness.window.size(), size);
+    QTRY_COMPARE(centralSurface->property("themeMode").toString(),
+                 QStringLiteral("live"));
+    QCOMPARE(centralSurface->font().pixelSize(), 12);
+    QCOMPARE(playlistView->font().pixelSize(), 12);
+    QVERIFY(playlistView->fontMetrics().height() <= 16);
+    QVERIFY(playlistView->sizeHintForRow(0) > 0);
+    QVERIFY(playlistView->sizeHintForRow(0) <= 30);
+  }
 }
 
 void MainWindowTest::keepsPresentationModesInsideResponsiveBounds() {

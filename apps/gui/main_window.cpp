@@ -12,6 +12,7 @@
 #include <QEvent>
 #include <QEnterEvent>
 #include <QFileDialog>
+#include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -624,6 +625,11 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
                        BrowserStartupSettingsStore* const browserStartupSettingsStore,
                        BrowserPermissionStore* const browserPermissionStore)
     : QMainWindow(parent), windowIconManager_(this) {
+  // 固定 Qt5 时期的 Windows 字体基线，避免 Qt6 平台字体度量放大整页。
+  QFont compactFont = font();
+  compactFont.setFamily(QStringLiteral("Microsoft YaHei UI"));
+  compactFont.setPixelSize(12);
+  setFont(compactFont);
   if (browserBackend == nullptr) {
     ownedBrowserBackend_ = std::make_unique<UnavailableBrowserBackend>();
     browserBackend_ = ownedBrowserBackend_.get();

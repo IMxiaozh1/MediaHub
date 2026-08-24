@@ -36,6 +36,7 @@ const QString& mainWindowStyleSheet() {
   static const QString styleSheet = QStringLiteral(R"(
       QWidget {
           font-family: "Microsoft YaHei UI";
+          font-size: 12px;
       }
       QMainWindow[themeMode="audio"],
       QWidget#centralSurface[themeMode="audio"] {
@@ -364,6 +365,7 @@ const QString& mainWindowStyleSheet() {
       }
       QListView#playlistView {
           border: none;
+          font-size: 12px;
           outline: none;
           padding: 3px;
       }
@@ -855,7 +857,6 @@ const QString& mainWindowStyleSheet() {
           font-size: 14px;
       }
       QTabBar#playlistKindTabs[responsiveSize="compact"]::tab,
-      QListView#playlistView[responsiveSize="compact"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="compact"],
       QLineEdit#livePlaylistSearchEdit[responsiveSize="compact"],
       QLabel#livePlaylistStatusLabel[responsiveSize="compact"],
@@ -870,7 +871,6 @@ const QString& mainWindowStyleSheet() {
           font-size: 15px;
       }
       QTabBar#playlistKindTabs[responsiveSize="normal"]::tab,
-      QListView#playlistView[responsiveSize="normal"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="normal"],
       QLineEdit#livePlaylistSearchEdit[responsiveSize="normal"],
       QLabel#livePlaylistStatusLabel[responsiveSize="normal"],
@@ -885,7 +885,6 @@ const QString& mainWindowStyleSheet() {
           font-size: 16px;
       }
       QTabBar#playlistKindTabs[responsiveSize="large"]::tab,
-      QListView#playlistView[responsiveSize="large"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="large"],
       QLineEdit#livePlaylistSearchEdit[responsiveSize="large"],
       QLabel#livePlaylistStatusLabel[responsiveSize="large"],
@@ -900,7 +899,6 @@ const QString& mainWindowStyleSheet() {
           font-size: 18px;
       }
       QTabBar#playlistKindTabs[responsiveSize="extraLarge"]::tab,
-      QListView#playlistView[responsiveSize="extraLarge"],
       QLineEdit#livePlaylistUrlEdit[responsiveSize="extraLarge"],
       QLineEdit#livePlaylistSearchEdit[responsiveSize="extraLarge"],
       QLabel#livePlaylistStatusLabel[responsiveSize="extraLarge"],
@@ -1675,8 +1673,8 @@ const QString& mainWindowStyleSheet() {
           border: none;
           border-bottom: 1px solid #20242a;
           border-radius: 0;
-          min-height: 24px;
-          padding: 7px 9px;
+          min-height: 18px;
+          padding: 4px 7px;
       }
       QListView#playlistView::item:hover:!selected,
       QListView#playlistView[themeMode="live"]::item:hover:!selected {
