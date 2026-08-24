@@ -380,7 +380,7 @@ ctest --test-dir cmake-build-release-no-tests -N
 
 ### 当前回归结果
 
-Qt 6.8.3 迁移候选的记录结果如下：
+Qt 6.8.3 正式迁移的记录结果如下：
 
 | 项目 | 结果 |
 |---|---|
@@ -428,7 +428,7 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.7.0-win64" `
 - 不存在 WebView2 Profile、Cache、Cookie、构建目录、测试程序、调试文件或错误架构。
 - 不存在符号链接、junction、reparse point 和动态 `WebView2Loader.dll`。
 
-当前 Qt6 候选目录为 `dist/MediaHub-0.7.0-win64-qt6-candidate/`：398 个文件，总大小
+当前唯一 Qt6 正式目录为 `dist/MediaHub-0.7.0-win64/`：398 个文件，总大小
 213,601,651 字节（203.71 MiB）；`MediaHub.exe` 大小为 3,041,792 字节，SHA-256 为：
 
 ```text
@@ -536,8 +536,8 @@ v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发
 - [docs/规划/15-Qt6.8迁移.md](docs/规划/15-Qt6.8迁移.md)：Qt6-only 迁移范围、兼容策略和门禁。
 - [docs/测试/43-Qt6.8迁移测试.md](docs/测试/43-Qt6.8迁移测试.md)：Qt 6.8.3 构建矩阵、
   发布包校验、隔离运行和人工验收边界。
-- [docs/交付/11-Qt6.8迁移交付说明.md](docs/交付/11-Qt6.8迁移交付说明.md)：Qt6 候选包、
-  依赖变化和正式包切换条件。
+- [docs/交付/11-Qt6.8迁移交付说明.md](docs/交付/11-Qt6.8迁移交付说明.md)：Qt6 正式包、
+  依赖变化、验证结果和正式包切换记录。
 - [docs/规划/14-v0.7-本地与直播界面重构.md](docs/规划/14-v0.7-本地与直播界面重构.md)：
   v0.7 页面结构、主题、响应式布局和网页页边界。
 - [docs/设计/03-项目结构.md](docs/设计/03-项目结构.md)：当前目录、CMake 目标和依赖方向。
