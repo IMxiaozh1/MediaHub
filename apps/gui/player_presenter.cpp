@@ -828,14 +828,7 @@ void PlayerPresenter::changeDisplayMode(const DisplayMode mode) {
     return;
   }
 
-  if (mode == DisplayMode::Web) {
-    const core::PlaybackState state = stateMachine_.state();
-    if (state == core::PlaybackState::Opening ||
-        state == core::PlaybackState::Buffering ||
-        state == core::PlaybackState::Playing) {
-      engine_.pause();
-    }
-  } else {
+  if (mode != DisplayMode::Web) {
     changePlaylistKind(mode == DisplayMode::Live ? 1 : 0);
   }
 

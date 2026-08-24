@@ -259,8 +259,9 @@ private slots:
   void expandsLocalIptvPlaylistAndFallsBackForLocalHlsManifest();
   void reparsesLegacyLocalPlaylistItemsOnActivation();
   void separatesLocalAndLiveListsWithoutStoppingPlayback();
-  void switchesToWebWithoutChangingPlaylistsAndPausesNativePlayback();
-  void pausesOnlyActiveNativePlaybackWhenEnteringWeb();
+  void switchesToWebWithoutChangingNativePlayback();
+  void keepsNativePlaybackStateWhenEnteringWeb();
+  void keepsLivePlayingAndRefreshableAcrossWebMode();
   void showsAudibleWebTabCountAcrossDisplayModes();
   void stylesDisplayModesAsStableSegmentedControl();
   void opensMatureThemeCustomizerAndAppliesBackgroundControls();
@@ -359,10 +360,12 @@ void MainWindowTest::initTestCase() {
                      settingsDirectory_.path());
 }
 
-void MainWindowTest::switchesToWebWithoutChangingPlaylistsAndPausesNativePlayback() {
+void MainWindowTest::
+    switchesToWebWithoutChangingNativePlayback() {
   GuiHarness harness;
   harness.presenter.addLocalFiles(
-      {QStringLiteral("C:/media/first.wav"), QStringLiteral("C:/media/second.wav")});
+      {QStringLiteral("C:/media/first.wav"),
+       QStringLiteral("C:/media/second.wav")});
   harness.engine.emitStateChanged(core::PlaybackState::Opening);
   harness.engine.emitStateChanged(core::PlaybackState::Playing);
   QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
@@ -376,7 +379,8 @@ void MainWindowTest::switchesToWebWithoutChangingPlaylistsAndPausesNativePlaybac
 
   QTest::mouseClick(requiredChild<QToolButton>(harness.window, "webModeButton"),
                     Qt::LeftButton);
-  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause), 1);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause), 0);
+  QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
   QCOMPARE(playlist->model()->rowCount(), originalRows);
   QVERIFY(requiredChild<QWidget>(harness.window, "browserPage")->isVisible());
 
@@ -404,9 +408,8 @@ void MainWindowTest::switchesToWebWithoutChangingPlaylistsAndPausesNativePlaybac
   QVERIFY(!harness.browserBackend.lastCommand().flag);
 }
 
-void MainWindowTest::pausesOnlyActiveNativePlaybackWhenEnteringWeb() {
-  const auto verifyPauseCount = [](const core::PlaybackState targetState,
-                                   const int expectedPauseCount) {
+void MainWindowTest::keepsNativePlaybackStateWhenEnteringWeb() {
+  const auto verifyPlaybackState = [](const core::PlaybackState targetState) {
     GuiHarness harness;
     harness.presenter.openLocalFile(QStringLiteral("C:/media/state.wav"));
     harness.engine.emitStateChanged(core::PlaybackState::Opening);
@@ -429,18 +432,49 @@ void MainWindowTest::pausesOnlyActiveNativePlaybackWhenEnteringWeb() {
         requiredChild<QToolButton>(harness.window, "webModeButton"),
         Qt::LeftButton);
     QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause),
-             expectedPauseCount);
+             0);
     QTest::mouseClick(
         requiredChild<QToolButton>(harness.window, "webModeButton"),
         Qt::LeftButton);
     QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause),
-             expectedPauseCount);
+             0);
   };
 
-  verifyPauseCount(core::PlaybackState::Opening, 1);
-  verifyPauseCount(core::PlaybackState::Buffering, 1);
-  verifyPauseCount(core::PlaybackState::Playing, 1);
-  verifyPauseCount(core::PlaybackState::Paused, 0);
+  verifyPlaybackState(core::PlaybackState::Opening);
+  verifyPlaybackState(core::PlaybackState::Buffering);
+  verifyPlaybackState(core::PlaybackState::Playing);
+  verifyPlaybackState(core::PlaybackState::Paused);
+}
+
+void MainWindowTest::
+    keepsLivePlayingAndRefreshableAcrossWebMode() {
+  GuiHarness harness;
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/background.m3u8"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  harness.window.show();
+  QCoreApplication::processEvents();
+  QTest::mouseClick(requiredChild<QToolButton>(harness.window, "webModeButton"),
+                    Qt::LeftButton);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Pause), 0);
+  QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+
+  QTest::mouseClick(requiredChild<QToolButton>(harness.window, "liveModeButton"),
+                    Qt::LeftButton);
+  QCOMPARE(statusText(harness), QStringLiteral("正在播放"));
+  QTest::mouseClick(
+      requiredChild<QToolButton>(harness.window, "networkRefreshButton"),
+      Qt::LeftButton);
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 2);
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::Play), 2);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+  QVERIFY(requiredChild<QLabel>(harness.window, "playbackErrorLabel")
+              ->isHidden());
 }
 
 void MainWindowTest::showsAudibleWebTabCountAcrossDisplayModes() {
