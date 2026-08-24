@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(MediaHub VERSION 0.7.0 LANGUAGES CXX)
+project(MediaHub VERSION 0.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -407,6 +407,11 @@ if(NOT MEDIAHUB_CORE_ONLY)
         install(FILES
             "${MEDIAHUB_VLC_RUNTIME}"
             "${MEDIAHUB_VLC_CORE_RUNTIME}"
+            DESTINATION .
+        )
+        install(FILES
+            "$<TARGET_FILE_DIR:mediahub_gui>/dxcompiler.dll"
+            "$<TARGET_FILE_DIR:mediahub_gui>/dxil.dll"
             DESTINATION .
         )
         install(CODE "

@@ -4,8 +4,8 @@ MediaHub 是一个面向 Windows x64 的 C++20 / Qt 6.8 Widgets 桌面媒体播�
 libVLC 播放本地媒体和用户提供的直播地址，并集成了一个基于 Microsoft WebView2 的
 独立网页模式。
 
-当前源码版本为 `0.7.0`。v0.1 至 v0.7 均已按本地自用版本完成；v0.7 在保留网页页
-现有结构的前提下，完成本地/直播界面、个性化主题、辅助窗口和响应式布局重构。
+当前源码版本为 `0.8.0`。v0.1 至 v0.8 均已按本地自用版本完成；v0.8 将构建、源码、
+测试、状态迁移和发布部署整体切换到 Qt 6.8.3，并恢复接近 Qt5 的紧凑字体与直播列表密度。
 
 ## 目录
 
@@ -142,6 +142,23 @@ v0.7 将本地和直播页统一为更紧凑的成熟桌面播放器结构，网
 用户已完成最终实机确认；Release 全量 CTest `92/92` 通过，正式包位于
 `dist/MediaHub-0.7.0-win64/`。
 
+### v0.8：Qt 6.8 平台迁移
+
+v0.8 不增加新的播放功能，而是把项目从 Qt 5.14.2 完整迁移到 Qt 6.8.3：
+
+- CMake、源码、Qt Test 和部署脚本改为 Qt6-only，不再查找或链接 Qt5。
+- Qt6 播放状态使用独立配置，首次运行幂等导入旧版列表、历史、主题和帮助中的直播源
+  备忘；用户已确认 5 条地址和备注完整迁移。
+- 适配 Qt6 容器索引、网络重定向、UTF-16 缓冲和事件 API，保持 libVLC 与 WebView2
+  现有架构边界不变。
+- 主窗口正文固定为 `Microsoft YaHei UI` 12px，直播列表在四档窗口断点均保持 12px，
+  同时收紧行高和内边距；实机 394 项清单约可见 20 行。
+- Release 部署显式包含 `dxcompiler.dll` 与 `dxil.dll`，发布校验器拒绝 Qt5、Qt6 Debug、
+  测试、构建缓存和用户资料。
+- Debug/Release 全量 CTest 均为 `93/93`；用户已确认真实直播音画和跨页后台播放正常。
+
+v0.8 正式包位于 `dist/MediaHub-0.8.0-win64/`。
+
 ## 功能总览
 
 ### 本地媒体
@@ -268,7 +285,7 @@ http  https  rtsp  rtmp  rtmps  udp  rtp  srt
 正式发布目录的启动程序为：
 
 ```powershell
-.\dist\MediaHub-0.7.0-win64\MediaHub.exe
+.\dist\MediaHub-0.8.0-win64\MediaHub.exe
 ```
 
 运行网页模式需要目标机器预先安装 WebView2 Evergreen Runtime。发布目录必须整体保留，
@@ -384,12 +401,13 @@ Qt 6.8.3 正式迁移的记录结果如下：
 
 | 项目 | 结果 |
 |---|---|
-| Debug 全量 CTest | `93/93` 通过，425.39 秒 |
-| Release 全量 CTest | `93/93` 通过，96.39 秒 |
+| Debug 全量 CTest | `93/93` 通过，360.56 秒 |
+| Release 全量 CTest | `93/93` 通过，90.68 秒 |
 | Core-only | `52/52` 通过，3.76 秒 |
 | 无测试 Release | 构建成功，CTest 为 `0` 项 |
 | WebView2 Runtime | Debug 15.94 秒、Release 15.80 秒，真实初始化通过 |
 | 发布包校验 | 398 个文件、365 个 VLC 插件、六项法律材料，无 Qt5/Debug DLL 或其他禁入项 |
+| 紧凑字体回归 | 四档窗口断点保持 12px；直播列表单行不超过 30px，定向测试 `4/4` 通过 |
 
 Qt6 播放状态使用独立的 `MediaHubQt6` 本机配置。首次运行会从旧版 `MediaHub` 配置导入
 列表、历史、主题和直播源备忘；如果 Qt6 已有内容，只合并旧版独有的直播源地址，不覆盖
@@ -416,8 +434,8 @@ cmake -S . -B cmake-build-release -G Ninja `
 cmake --build cmake-build-release
 ctest --test-dir cmake-build-release --output-on-failure
 cmake --install cmake-build-release --config Release `
-      --prefix dist/MediaHub-0.7.0-win64
-cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.7.0-win64" `
+      --prefix dist/MediaHub-0.8.0-win64
+cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.8.0-win64" `
       -P tools/validate_release_package.cmake
 ```
 
@@ -428,11 +446,11 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.7.0-win64" `
 - 不存在 WebView2 Profile、Cache、Cookie、构建目录、测试程序、调试文件或错误架构。
 - 不存在符号链接、junction、reparse point 和动态 `WebView2Loader.dll`。
 
-当前唯一 Qt6 正式目录为 `dist/MediaHub-0.7.0-win64/`：398 个文件，总大小
-213,601,651 字节（203.71 MiB）；`MediaHub.exe` 大小为 3,041,792 字节，SHA-256 为：
+当前唯一 Qt6 正式目录为 `dist/MediaHub-0.8.0-win64/`：398 个文件，总大小
+213,034,603 字节（203.17 MiB）；`MediaHub.exe` 大小为 3,042,304 字节，SHA-256 为：
 
 ```text
-6EFB302D42E41E7DB3C7BF36E150C860C5DE3EF6AC0E18F898012137726252A8
+6F306EDA9328DE51E7282F3F00587AE20B3C1019BDB53C2D17422F8EDF3CE682
 ```
 
 发布目录由 Git 忽略，不进入源码提交。Qt、VLC、插件、图标和法律材料必须与 EXE 一起
@@ -513,7 +531,7 @@ MediaHub/
 
 ## 交付状态与限制
 
-v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发行声明。以下事项仍是已知限制：
+v0.8 的定义是“本地自用版本完成”，不是面向公众的正式发行声明。以下事项仍是已知限制：
 
 - 仅支持 Windows x64。
 - 网页能否播放特定视频、直播或 DRM 内容取决于 WebView2 Runtime、系统编解码器、网站
@@ -533,10 +551,12 @@ v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发
 
 ### 当前版本
 
-- [docs/规划/15-Qt6.8迁移.md](docs/规划/15-Qt6.8迁移.md)：Qt6-only 迁移范围、兼容策略和门禁。
-- [docs/测试/43-Qt6.8迁移测试.md](docs/测试/43-Qt6.8迁移测试.md)：Qt 6.8.3 构建矩阵、
+- [docs/规划/15-v0.8-Qt6.8迁移.md](docs/规划/15-v0.8-Qt6.8迁移.md)：v0.8 Qt6-only
+  迁移范围、兼容策略和门禁。
+- [docs/测试/43-v0.8-Qt6.8迁移测试.md](docs/测试/43-v0.8-Qt6.8迁移测试.md)：Qt 6.8.3 构建矩阵、
   发布包校验、隔离运行和人工验收边界。
-- [docs/交付/11-Qt6.8迁移交付说明.md](docs/交付/11-Qt6.8迁移交付说明.md)：Qt6 正式包、
+- [docs/交付/11-v0.8.0-Qt6.8迁移交付说明.md](docs/交付/11-v0.8.0-Qt6.8迁移交付说明.md)：
+  v0.8 Qt6 正式包、
   依赖变化、验证结果和正式包切换记录。
 - [docs/规划/14-v0.7-本地与直播界面重构.md](docs/规划/14-v0.7-本地与直播界面重构.md)：
   v0.7 页面结构、主题、响应式布局和网页页边界。
@@ -572,4 +592,4 @@ v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发
 
 对外分发前必须完成项目自身许可证决定、第三方许可证复核、目标 Windows 依赖检查和
 跨机器验证。详细材料见 [docs/交付/01-依赖接入与部署说明.md](docs/交付/01-依赖接入与部署说明.md)
-和 [docs/交付/10-v0.7.0-本地与直播界面重构交付说明.md](docs/交付/10-v0.7.0-本地与直播界面重构交付说明.md)。
+和 [docs/交付/11-v0.8.0-Qt6.8迁移交付说明.md](docs/交付/11-v0.8.0-Qt6.8迁移交付说明.md)。
