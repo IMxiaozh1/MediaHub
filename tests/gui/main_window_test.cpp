@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEnterEvent>
 #include <QFile>
 #include <QFont>
 #include <QFrame>
@@ -286,6 +287,8 @@ private slots:
   void remembersRecentNetworkUrlsForCurrentSession();
   void roundTripsAppStateThroughSettingsFile();
   void loadsLegacyV04StateWithoutNewFields();
+  void migratesLegacyAppStateIntoQt6SettingsFile();
+  void mergesLegacyLiveSourceMemosWithoutOverwritingQt6Memos();
   void restoresPersistedStateWithoutStartingPlayback();
   void persistsPlaylistChangesAndSuccessfulLiveHistory();
   void restoresRecentLocalMediaAndResumesOnce();
@@ -745,7 +748,8 @@ void MainWindowTest::coalescesRapidInteractiveThemePreviews() {
                             static_cast<double>(directTarget) / 255.0);
   const QPoint clickPosition(clickX, redSlider->height() / 2);
   QMouseEvent pressEvent(QEvent::MouseButtonPress, clickPosition,
-                         Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                         redSlider->mapToGlobal(clickPosition), Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
   QApplication::sendEvent(redSlider, &pressEvent);
   QVERIFY(redSlider->isSliderDown());
   QVERIFY(qAbs(redSlider->value() - directTarget) <= 1);
@@ -756,15 +760,18 @@ void MainWindowTest::coalescesRapidInteractiveThemePreviews() {
   const int dragX = qRound((redSlider->width() - 1) *
                            static_cast<double>(dragTarget) / 255.0);
   const QPoint dragPosition(dragX, redSlider->height() / 2);
-  QMouseEvent moveEvent(QEvent::MouseMove, dragPosition, Qt::NoButton,
+  QMouseEvent moveEvent(QEvent::MouseMove, dragPosition,
+                        redSlider->mapToGlobal(dragPosition), Qt::NoButton,
                         Qt::LeftButton, Qt::NoModifier);
   QApplication::sendEvent(redSlider, &moveEvent);
   QVERIFY(qAbs(redSlider->value() - dragTarget) <= 1);
   QCOMPARE(previewSpy.count(), 1);
   QVERIFY(!previewTimer->isActive());
 
-  QMouseEvent releaseEvent(QEvent::MouseButtonRelease, dragPosition,
-                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QMouseEvent releaseEvent(
+      QEvent::MouseButtonRelease, dragPosition,
+      redSlider->mapToGlobal(dragPosition), Qt::LeftButton, Qt::NoButton,
+      Qt::NoModifier);
   QApplication::sendEvent(redSlider, &releaseEvent);
   QCOMPARE(previewSpy.count(), 2);
   QCOMPARE(dialog.settings().customAccentColor,
@@ -1505,7 +1512,8 @@ void MainWindowTest::controlsAndMarksLiveSourcesFromRightClickMenu() {
   const QPoint secondRowCenter =
       playlistView->visualRect(model->index(1, 0)).center();
   QMouseEvent rightDoubleClick(
-      QEvent::MouseButtonDblClick, secondRowCenter, Qt::RightButton,
+      QEvent::MouseButtonDblClick, secondRowCenter,
+      playlistView->viewport()->mapToGlobal(secondRowCenter), Qt::RightButton,
       Qt::RightButton, Qt::NoModifier);
   QApplication::sendEvent(playlistView->viewport(), &rightDoubleClick);
   menu->hide();
@@ -2434,6 +2442,112 @@ void MainWindowTest::loadsLegacyV04StateWithoutNewFields() {
   QCOMPARE(restored.themeSettings.backgroundOpacity, 55);
   QCOMPARE(restored.themeSettings.appearanceMode, QStringLiteral("dark"));
   QVERIFY(restored.themeSettings.customAccentColor.isEmpty());
+}
+
+void MainWindowTest::migratesLegacyAppStateIntoQt6SettingsFile() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString legacySettingsFile =
+      QDir(directory.path()).filePath(QStringLiteral("qt5-state.ini"));
+  const QString qt6SettingsFile =
+      QDir(directory.path()).filePath(QStringLiteral("qt6-state.ini"));
+  AppStateSnapshot legacy;
+  legacy.localPlaylist = {
+      core::MediaItem{"C:/legacy/old.mp3", core::MediaSourceKind::LocalFile,
+                      "旧版列表项"},
+  };
+  legacy.lastLivePlaylistUrl =
+      QStringLiteral("https://legacy.example/playlist.m3u");
+  legacy.liveSourceMemos = {
+      LiveSourceMemo{QStringLiteral("https://legacy.example/one.m3u8"),
+                     QStringLiteral("旧版第一条")},
+      LiveSourceMemo{QStringLiteral("https://legacy.example/two.m3u8"),
+                     QStringLiteral("旧版第二条")},
+  };
+  legacy.themeSettings.appearanceMode = QStringLiteral("light");
+  {
+    QSettingsAppStateStore legacyStore(legacySettingsFile);
+    legacyStore.save(legacy);
+  }
+
+  QSettingsAppStateStore migratingStore(qt6SettingsFile,
+                                         legacySettingsFile);
+  const AppStateSnapshot migrated = migratingStore.load();
+
+  QCOMPARE(migrated.localPlaylist, legacy.localPlaylist);
+  QCOMPARE(migrated.lastLivePlaylistUrl, legacy.lastLivePlaylistUrl);
+  QCOMPARE(migrated.liveSourceMemos.size(), 2);
+  QCOMPARE(migrated.liveSourceMemos.at(0).sourceUrl,
+           legacy.liveSourceMemos.at(0).sourceUrl);
+  QCOMPARE(migrated.liveSourceMemos.at(0).note,
+           legacy.liveSourceMemos.at(0).note);
+  QCOMPARE(migrated.liveSourceMemos.at(1).sourceUrl,
+           legacy.liveSourceMemos.at(1).sourceUrl);
+  QCOMPARE(migrated.liveSourceMemos.at(1).note,
+           legacy.liveSourceMemos.at(1).note);
+  QCOMPARE(migrated.themeSettings.appearanceMode, QStringLiteral("light"));
+
+  QSettingsAppStateStore persistedStore(qt6SettingsFile);
+  const AppStateSnapshot persisted = persistedStore.load();
+  QCOMPARE(persisted.liveSourceMemos.size(), 2);
+  QCOMPARE(persisted.liveSourceMemos.at(1).note,
+           QStringLiteral("旧版第二条"));
+}
+
+void MainWindowTest::
+    mergesLegacyLiveSourceMemosWithoutOverwritingQt6Memos() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString legacySettingsFile =
+      QDir(directory.path()).filePath(QStringLiteral("qt5-state.ini"));
+  const QString qt6SettingsFile =
+      QDir(directory.path()).filePath(QStringLiteral("qt6-state.ini"));
+  AppStateSnapshot legacy;
+  legacy.liveSourceMemos = {
+      LiveSourceMemo{QStringLiteral("https://shared.example/live.m3u8"),
+                     QStringLiteral("旧版备注不得覆盖")},
+      LiveSourceMemo{QStringLiteral("https://legacy.example/only.m3u8"),
+                     QStringLiteral("仅旧版存在")},
+  };
+  AppStateSnapshot qt6;
+  qt6.lastLivePlaylistUrl = QStringLiteral("https://qt6.example/list.m3u");
+  qt6.liveSourceMemos = {
+      LiveSourceMemo{QStringLiteral("https://shared.example/live.m3u8"),
+                     QStringLiteral("Qt6 备注优先")},
+      LiveSourceMemo{QStringLiteral("https://qt6.example/only.m3u8"),
+                     QStringLiteral("仅 Qt6 存在")},
+  };
+  {
+    QSettingsAppStateStore legacyStore(legacySettingsFile);
+    legacyStore.save(legacy);
+    QSettingsAppStateStore qt6Store(qt6SettingsFile);
+    qt6Store.save(qt6);
+  }
+
+  QSettingsAppStateStore migratingStore(qt6SettingsFile,
+                                         legacySettingsFile);
+  AppStateSnapshot migrated = migratingStore.load();
+  QCOMPARE(migrated.lastLivePlaylistUrl, qt6.lastLivePlaylistUrl);
+  QCOMPARE(migrated.liveSourceMemos.size(), 3);
+  QCOMPARE(migrated.liveSourceMemos.at(0).sourceUrl,
+           QStringLiteral("https://shared.example/live.m3u8"));
+  QCOMPARE(migrated.liveSourceMemos.at(0).note,
+           QStringLiteral("Qt6 备注优先"));
+  QCOMPARE(migrated.liveSourceMemos.at(1).sourceUrl,
+           QStringLiteral("https://qt6.example/only.m3u8"));
+  QCOMPARE(migrated.liveSourceMemos.at(2).sourceUrl,
+           QStringLiteral("https://legacy.example/only.m3u8"));
+
+  migrated.liveSourceMemos.removeLast();
+  migratingStore.save(migrated);
+  const AppStateSnapshot afterDeletion = migratingStore.load();
+  QCOMPARE(afterDeletion.liveSourceMemos.size(), 2);
+  QVERIFY(std::none_of(
+      afterDeletion.liveSourceMemos.cbegin(),
+      afterDeletion.liveSourceMemos.cend(), [](const LiveSourceMemo& memo) {
+        return memo.sourceUrl ==
+               QStringLiteral("https://legacy.example/only.m3u8");
+      }));
 }
 
 void MainWindowTest::restoresPersistedStateWithoutStartingPlayback() {
@@ -3837,7 +3951,10 @@ void MainWindowTest::routesVolumeAndMuteWithoutChangingPlaybackState() {
   QApplication::sendEvent(volumeButton, &leaveEvent);
   volumePopup->hide();
   QCursor::setPos(volumeButton->mapToGlobal(volumeButton->rect().center()));
-  QEvent enterEvent(QEvent::Enter);
+  const QPoint volumeCenter = volumeButton->rect().center();
+  QEnterEvent enterEvent(volumeCenter,
+                         volumeButton->mapTo(&harness.window, volumeCenter),
+                         volumeButton->mapToGlobal(volumeCenter));
   QApplication::sendEvent(volumeButton, &enterEvent);
   QTest::qWait(40);
   QTest::mouseClick(volumeButton, Qt::LeftButton);
@@ -3936,7 +4053,10 @@ void MainWindowTest::keepsHoverMenusStableWithoutMouseGrab() {
     QCOMPARE(menu->windowType(), Qt::Tool);
     QVERIFY(menu->testAttribute(Qt::WA_ShowWithoutActivating));
 
-    QEvent enterEvent(QEvent::Enter);
+    const QPoint buttonCenter = button->rect().center();
+    QEnterEvent enterEvent(buttonCenter,
+                           button->mapTo(&harness.window, buttonCenter),
+                           button->mapToGlobal(buttonCenter));
     QApplication::sendEvent(button, &enterEvent);
     QTRY_VERIFY(menu->isVisible());
     QTest::qWait(320);
@@ -3961,7 +4081,10 @@ void MainWindowTest::doesNotOpenHoverMenuAfterImmediateLeave() {
       requiredChild<QToolButton>(harness.window, "playbackRateButton");
 
   QCursor::setPos(rateButton->mapToGlobal(rateButton->rect().center()));
-  QEvent enterEvent(QEvent::Enter);
+  const QPoint rateCenter = rateButton->rect().center();
+  QEnterEvent enterEvent(rateCenter,
+                         rateButton->mapTo(&harness.window, rateCenter),
+                         rateButton->mapToGlobal(rateCenter));
   QApplication::sendEvent(rateButton, &enterEvent);
   QTest::qWait(40);
 
@@ -4570,7 +4693,10 @@ void MainWindowTest::cyclesPlaybackModeOnButtonClickAndUpdatesHoverMenu() {
   auto *const modeButton =
       requiredChild<QToolButton>(harness.window, "playbackModeButton");
   auto *const modeMenu = modeButton->menu();
-  QEvent enterEvent(QEvent::Enter);
+  const QPoint modeCenter = modeButton->rect().center();
+  QEnterEvent enterEvent(modeCenter,
+                         modeButton->mapTo(&harness.window, modeCenter),
+                         modeButton->mapToGlobal(modeCenter));
   QApplication::sendEvent(modeButton, &enterEvent);
   QTRY_VERIFY(modeMenu->isVisible());
 

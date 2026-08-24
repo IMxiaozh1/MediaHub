@@ -48,6 +48,9 @@ class QSettingsAppStateStore final : public AppStateStore {
   QSettingsAppStateStore();
   // 指定 INI 文件仅用于隔离自动化测试和诊断。
   explicit QSettingsAppStateStore(const QString& settingsFilePath);
+  // 指定 Qt6 与旧 Qt5 INI 文件，仅用于迁移自动化测试和诊断。
+  QSettingsAppStateStore(const QString& settingsFilePath,
+                         const QString& legacySettingsFilePath);
   ~QSettingsAppStateStore() override;
 
   [[nodiscard]] AppStateSnapshot load() override;
@@ -55,6 +58,7 @@ class QSettingsAppStateStore final : public AppStateStore {
 
  private:
   std::unique_ptr<QSettings> settings_;
+  std::unique_ptr<QSettings> legacySettings_;
 };
 
 }  // namespace mediahub::gui

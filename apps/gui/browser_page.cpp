@@ -949,7 +949,7 @@ bool BrowserPage::onNewTabRequested(const std::uint64_t newWindowRequestId,
     ++nextTabId_;
     tabs_.append(BrowserTabRecord{tabId, tabGeneration, initialUrl, {}, false,
                                   false, BrowserPageState::Initializing});
-    const int newIndex = tabs_.size() - 1;
+    const int newIndex = static_cast<int>(tabs_.size()) - 1;
     tabBar_->addTab(QStringLiteral("新标签页"));
     tabBar_->setTabData(newIndex,
                         QVariant::fromValue<qulonglong>(tabId));
@@ -1784,7 +1784,8 @@ void BrowserPage::openInitialTabs() {
             tabGroupModel_.replace(restored->groups);
             updateTabGroupDialogPresentation();
             const int savedCurrentIndex = std::clamp(
-                restored->currentIndex, 0, restored->tabs.size() - 1);
+                restored->currentIndex, 0,
+                static_cast<int>(restored->tabs.size()) - 1);
             const QString savedCurrentUrl =
                 restored->tabs.at(savedCurrentIndex).url;
             std::uint64_t savedCurrentTabId = 0;
@@ -1823,7 +1824,7 @@ void BrowserPage::openInitialTabs() {
                 }
             }
             currentTabIndex_ = std::clamp(currentTabIndex_, 0,
-                                          tabs_.size() - 1);
+                                          static_cast<int>(tabs_.size()) - 1);
             tabBar_->setCurrentIndex(currentTabIndex_);
             backend_.activateTab(tabs_.at(currentTabIndex_).tabId);
             updateTabPresentation();
@@ -2411,11 +2412,12 @@ void BrowserPage::normalizePinnedTabOrder() {
     if (isNormalizingPinnedTabs_ || tabs_.size() < 2) {
         return;
     }
+    const int tabCount = static_cast<int>(tabs_.size());
     const std::uint64_t currentTabId =
-        tabs_.at(std::clamp(currentTabIndex_, 0, tabs_.size() - 1)).tabId;
+        tabs_.at(std::clamp(currentTabIndex_, 0, tabCount - 1)).tabId;
     isNormalizingPinnedTabs_ = true;
     int pinnedDestination = 0;
-    for (int index = 0; index < tabs_.size(); ++index) {
+    for (int index = 0; index < tabCount; ++index) {
         if (!tabs_.at(index).isPinned) {
             continue;
         }
@@ -2435,7 +2437,8 @@ void BrowserPage::updateTabCloseButtons() {
     }
     tabBar_->setTabsClosable(false);
     tabBar_->setTabsClosable(true);
-    for (int index = 0; index < tabs_.size(); ++index) {
+    const int tabCount = static_cast<int>(tabs_.size());
+    for (int index = 0; index < tabCount; ++index) {
         if (!tabs_.at(index).isPinned) {
             continue;
         }
@@ -2501,7 +2504,7 @@ void BrowserPage::cycleTab(const int step) {
     if (isShuttingDown_ || tabs_.size() < 2 || step == 0) {
         return;
     }
-    const int count = tabs_.size();
+    const int count = static_cast<int>(tabs_.size());
     const int target = (currentTabIndex_ + step % count + count) % count;
     tabBar_->setCurrentIndex(target);
 }
@@ -2633,12 +2636,13 @@ void BrowserPage::closeTabInternal(const int index,
     tabBar_->blockSignals(true);
     tabBar_->removeTab(index);
     backend_.closeTab(closedTabId);
+    const int lastTabIndex = static_cast<int>(tabs_.size()) - 1;
     if (wasCurrent) {
-        currentTabIndex_ = std::min(index, tabs_.size() - 1);
+        currentTabIndex_ = std::min(index, lastTabIndex);
     } else if (index < currentTabIndex_) {
         --currentTabIndex_;
     }
-    currentTabIndex_ = std::clamp(currentTabIndex_, 0, tabs_.size() - 1);
+    currentTabIndex_ = std::clamp(currentTabIndex_, 0, lastTabIndex);
     tabBar_->setCurrentIndex(currentTabIndex_);
     tabBar_->blockSignals(false);
     updateTabCloseButtons();
@@ -3487,7 +3491,8 @@ void BrowserPage::saveFavoriteEditor() {
     if (isEditing) {
         favorites.removeAt(editingFavoriteIndex_);
     }
-    for (int index = favorites.size() - 1; index >= 0; --index) {
+    for (int index = static_cast<int>(favorites.size()) - 1; index >= 0;
+         --index) {
         if (favorites.at(index).url.compare(entry.url, Qt::CaseInsensitive) == 0) {
             favorites.removeAt(index);
             if (index < insertionIndex) {
@@ -3495,7 +3500,8 @@ void BrowserPage::saveFavoriteEditor() {
             }
         }
     }
-    favorites.insert(std::clamp(insertionIndex, 0, favorites.size()), entry);
+    favorites.insert(
+        std::clamp(insertionIndex, 0, static_cast<int>(favorites.size())), entry);
     replaceFavoritesData(std::move(favorites));
     favoriteEditorDialog_->hide();
 }

@@ -39,7 +39,8 @@ QString normalizeStoredBrowserUrl(const QString& value) {
 QVector<BrowserHistoryEntry> normalizeBrowserHistoryEntries(
     const QVector<BrowserHistoryEntry>& history) {
     QVector<BrowserHistoryEntry> normalized;
-    normalized.reserve(std::min(history.size(), kMaximumHistoryEntries));
+    normalized.reserve(std::min(
+        history.size(), static_cast<qsizetype>(kMaximumHistoryEntries)));
     QSet<QString> knownUrls;
     for (const BrowserHistoryEntry& entry : history) {
         const QString url = normalizeStoredBrowserUrl(entry.url);
@@ -62,7 +63,8 @@ QVector<BrowserHistoryEntry> normalizeBrowserHistoryEntries(
 QVector<BrowserFavoriteEntry> normalizeBrowserFavoriteEntries(
     const QVector<BrowserFavoriteEntry>& favorites) {
     QVector<BrowserFavoriteEntry> normalized;
-    normalized.reserve(std::min(favorites.size(), kMaximumFavoriteEntries));
+    normalized.reserve(std::min(
+        favorites.size(), static_cast<qsizetype>(kMaximumFavoriteEntries)));
     QSet<QString> knownUrls;
     for (const BrowserFavoriteEntry& entry : favorites) {
         const QString url = normalizeStoredBrowserUrl(entry.url);

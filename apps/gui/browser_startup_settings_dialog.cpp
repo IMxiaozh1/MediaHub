@@ -133,8 +133,9 @@ void BrowserStartupSettingsDialog::setCurrentTabUrls(const QStringList& urls,
     currentTabUrls_ = urls;
     currentTabIndex_ = currentTabUrls_.isEmpty()
                            ? 0
-                           : std::clamp(currentIndex, 0,
-                                        currentTabUrls_.size() - 1);
+                           : std::clamp(
+                                 currentIndex, 0,
+                                 static_cast<int>(currentTabUrls_.size()) - 1);
     updateActions();
 }
 

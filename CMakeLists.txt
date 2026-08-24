@@ -75,7 +75,7 @@ include(CTest)
 
 function(mediahub_enable_warnings targetName)
     target_compile_options(${targetName} PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /utf-8>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /utf-8 /EHsc>
         $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic>
     )
 endfunction()
@@ -91,12 +91,12 @@ if(NOT MEDIAHUB_CORE_ONLY)
         version
     )
 
-    find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Concurrent Network Widgets)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent Network Widgets)
     if(BUILD_TESTING AND MEDIAHUB_BUILD_TESTS)
-        find_package(Qt5 5.14.2 EXACT REQUIRED COMPONENTS Test)
+        find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
     endif()
 
-    get_target_property(MEDIAHUB_QMAKE_EXECUTABLE Qt5::qmake IMPORTED_LOCATION)
+    get_target_property(MEDIAHUB_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
     get_filename_component(MEDIAHUB_QT_BIN_DIR "${MEDIAHUB_QMAKE_EXECUTABLE}" DIRECTORY)
     find_program(MEDIAHUB_WINDEPLOYQT_EXECUTABLE
         NAMES windeployqt
@@ -264,8 +264,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     target_include_directories(mediahub_gui_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/apps/gui")
     target_link_libraries(mediahub_gui_support
-        PUBLIC mediahub_core mediahub_logging Qt5::Widgets
-        PRIVATE Qt5::Concurrent Qt5::Network
+        PUBLIC mediahub_core mediahub_logging Qt6::Widgets
+        PRIVATE Qt6::Concurrent Qt6::Network
     )
     if(WIN32)
         target_link_libraries(mediahub_gui_support PRIVATE crypt32 dwmapi gdi32 user32 winhttp)

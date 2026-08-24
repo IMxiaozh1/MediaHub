@@ -56,7 +56,8 @@ BrowserSessionGroup normalizedGroup(const BrowserSessionGroup& group) {
 
 BrowserSessionState normalizedState(const BrowserSessionState& state) {
     BrowserSessionState normalized;
-    normalized.tabs.reserve(std::min(state.tabs.size(), kMaximumTabs));
+    normalized.tabs.reserve(
+        std::min(state.tabs.size(), static_cast<qsizetype>(kMaximumTabs)));
     for (const BrowserSessionTab& tab : state.tabs) {
         BrowserSessionTab candidate = normalizedTab(tab);
         if (candidate.url.isEmpty()) {
@@ -67,8 +68,8 @@ BrowserSessionState normalizedState(const BrowserSessionState& state) {
             break;
         }
     }
-    normalized.closedTabs.reserve(
-        std::min(state.closedTabs.size(), kMaximumClosedTabs));
+    normalized.closedTabs.reserve(std::min(
+        state.closedTabs.size(), static_cast<qsizetype>(kMaximumClosedTabs)));
     for (const BrowserSessionTab& tab : state.closedTabs) {
         BrowserSessionTab candidate = normalizedTab(tab);
         if (candidate.url.isEmpty()) {
@@ -81,9 +82,11 @@ BrowserSessionState normalizedState(const BrowserSessionState& state) {
     }
     normalized.currentIndex = normalized.tabs.isEmpty()
                                   ? 0
-                                  : std::clamp(state.currentIndex, 0,
-                                               normalized.tabs.size() - 1);
-    normalized.groups.reserve(std::min(state.groups.size(), kMaximumGroups));
+                                  : std::clamp(
+                                        state.currentIndex, 0,
+                                        static_cast<int>(normalized.tabs.size()) - 1);
+    normalized.groups.reserve(
+        std::min(state.groups.size(), static_cast<qsizetype>(kMaximumGroups)));
     for (const BrowserSessionGroup& group : state.groups) {
         BrowserSessionGroup candidate = normalizedGroup(group);
         if (candidate.id.isEmpty() || candidate.name.isEmpty()) {

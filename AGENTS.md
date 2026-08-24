@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-MediaHub 是一个 C++20/Qt5/CMake 桌面播放器项目：`apps/gui/main.cpp` 是程序
+MediaHub 是一个 C++20/Qt6/CMake 桌面播放器项目：`apps/gui/main.cpp` 是程序
 入口，`mediahub_core` 是不依赖任何界面和内核的静态核心库，
 `mediahub_engine_vlc` 是基于 libVLC 的播放内核实现，`mediahub_gui_support`
 封装 Qt 应用层，`mediahub_gui` 生成 `MediaHub.exe`，`mediahub_tests` 承载
@@ -45,7 +45,7 @@ libVLC 是例外：它作为外部 SDK 通过 `MEDIAHUB_VLC_ROOT` 变量接入�
 ```powershell
 cmake -S . -B cmake-build-debug -G Ninja ^
       -DCMAKE_BUILD_TYPE=Debug ^
-      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" ^
+      -DCMAKE_PREFIX_PATH="C:/Qt6.8/6.8.3/msvc2022_64" ^
       -DMEDIAHUB_VLC_ROOT="<本机 libVLC SDK 目录>"
 ```
 

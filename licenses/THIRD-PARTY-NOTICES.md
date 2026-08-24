@@ -2,7 +2,7 @@
 
 This Release package dynamically links to the following third-party software:
 
-- Qt 5.14.2 (`Qt5Core`, `Qt5Gui`, `Qt5Network`, `Qt5Svg`, and `Qt5Widgets`),
+- Qt 6.8.3 (`Qt6Core`, `Qt6Gui`, `Qt6Network`, `Qt6Svg`, and `Qt6Widgets`),
   distributed under the GNU Lesser General Public License version 3 or the
   alternative terms offered by The Qt Company.
 - libVLC 3.0.21 and the plugins copied from the official VLC 3.0.21 win64

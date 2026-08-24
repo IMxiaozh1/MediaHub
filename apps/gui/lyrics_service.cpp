@@ -125,13 +125,13 @@ QString decodeUtf16(const QByteArray& bytes, bool bigEndian) {
     offset = 2;
   }
 
-  QVector<ushort> codeUnits;
+  QVector<char16_t> codeUnits;
   codeUnits.reserve((bytes.size() - offset) / 2);
   for (int index = offset; index + 1 < bytes.size(); index += 2) {
     const auto left = static_cast<unsigned char>(bytes[index]);
     const auto right = static_cast<unsigned char>(bytes[index + 1]);
-    codeUnits.push_back(static_cast<ushort>(bigEndian ? (left << 8) | right
-                                                      : (right << 8) | left));
+    codeUnits.push_back(static_cast<char16_t>(bigEndian ? (left << 8) | right
+                                                        : (right << 8) | left));
   }
   return cleanedText(
       QString::fromUtf16(codeUnits.constData(), codeUnits.size()));
@@ -865,7 +865,8 @@ class OnlineLyricsService::Impl final {
   void startGet(const QUrl& url, const Stage stage,
                 const bool isNeteaseRequest) {
     QNetworkRequest request(url);
-    request.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setRawHeader("User-Agent", "MediaHub/0.2 (Windows desktop player)");
     request.setRawHeader("Accept", "application/json");
     if (isNeteaseRequest) {

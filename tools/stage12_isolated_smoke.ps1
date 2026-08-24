@@ -45,10 +45,10 @@ if (-not $process.Responding) {
 }
 
 $requiredModules = @(
-    'Qt5Core.dll',
-    'Qt5Gui.dll',
-    'Qt5Network.dll',
-    'Qt5Widgets.dll',
+    'Qt6Core.dll',
+    'Qt6Gui.dll',
+    'Qt6Network.dll',
+    'Qt6Widgets.dll',
     'libvlc.dll',
     'libvlccore.dll'
 )

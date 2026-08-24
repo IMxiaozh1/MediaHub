@@ -10,6 +10,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QEvent>
+#include <QEnterEvent>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -458,7 +459,7 @@ class HoverOptionButton final : public QToolButton {
   }
 
  protected:
-  void enterEvent(QEvent* const event) override {
+  void enterEvent(QEnterEvent* const event) override {
     pointerInsideButton_ = true;
     QToolButton::enterEvent(event);
     closeTimer_.stop();

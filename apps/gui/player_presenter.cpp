@@ -1960,7 +1960,8 @@ void PlayerPresenter::rememberLivePlaylistUrl(const QString& url) {
 void PlayerPresenter::updateLivePlaylistHistory(const QStringList& urls) {
   Q_ASSERT(QThread::currentThread() == thread());
   QStringList normalized;
-  normalized.reserve(std::min(urls.size(), kMaxLivePlaylistUrlHistory));
+  normalized.reserve(std::min(
+      urls.size(), static_cast<qsizetype>(kMaxLivePlaylistUrlHistory)));
   for (const QString& value : urls) {
     const QString url = value.trimmed();
     if (url.isEmpty() || normalized.contains(url)) {

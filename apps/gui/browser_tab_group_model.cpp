@@ -19,7 +19,8 @@ const QVector<BrowserSessionGroup>& BrowserTabGroupModel::groups() const noexcep
 
 void BrowserTabGroupModel::replace(const QVector<BrowserSessionGroup>& groups) {
     groups_.clear();
-    groups_.reserve(std::min(groups.size(), kMaximumGroupCount));
+    groups_.reserve(std::min(
+        groups.size(), static_cast<qsizetype>(kMaximumGroupCount)));
     for (const BrowserSessionGroup& group : groups) {
         const QString id = group.id.trimmed();
         const QString name = normalizeName(group.name);

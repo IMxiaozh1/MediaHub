@@ -46,7 +46,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_gui_tests PROPERTIES AUTOMOC ON)
     target_include_directories(mediahub_gui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(mediahub_gui_tests PRIVATE mediahub_gui_support Qt5::Test)
+    target_link_libraries(mediahub_gui_tests PRIVATE mediahub_gui_support Qt6::Test)
     mediahub_enable_warnings(mediahub_gui_tests)
 
     mediahub_deploy_qt(mediahub_gui_tests)
@@ -92,7 +92,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(mediahub_browser_gui_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_gui_tests)
     mediahub_deploy_qt(mediahub_browser_gui_tests)
@@ -106,7 +106,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_browser_permission_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_browser_permission_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_permission_tests)
     mediahub_deploy_qt(mediahub_browser_permission_tests)
@@ -120,7 +120,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_browser_bookmark_html_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_browser_bookmark_html_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_bookmark_html_tests)
     mediahub_deploy_qt(mediahub_browser_bookmark_html_tests)
@@ -136,7 +136,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PROPERTIES AUTOMOC ON
     )
     target_link_libraries(mediahub_browser_favicon_cache_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_favicon_cache_tests)
     mediahub_deploy_qt(mediahub_browser_favicon_cache_tests)
@@ -150,7 +150,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_browser_session_store_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_browser_session_store_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_session_store_tests)
     mediahub_deploy_qt(mediahub_browser_session_store_tests)
@@ -164,7 +164,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_browser_tab_group_model_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_browser_tab_group_model_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_tab_group_model_tests)
     mediahub_deploy_qt(mediahub_browser_tab_group_model_tests)
@@ -180,7 +180,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PROPERTIES AUTOMOC ON
     )
     target_link_libraries(mediahub_browser_tab_group_dialog_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_tab_group_dialog_tests)
     mediahub_deploy_qt(mediahub_browser_tab_group_dialog_tests)
@@ -194,7 +194,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_browser_startup_settings_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_browser_startup_settings_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_startup_settings_tests)
     mediahub_deploy_qt(mediahub_browser_startup_settings_tests)
@@ -210,7 +210,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PROPERTIES AUTOMOC ON
     )
     target_link_libraries(mediahub_browser_startup_settings_dialog_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_browser_startup_settings_dialog_tests)
     mediahub_deploy_qt(mediahub_browser_startup_settings_dialog_tests)
@@ -228,7 +228,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PROPERTIES AUTOMOC ON
     )
     target_link_libraries(mediahub_browser_download_center_tests
-        PRIVATE Qt5::Test Qt5::Widgets
+        PRIVATE Qt6::Test Qt6::Widgets
     )
     mediahub_enable_warnings(mediahub_browser_download_center_tests)
     mediahub_deploy_qt(mediahub_browser_download_center_tests)
@@ -242,7 +242,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_ui_theme_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_ui_theme_tests
-        PRIVATE mediahub_gui_support Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Test
     )
     mediahub_enable_warnings(mediahub_ui_theme_tests)
     mediahub_deploy_qt(mediahub_ui_theme_tests)
@@ -256,7 +256,7 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_target_properties(mediahub_live_playlist_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(mediahub_live_playlist_tests
-        PRIVATE mediahub_gui_support Qt5::Network Qt5::Test
+        PRIVATE mediahub_gui_support Qt6::Network Qt6::Test
     )
     mediahub_enable_warnings(mediahub_live_playlist_tests)
     mediahub_deploy_qt(mediahub_live_playlist_tests)
@@ -277,8 +277,8 @@ if(NOT MEDIAHUB_CORE_ONLY)
         PRIVATE
             mediahub_browser_webview2
             MediaHub::WebView2
-            Qt5::Network
-            Qt5::Test
+            Qt6::Network
+            Qt6::Test
     )
     target_compile_definitions(mediahub_webview2_tests PRIVATE
         "MEDIAHUB_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""

@@ -1,6 +1,6 @@
 # MediaHub
 
-MediaHub 是一个面向 Windows x64 的 C++20 / Qt Widgets 桌面媒体播放器。它使用
+MediaHub 是一个面向 Windows x64 的 C++20 / Qt 6.8 Widgets 桌面媒体播放器。它使用
 libVLC 播放本地媒体和用户提供的直播地址，并集成了一个基于 Microsoft WebView2 的
 独立网页模式。
 
@@ -313,7 +313,7 @@ http  https  rtsp  rtmp  rtmps  udp  rtp  srt
 | 组件 | 版本或要求 | 说明 |
 |---|---|---|
 | Windows | x64 | 当前支持平台 |
-| Qt | 5.14.2 `msvc2017_64` | Qt Widgets、Network、Concurrent 和 Test |
+| Qt | 6.8.3 `msvc2022_64` | Qt Widgets、Network、Concurrent 和 Test |
 | MSVC | Visual Studio 2022 x64 | 普通终端可能找不到 `cl.exe` |
 | CMake | 3.20 或更高 | 负责配置、构建和安装 |
 | Ninja | VS 2022 自带或独立安装 | 推荐生成器 |
@@ -337,7 +337,7 @@ libVLC SDK、Qt 和 WebView2 Runtime 不会由项目自动下载。不要把本�
 ```powershell
 cmake -S . -B cmake-build-debug -G Ninja `
       -DCMAKE_BUILD_TYPE=Debug `
-      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" `
+      -DCMAKE_PREFIX_PATH="C:/Qt6.8/6.8.3/msvc2022_64" `
       -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" `
       -DMEDIAHUB_WEBVIEW2_ROOT="Third_Party/webview2"
 
@@ -368,7 +368,7 @@ ctest --test-dir cmake-build-core-debug --output-on-failure
 ```powershell
 cmake -S . -B cmake-build-release-no-tests -G Ninja `
       -DCMAKE_BUILD_TYPE=Release `
-      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" `
+      -DCMAKE_PREFIX_PATH="C:/Qt6.8/6.8.3/msvc2022_64" `
       -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" `
       -DMEDIAHUB_WEBVIEW2_ROOT="Third_Party/webview2" `
       -DBUILD_TESTING=OFF `
@@ -380,17 +380,20 @@ ctest --test-dir cmake-build-release-no-tests -N
 
 ### 当前回归结果
 
-v0.6 最终联合候选的记录结果如下：
+Qt 6.8.3 迁移候选的记录结果如下：
 
 | 项目 | 结果 |
 |---|---|
-| BrowserPage Qt Test | `84/84` 通过 |
-| Debug 全量 CTest | `92/92` 通过 |
-| Release 全量 CTest | `92/92` 通过 |
-| Core-only | `52/52` 通过 |
+| Debug 全量 CTest | `93/93` 通过，425.39 秒 |
+| Release 全量 CTest | `93/93` 通过，96.39 秒 |
+| Core-only | `52/52` 通过，3.76 秒 |
 | 无测试 Release | 构建成功，CTest 为 `0` 项 |
-| Release WebView2 Runtime | `57/57` 通过，零失败、零跳过 |
-| 发布包校验 | 400 个文件、365 个 VLC 插件、六项法律材料，无禁入项或 reparse |
+| WebView2 Runtime | Debug 15.94 秒、Release 15.80 秒，真实初始化通过 |
+| 发布包校验 | 398 个文件、365 个 VLC 插件、六项法律材料，无 Qt5/Debug DLL 或其他禁入项 |
+
+Qt6 播放状态使用独立的 `MediaHubQt6` 本机配置。首次运行会从旧版 `MediaHub` 配置导入
+列表、历史、主题和直播源备忘；如果 Qt6 已有内容，只合并旧版独有的直播源地址，不覆盖
+Qt6 备注。迁移只执行一次，用户之后删除的记录不会被旧版配置重新导入。
 
 WebView2 的真实页面测试只使用受控环回页面或用户自行选择的页面。真实网站账号、DRM、
 网页音画和跨网站兼容性不能由 offscreen Qt Test 代替，文档中会单独标注人工证据边界。
@@ -404,9 +407,10 @@ Microsoft Visual C++ 2015-2022 Redistributable（x64）和 WebView2 Evergreen Ru
 ```powershell
 cmake -S . -B cmake-build-release -G Ninja `
       -DCMAKE_BUILD_TYPE=Release `
-      -DCMAKE_PREFIX_PATH="C:/Qt/Qt5.14.2/5.14.2/msvc2017_64" `
+      -DCMAKE_PREFIX_PATH="C:/Qt6.8/6.8.3/msvc2022_64" `
       -DMEDIAHUB_VLC_ROOT="C:/SDK/vlc-3.0.21" `
       -DMEDIAHUB_WEBVIEW2_ROOT="Third_Party/webview2" `
+      -DMEDIAHUB_QT_LICENSE_DIR="<含 LICENSE.LGPLv3 和 LICENSE.GPLv3 的 Qt 目录>" `
       -DMEDIAHUB_PACKAGE_RELEASE=ON
 
 cmake --build cmake-build-release
@@ -424,11 +428,11 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.7.0-win64" `
 - 不存在 WebView2 Profile、Cache、Cookie、构建目录、测试程序、调试文件或错误架构。
 - 不存在符号链接、junction、reparse point 和动态 `WebView2Loader.dll`。
 
-当前本机最终发布目录为 `dist/MediaHub-0.7.0-win64/`：400 个文件，总大小
-198,064,868 字节（188.89 MiB）；`MediaHub.exe` 大小为 2,785,280 字节，SHA-256 为：
+当前 Qt6 候选目录为 `dist/MediaHub-0.7.0-win64-qt6-candidate/`：398 个文件，总大小
+213,601,651 字节（203.71 MiB）；`MediaHub.exe` 大小为 3,041,792 字节，SHA-256 为：
 
 ```text
-D0FCD5DE709CF21AC5C37D46300B9568ED92E1CFF44AEE54803B9A783E7D02CB
+6EFB302D42E41E7DB3C7BF36E150C860C5DE3EF6AC0E18F898012137726252A8
 ```
 
 发布目录由 Git 忽略，不进入源码提交。Qt、VLC、插件、图标和法律材料必须与 EXE 一起
@@ -518,7 +522,7 @@ v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发
   公共网站组合和跨机器 DPI 观察继续作为公开发布前检查表。
 - 具体音视频格式能力由 libVLC 和随包插件决定，项目不为每一种格式单独承诺。
 - 音画输出、音画同步、真实网站兼容性和声音效果不能只由自动化测试判断。
-- Qt 5.14.2 已是归档版本，未来升级 Qt 6 需要单独规划和回归。
+- 当前源码已迁移到 Qt 6.8.3；Qt 5.14.2 只在历史阶段文档中保留，不再是构建或发布依赖。
 - 发布包体积较大，主要来自 libVLC 插件目录。
 
 ## 项目文档
@@ -529,6 +533,11 @@ v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发
 
 ### 当前版本
 
+- [docs/规划/15-Qt6.8迁移.md](docs/规划/15-Qt6.8迁移.md)：Qt6-only 迁移范围、兼容策略和门禁。
+- [docs/测试/43-Qt6.8迁移测试.md](docs/测试/43-Qt6.8迁移测试.md)：Qt 6.8.3 构建矩阵、
+  发布包校验、隔离运行和人工验收边界。
+- [docs/交付/11-Qt6.8迁移交付说明.md](docs/交付/11-Qt6.8迁移交付说明.md)：Qt6 候选包、
+  依赖变化和正式包切换条件。
 - [docs/规划/14-v0.7-本地与直播界面重构.md](docs/规划/14-v0.7-本地与直播界面重构.md)：
   v0.7 页面结构、主题、响应式布局和网页页边界。
 - [docs/设计/03-项目结构.md](docs/设计/03-项目结构.md)：当前目录、CMake 目标和依赖方向。
@@ -556,7 +565,7 @@ v0.7 的定义是“本地自用版本完成”，不是面向公众的正式发
 
 项目自身源码许可证**尚未决定**。仓库中的第三方材料按各自上游许可证保留：
 
-- Qt 5.14.2：根据实际链接和分发方式适用 LGPLv3/GPLv3 条款。
+- Qt 6.8.3：根据实际链接和分发方式适用 LGPLv3/GPLv3 条款。
 - libVLC 3.0.21：核心为 LGPLv2.1+，部分插件可能适用 GPL 条款。
 - WebView2 SDK：随固定版本保留 Microsoft 提供的 LICENSE/NOTICE。
 - GoogleTest 1.17.0：随上游源码保留许可证和第三方声明。

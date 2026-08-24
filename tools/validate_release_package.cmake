@@ -74,22 +74,25 @@ endif()
 
 set(mediahubRequiredFiles
     MediaHub.exe
-    Qt5Core.dll
-    Qt5Gui.dll
-    Qt5Network.dll
-    Qt5Svg.dll
-    Qt5Widgets.dll
-    libEGL.dll
-    libGLESv2.dll
+    Qt6Core.dll
+    Qt6Gui.dll
+    Qt6Network.dll
+    Qt6Svg.dll
+    Qt6Widgets.dll
+    d3dcompiler_47.dll
+    dxcompiler.dll
+    dxil.dll
     libvlc.dll
     libvlccore.dll
     opengl32sw.dll
     icons/taskbar.png
     icons/window.jpg
-    bearer/qgenericbearer.dll
     iconengines/qsvgicon.dll
     imageformats/qjpeg.dll
+    networkinformation/qnetworklistmanager.dll
     platforms/qwindows.dll
+    styles/qmodernwindowsstyle.dll
+    tls/qschannelbackend.dll
     licenses/Qt-LGPL-3.0.txt
     licenses/Qt-GPL-3.0.txt
     licenses/VLC-COPYING.txt
@@ -121,15 +124,20 @@ string(CONCAT mediahubBrowserDataPattern
     "(^|/)(profile[^/]*|cache([._-][^/]*)?|code cache|gpucache|"
     "shadercache|dawnwebgpucache|dawngraphitecache|grshadercache|"
     "cookies?([._-][^/]*)?)($|/)")
+string(CONCAT mediahubQtDebugDllPattern
+    "^(qt6(core|gui|network|svg|test|widgets)|"
+    "q(certonlybackend|gif|ico|jpeg|modernwindowsstyle|networklistmanager|"
+    "offscreen|schannelbackend|svg|svgicon|tuiotouchplugin|windows))d\\.dll$")
 foreach(packageEntry IN LISTS mediahubPackageEntries)
     string(TOLOWER "${packageEntry}" packageEntryLower)
     get_filename_component(packageEntryName "${packageEntryLower}" NAME)
 
     if(packageEntryLower MATCHES "${mediahubBrowserDataPattern}"
+       OR packageEntryLower MATCHES "(^|/)qt5[^/]*\\.dll$"
        OR packageEntryLower MATCHES "(^|/)webview2loader\\.dll$"
        OR packageEntryLower MATCHES "(^|/)(x86|arm64)/.*webview2loader"
        OR packageEntryName MATCHES "\\.(lib|obj|pdb)$"
-       OR packageEntryName MATCHES "d\\.dll$"
+       OR packageEntryName MATCHES "${mediahubQtDebugDllPattern}"
        OR packageEntryName STREQUAL "cmakecache.txt"
        OR packageEntryName STREQUAL "build.ninja"
        OR packageEntryName MATCHES "^vc_redist.*\\.exe$"

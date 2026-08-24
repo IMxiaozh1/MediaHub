@@ -60,8 +60,8 @@ BrowserBookmarkImportResult importBrowserBookmarksHtml(const QByteArray& html) {
     }
 
     QSet<QString> knownUrls;
-    result.favorites.reserve(
-        std::min(anchors.size(), kMaximumImportedFavorites));
+    result.favorites.reserve(std::min(
+        anchors.size(), static_cast<qsizetype>(kMaximumImportedFavorites)));
     for (int index = 0; index < anchors.size(); ++index) {
         const QRegularExpressionMatch& anchor = anchors.at(index);
         const QRegularExpressionMatch href =

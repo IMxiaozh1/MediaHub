@@ -9,9 +9,11 @@ namespace mediahub::gui {
 namespace {
 
 constexpr int kStateVersion = 1;
+constexpr int kQt6MigrationVersion = 1;
 constexpr int kMaximumLiveUrlHistory = 20;
 constexpr int kMaximumFavoriteLiveSources = 5000;
 constexpr int kMaximumRecentLocalMedia = 20;
+constexpr auto kMigrationVersionKey = "migrations/qt5AppStateVersion";
 
 QString fromUtf8(const std::string& value) {
   return QString::fromUtf8(value.data(), static_cast<int>(value.size()));
@@ -25,7 +27,8 @@ std::string utf8String(const QString& value) {
 QStringList normalizedUniqueStrings(const QStringList& values,
                                     const int maximumSize) {
   QStringList normalized;
-  normalized.reserve(std::min(values.size(), maximumSize));
+  normalized.reserve(
+      std::min(values.size(), static_cast<qsizetype>(maximumSize)));
   for (const QString& value : values) {
     const QString text = value.trimmed();
     if (text.isEmpty() || normalized.contains(text)) {
@@ -85,19 +88,130 @@ QVector<LiveSourceMemo> normalizedMemos(
   return normalized;
 }
 
+bool hasValidState(QSettings& settings) {
+  return settings.value(QStringLiteral("playbackState/version"), 0).toInt() ==
+         kStateVersion;
+}
+
+QVector<LiveSourceMemo> readMemos(QSettings& settings) {
+  QVector<LiveSourceMemo> memos;
+  settings.beginGroup(QStringLiteral("playbackState"));
+  const int memoCount =
+      settings.beginReadArray(QStringLiteral("liveSourceMemos"));
+  memos.reserve(memoCount);
+  for (int index = 0; index < memoCount; ++index) {
+    settings.setArrayIndex(index);
+    const QString sourceUrl =
+        settings.value(QStringLiteral("sourceUrl")).toString().trimmed();
+    if (sourceUrl.isEmpty()) {
+      continue;
+    }
+    memos.append(LiveSourceMemo{
+        sourceUrl,
+        settings.value(QStringLiteral("note")).toString().trimmed()});
+  }
+  settings.endArray();
+  settings.endGroup();
+  return memos;
+}
+
+void writeMemos(QSettings& settings, const QVector<LiveSourceMemo>& memos) {
+  const QVector<LiveSourceMemo> normalized = normalizedMemos(memos);
+  settings.beginGroup(QStringLiteral("playbackState"));
+  settings.beginWriteArray(QStringLiteral("liveSourceMemos"));
+  for (int index = 0; index < normalized.size(); ++index) {
+    settings.setArrayIndex(index);
+    settings.setValue(QStringLiteral("sourceUrl"),
+                      normalized.at(index).sourceUrl);
+    settings.setValue(QStringLiteral("note"), normalized.at(index).note);
+  }
+  settings.endArray();
+  settings.endGroup();
+}
+
+QVector<LiveSourceMemo> mergedMemos(
+    const QVector<LiveSourceMemo>& current,
+    const QVector<LiveSourceMemo>& legacy) {
+  QVector<LiveSourceMemo> merged = normalizedMemos(current);
+  QSet<QString> knownUrls;
+  for (const LiveSourceMemo& memo : std::as_const(merged)) {
+    knownUrls.insert(memo.sourceUrl);
+  }
+  for (const LiveSourceMemo& memo : normalizedMemos(legacy)) {
+    if (knownUrls.contains(memo.sourceUrl)) {
+      continue;
+    }
+    knownUrls.insert(memo.sourceUrl);
+    merged.append(memo);
+  }
+  return merged;
+}
+
+void copyState(QSettings& source, QSettings& destination) {
+  source.beginGroup(QStringLiteral("playbackState"));
+  const QStringList keys = source.allKeys();
+  QVector<QPair<QString, QVariant>> values;
+  values.reserve(keys.size());
+  for (const QString& key : keys) {
+    values.append(qMakePair(key, source.value(key)));
+  }
+  source.endGroup();
+
+  destination.beginGroup(QStringLiteral("playbackState"));
+  destination.remove(QString{});
+  for (const auto& [key, value] : std::as_const(values)) {
+    destination.setValue(key, value);
+  }
+  destination.endGroup();
+}
+
+void migrateLegacyState(QSettings& settings, QSettings& legacySettings) {
+  if (settings.value(QString::fromLatin1(kMigrationVersionKey), 0).toInt() >=
+      kQt6MigrationVersion) {
+    return;
+  }
+
+  if (hasValidState(legacySettings)) {
+    if (hasValidState(settings)) {
+      writeMemos(settings,
+                 mergedMemos(readMemos(settings), readMemos(legacySettings)));
+    } else {
+      copyState(legacySettings, settings);
+    }
+  }
+  settings.setValue(QString::fromLatin1(kMigrationVersionKey),
+                    kQt6MigrationVersion);
+  settings.sync();
+}
+
 }  // namespace
 
 QSettingsAppStateStore::QSettingsAppStateStore()
-    : settings_(std::make_unique<QSettings>()) {}
+    : settings_(std::make_unique<QSettings>(
+          QSettings::NativeFormat, QSettings::UserScope,
+          QStringLiteral("MediaHub"), QStringLiteral("MediaHubQt6"))),
+      legacySettings_(std::make_unique<QSettings>(
+          QSettings::NativeFormat, QSettings::UserScope,
+          QStringLiteral("MediaHub"), QStringLiteral("MediaHub"))) {}
 
 QSettingsAppStateStore::QSettingsAppStateStore(
     const QString& settingsFilePath)
     : settings_(
           std::make_unique<QSettings>(settingsFilePath, QSettings::IniFormat)) {}
 
+QSettingsAppStateStore::QSettingsAppStateStore(
+    const QString& settingsFilePath, const QString& legacySettingsFilePath)
+    : settings_(
+          std::make_unique<QSettings>(settingsFilePath, QSettings::IniFormat)),
+      legacySettings_(std::make_unique<QSettings>(legacySettingsFilePath,
+                                                   QSettings::IniFormat)) {}
+
 QSettingsAppStateStore::~QSettingsAppStateStore() = default;
 
 AppStateSnapshot QSettingsAppStateStore::load() {
+  if (legacySettings_ != nullptr) {
+    migrateLegacyState(*settings_, *legacySettings_);
+  }
   AppStateSnapshot snapshot;
   settings_->beginGroup(QStringLiteral("playbackState"));
   if (settings_->value(QStringLiteral("version"), 0).toInt() !=
