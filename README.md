@@ -457,11 +457,11 @@ cmake "-DMEDIAHUB_PACKAGE_DIR=dist/MediaHub-0.8.0-win64" `
 - 不存在 WebView2 Profile、Cache、Cookie、构建目录、测试程序、调试文件或错误架构。
 - 不存在符号链接、junction、reparse point 和动态 `WebView2Loader.dll`。
 
-当前唯一 Qt6 正式目录为 `dist/MediaHub-0.8.0-win64/`：398 个文件，总大小
-213,034,603 字节（203.17 MiB）；`MediaHub.exe` 大小为 3,042,304 字节，SHA-256 为：
+当前唯一 Qt6 正式目录为 `dist/MediaHub-0.8.0-win64/`：400 个文件，总大小
+213,704,292 字节（203.81 MiB）；`MediaHub.exe` 大小为 3,042,304 字节，SHA-256 为：
 
 ```text
-6F306EDA9328DE51E7282F3F00587AE20B3C1019BDB53C2D17422F8EDF3CE682
+6B5C4118FB229AF2B7C2AF33D042EF3EFA78B8223A19CEF21BB74D0FE1C8D0E4
 ```
 
 发布目录由 Git 忽略，不进入源码提交。Qt、VLC、插件、图标和法律材料必须与 EXE 一起

@@ -472,6 +472,27 @@ TEST(VlcPlayerEngineTest,
   EXPECT_EQ(instanceCreatedCount.load(), 4);
 }
 
+TEST(VlcPlayerEngineTest, UsesStableWindowsAudioOutputForRealPlayback) {
+  std::mutex argumentMutex;
+  std::vector<std::string> arguments;
+  auto options = testOptions();
+  options.useDummyAudioOutput = false;
+  options.initializationArgumentObserver =
+      [&argumentMutex, &arguments](const std::string_view argument) {
+        const std::lock_guard lock(argumentMutex);
+        arguments.emplace_back(argument);
+      };
+
+  VlcPlayerEngine engine(std::move(options));
+
+  const std::lock_guard lock(argumentMutex);
+  EXPECT_EQ(std::count(arguments.begin(), arguments.end(),
+                       "--aout=directsound"),
+            1);
+  EXPECT_EQ(std::count(arguments.begin(), arguments.end(), "--aout=dummy"),
+            1);
+}
+
 TEST(VlcPlayerEngineTest,
      WaitsForRetiredPlayerVoutAndSkipsSupersededNetworkOpen) {
   RecordingListener listener;

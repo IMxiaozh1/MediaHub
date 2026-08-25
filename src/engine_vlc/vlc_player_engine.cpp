@@ -62,6 +62,11 @@ std::vector<const char*> initializationArguments(
   };
   if (options.useDummyAudioOutput) {
     arguments.push_back("--aout=dummy");
+#if defined(_WIN32)
+  } else {
+    // Windows 的 MMDevice 插件可能在播放器创建时永久等待，显式使用稳定后端。
+    arguments.push_back("--aout=directsound");
+#endif
   }
   if (options.useDummyVideoOutput) {
     arguments.push_back("--vout=dummy");
@@ -71,6 +76,15 @@ std::vector<const char*> initializationArguments(
 
 VlcInstancePtr createInstance(const VlcPlayerEngineOptions options) {
   const auto arguments = initializationArguments(options);
+  if (options.initializationArgumentObserver) {
+    for (const char* const argument : arguments) {
+      try {
+        options.initializationArgumentObserver(argument);
+      } catch (...) {
+        // 测试观察器不得影响真实播放内核初始化。
+      }
+    }
+  }
   VlcInstancePtr instance(
       libvlc_new(static_cast<int>(arguments.size()), arguments.data()));
   if (!instance) {
@@ -84,6 +98,12 @@ VlcInstancePtr createInstance(const VlcPlayerEngineOptions options) {
     }
   }
   return instance;
+}
+
+VlcPlayerEngineOptions analysisOptions(VlcPlayerEngineOptions options) {
+  // 波形分析通过 PCM 回调取样，不应初始化或占用真实音频设备。
+  options.useDummyAudioOutput = true;
+  return options;
 }
 
 void applyVideoSurface(
@@ -416,7 +436,7 @@ class VlcPlayerEngine::Impl {
   explicit Impl(const VlcPlayerEngineOptions options)
       : options_(options),
         instance_(createInstance(options)),
-        analysisInstance_(createInstance(options)),
+        analysisInstance_(createInstance(analysisOptions(options))),
         player_(libvlc_media_player_new(instance_.get())),
         analysisPlayer_(libvlc_media_player_new(analysisInstance_.get())) {
     if (!player_ || !analysisPlayer_) {

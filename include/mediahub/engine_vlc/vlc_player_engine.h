@@ -18,6 +18,8 @@ struct VlcPlayerEngineOptions {
   std::function<void(void*)> videoSurfaceObserver;
   // 仅供自动化统计 libVLC 实例创建次数，正式程序保持为空。
   std::function<void()> instanceCreatedObserver;
+  // 仅供自动化观察 libVLC 初始化参数，正式程序保持为空。
+  std::function<void(std::string_view)> initializationArgumentObserver;
   // 仅供自动化观察逐媒体提交的 libVLC 选项，正式程序保持为空。
   std::function<void(std::string_view)> mediaOptionObserver;
   // 仅供自动化控制旧播放器停止时序，正式程序保持为空。
