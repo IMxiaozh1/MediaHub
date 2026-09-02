@@ -271,6 +271,7 @@ private slots:
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
   void filtersLivePlaylistByFavoriteScopeWithoutChangingSourceRows();
+  void restoresLivePlaylistScrollPositionAcrossFavoriteScopeChanges();
   void persistsLiveFavoritesButNotUnavailableMarks();
   void replacesRemoteLiveListAtomicallyAndKeepsItOnFailure();
   void keepsNetworkStreamsNonSeekableWhenEngineReportsLiveWindow();
@@ -1742,6 +1743,57 @@ void MainWindowTest::
   for (int row = 0; row < model->rowCount(); ++row) {
     QVERIFY(!playlistView->isRowHidden(row));
   }
+}
+
+void MainWindowTest::
+    restoresLivePlaylistScrollPositionAcrossFavoriteScopeChanges() {
+  FakeAppStateStore store;
+  QStringList urls;
+  for (int row = 0; row < 80; ++row) {
+    const QString url =
+        QStringLiteral("https://example.test/live/scope-%1.m3u8")
+            .arg(row, 2, 10, QChar('0'));
+    urls.append(url);
+    if (row % 2 == 0) {
+      store.snapshot.favoriteLiveSourceUrls.append(url);
+    }
+  }
+
+  GuiHarness harness(&store);
+  harness.window.show();
+  QCoreApplication::processEvents();
+  for (const QString& url : urls) {
+    harness.presenter.openNetworkUrl(url);
+  }
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto* const scopeTabs =
+      requiredChild<QTabBar>(harness.window, "livePlaylistScopeTabs");
+  auto* const scrollBar = playlistView->verticalScrollBar();
+  auto* const model = playlistView->model();
+
+  playlistView->scrollTo(model->index(60, 0),
+                         QAbstractItemView::PositionAtCenter);
+  QCoreApplication::processEvents();
+  const int allLiveScrollPosition = scrollBar->value();
+  QVERIFY(allLiveScrollPosition > 0);
+
+  scopeTabs->setCurrentIndex(1);
+  QCoreApplication::processEvents();
+  playlistView->scrollTo(model->index(40, 0),
+                         QAbstractItemView::PositionAtCenter);
+  QCoreApplication::processEvents();
+  const int favoriteScrollPosition = scrollBar->value();
+  QVERIFY(favoriteScrollPosition > 0);
+
+  scopeTabs->setCurrentIndex(0);
+  QCoreApplication::processEvents();
+  QCOMPARE(scrollBar->value(), allLiveScrollPosition);
+
+  scopeTabs->setCurrentIndex(1);
+  QCoreApplication::processEvents();
+  QCOMPARE(scrollBar->value(), favoriteScrollPosition);
 }
 
 void MainWindowTest::persistsLiveFavoritesButNotUnavailableMarks() {

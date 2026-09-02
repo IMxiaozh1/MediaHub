@@ -1403,7 +1403,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   connect(livePlaylistSearchEdit_, &QLineEdit::textChanged, this,
           &MainWindow::applyLivePlaylistFilter);
   connect(livePlaylistScopeTabs_, &QTabBar::currentChanged, this,
-          &MainWindow::applyLivePlaylistFilter);
+          &MainWindow::changeLivePlaylistScope);
   connect(livePlaylistHistoryButton_, &QToolButton::clicked, this,
           &MainWindow::showLiveUrlHistory);
   connect(livePlaylistLocateButton_, &QPushButton::clicked, this, [this] {
@@ -2053,6 +2053,26 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
   if (showsLivePlaylist) {
     applyLivePlaylistFilter();
   }
+}
+
+void MainWindow::changeLivePlaylistScope(const int scopeIndex) {
+  if (scopeIndex < 0 ||
+      scopeIndex >=
+          static_cast<int>(livePlaylistScopeScrollPositions_.size())) {
+    return;
+  }
+
+  livePlaylistScopeScrollPositions_[livePlaylistScopeIndex_] =
+      playlistView_->verticalScrollBar()->value();
+  livePlaylistScopeIndex_ = scopeIndex;
+  applyLivePlaylistFilter();
+  const int scrollPosition = livePlaylistScopeScrollPositions_[scopeIndex];
+  playlistView_->verticalScrollBar()->setValue(scrollPosition);
+  QTimer::singleShot(0, playlistView_, [this, scopeIndex, scrollPosition] {
+    if (isLivePlaylistActive_ && livePlaylistScopeIndex_ == scopeIndex) {
+      playlistView_->verticalScrollBar()->setValue(scrollPosition);
+    }
+  });
 }
 
 void MainWindow::applyLivePlaylistFilter() {

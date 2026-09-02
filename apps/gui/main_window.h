@@ -8,6 +8,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <array>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -195,6 +196,7 @@ class MainWindow final : public QMainWindow {
   void renameContextPlaylistItem();
   void selectPlaylistRow(int row);
   void showPlaylistKind(int kindIndex);
+  void changeLivePlaylistScope(int scopeIndex);
   void applyLivePlaylistFilter();
   void showActiveDownloadExitConfirmation(int activeDownloadCount);
 
@@ -293,7 +295,9 @@ class MainWindow final : public QMainWindow {
   QColor controlIconColor_{QStringLiteral("#d5d9df")};
   QAbstractItemModel* localPlaylistModel_{nullptr};
   QAbstractItemModel* livePlaylistModel_{nullptr};
+  std::array<int, 2> livePlaylistScopeScrollPositions_{};
   int keyboardSeekStepSeconds_{5};
+  int livePlaylistScopeIndex_{0};
   std::optional<UiPresentationMode> presentationMode_;
   std::optional<Qt::WindowStates> webFullScreenPreviousWindowState_;
   QRect miniPlayerPreviousGeometry_;
