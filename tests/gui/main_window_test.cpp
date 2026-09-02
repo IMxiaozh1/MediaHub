@@ -270,6 +270,7 @@ private slots:
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
+  void filtersLivePlaylistByFavoriteScopeWithoutChangingSourceRows();
   void persistsLiveFavoritesButNotUnavailableMarks();
   void replacesRemoteLiveListAtomicallyAndKeepsItOnFailure();
   void keepsNetworkStreamsNonSeekableWhenEngineReportsLiveWindow();
@@ -277,6 +278,8 @@ private slots:
   void rendersNetworkBufferingAndStopsTimeoutAfterPlaying();
   void startsNetworkTimeoutOnlyAfterEngineBeginsOpening();
   void cancelsAndTimesOutNetworkOpeningWithoutAcceptingLateEvents();
+  void ignoresLateFailureFromReplacedNetworkRequest();
+  void clearsTransientErrorWhenCurrentNetworkStartsPlaying();
   void reconnectsInterruptedNetworkWithBoundedBackoff();
   void reconnectsWhenStartedLiveReportsEndReached();
   void doesNotReconnectNetworkThatNeverStarted();
@@ -346,6 +349,7 @@ private slots:
   void keepsLivePlaylistCompactAcrossWindowBreakpoints();
   void keepsPresentationModesInsideResponsiveBounds();
   void resizesVideoSurfaceAndTogglesFullScreen();
+  void togglesMiniPlayerWithoutRestartingPlayback();
   void togglesFullScreenWithF11();
   void showsSupportedShortcutsFromHelpMenu();
   void themesHelpDialogsWithCurrentAppearance();
@@ -1673,6 +1677,73 @@ void MainWindowTest::filtersLivePlaylistWithoutChangingSourceRows() {
   }
 }
 
+void MainWindowTest::
+    filtersLivePlaylistByFavoriteScopeWithoutChangingSourceRows() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  const QStringList urls{
+      QStringLiteral("https://example.test/live/news.m3u8"),
+      QStringLiteral("https://example.test/live/music.m3u8"),
+      QStringLiteral("https://example.test/live/sports.m3u8"),
+  };
+  for (const QString& url : urls) {
+    harness.presenter.openNetworkUrl(url);
+  }
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto* const scopeTabs =
+      requiredChild<QTabBar>(harness.window, "livePlaylistScopeTabs");
+  auto* const searchEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistSearchEdit");
+  auto* const menu =
+      requiredChild<QMenu>(harness.window, "livePlaylistContextMenu");
+  auto* const favoriteAction =
+      requiredChild<QAction>(harness.window, "livePlaylistFavoriteAction");
+  auto* const model = playlistView->model();
+  QCOMPARE(scopeTabs->currentIndex(), 0);
+  QVERIFY(scopeTabs->isVisible());
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 1));
+  menu->hide();
+  favoriteAction->trigger();
+  QVERIFY(model->index(1, 0).data(PlaylistModel::kFavoriteRole).toBool());
+
+  scopeTabs->setCurrentIndex(1);
+  QVERIFY(playlistView->isRowHidden(0));
+  QVERIFY(!playlistView->isRowHidden(1));
+  QVERIFY(playlistView->isRowHidden(2));
+
+  const int opensBeforeActivation =
+      commandCount(harness, test::FakeEngineCommandKind::Open);
+  QVERIFY(QMetaObject::invokeMethod(
+      playlistView, "doubleClicked", Qt::DirectConnection,
+      Q_ARG(QModelIndex, model->index(1, 0))));
+  QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open),
+           opensBeforeActivation + 1);
+  QVERIFY(harness.engine.commands().back().media.has_value());
+  QCOMPARE(QString::fromUtf8(
+               harness.engine.commands().back().media->source.c_str()),
+           urls.at(1));
+
+  searchEdit->setText(QStringLiteral("sports"));
+  QVERIFY(playlistView->isRowHidden(1));
+  searchEdit->clear();
+  QVERIFY(!playlistView->isRowHidden(1));
+
+  QVERIFY(requestPlaylistContextMenu(*playlistView, 1));
+  menu->hide();
+  favoriteAction->trigger();
+  QVERIFY(!model->index(1, 0).data(PlaylistModel::kFavoriteRole).toBool());
+  QVERIFY(playlistView->isRowHidden(1));
+
+  scopeTabs->setCurrentIndex(0);
+  for (int row = 0; row < model->rowCount(); ++row) {
+    QVERIFY(!playlistView->isRowHidden(row));
+  }
+}
+
 void MainWindowTest::persistsLiveFavoritesButNotUnavailableMarks() {
   FakeAppStateStore store;
   const QString firstUrl =
@@ -1989,6 +2060,69 @@ void MainWindowTest::
     QCOMPARE(commandCount(harness, test::FakeEngineCommandKind::Open), 2);
     QCOMPARE(statusText(harness), QStringLiteral("正在连接..."));
   }
+}
+
+void MainWindowTest::ignoresLateFailureFromReplacedNetworkRequest() {
+  GuiHarness harness;
+  auto* const errorLabel =
+      requiredChild<QLabel>(harness.window, "playbackErrorLabel");
+
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/unavailable.flv"));
+  const auto replacedRequestId = latestOpenRequestId(harness);
+  harness.engine.emitOpenStarted(replacedRequestId);
+  harness.engine.emitStateChangedForRequest(
+      replacedRequestId, core::PlaybackState::Opening);
+
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/available.flv"));
+  const auto currentRequestId = latestOpenRequestId(harness);
+  QVERIFY(currentRequestId != replacedRequestId);
+  harness.engine.emitOpenStarted(currentRequestId);
+  harness.engine.emitStateChangedForRequest(
+      currentRequestId, core::PlaybackState::Opening);
+
+  harness.engine.emitStateChangedForRequest(
+      replacedRequestId, core::PlaybackState::Failed);
+  harness.engine.emitErrorForRequest(
+      replacedRequestId,
+      core::PlaybackError{core::PlaybackErrorKind::SourceUnreadable,
+                          "late failure from replaced stream",
+                          "无法连接旧直播源。"});
+  harness.engine.emitStateChangedForRequest(
+      currentRequestId, core::PlaybackState::Playing);
+
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+  QVERIFY(errorLabel->isHidden());
+  QVERIFY(!harness.presenter.findChild<QTimer*>("networkReconnectTimer")
+               ->isActive());
+}
+
+void MainWindowTest::clearsTransientErrorWhenCurrentNetworkStartsPlaying() {
+  GuiHarness harness;
+  auto* const errorLabel =
+      requiredChild<QLabel>(harness.window, "playbackErrorLabel");
+
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/recovered.flv"));
+  const auto requestId = latestOpenRequestId(harness);
+  harness.engine.emitOpenStarted(requestId);
+  harness.engine.emitStateChangedForRequest(requestId,
+                                            core::PlaybackState::Opening);
+  harness.engine.emitErrorForRequest(
+      requestId,
+      core::PlaybackError{core::PlaybackErrorKind::SourceUnreadable,
+                          "transient network failure",
+                          "连接网络媒体时出现瞬时错误。"});
+  QTRY_VERIFY(!errorLabel->isHidden());
+
+  harness.engine.emitStateChangedForRequest(requestId,
+                                            core::PlaybackState::Opening);
+  harness.engine.emitStateChangedForRequest(requestId,
+                                            core::PlaybackState::Playing);
+
+  QTRY_COMPARE(statusText(harness), QStringLiteral("正在播放"));
+  QVERIFY(errorLabel->isHidden());
 }
 
 void MainWindowTest::reconnectsInterruptedNetworkWithBoundedBackoff() {
@@ -3642,6 +3776,7 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
   core::AudioWaveform receivedWaveform;
   core::PlaybackError receivedError;
   core::OpenRequestId receivedOpenRequestId = 0;
+  core::OpenRequestId receivedEventRequestId = 0;
   void* releasedVideoSurface = nullptr;
 
   connect(
@@ -3655,46 +3790,65 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
 
   connect(
       &bridge, &EngineEventBridge::stateChanged, &receiver,
-      [&receivedCount, &handledThread](core::PlaybackState) {
+      [&receivedCount, &receivedEventRequestId, &handledThread](
+          const core::OpenRequestId requestId, core::PlaybackState) {
         ++receivedCount;
+        receivedEventRequestId = requestId;
         handledThread = QThread::currentThread();
       },
       Qt::QueuedConnection);
   connect(
       &bridge, &EngineEventBridge::positionChanged, &receiver,
-      [&receivedCount, &receivedPosition](core::PlaybackPosition position) {
+      [&receivedCount, &receivedEventRequestId, &receivedPosition](
+          const core::OpenRequestId requestId,
+          core::PlaybackPosition position) {
         ++receivedCount;
+        receivedEventRequestId = requestId;
         receivedPosition = position;
       },
       Qt::QueuedConnection);
   connect(
       &bridge, &EngineEventBridge::durationChanged, &receiver,
-      [&receivedCount, &receivedDuration](OptionalDuration duration) {
+      [&receivedCount, &receivedEventRequestId, &receivedDuration](
+          const core::OpenRequestId requestId, OptionalDuration duration) {
         ++receivedCount;
+        receivedEventRequestId = requestId;
         receivedDuration = duration;
       },
       Qt::QueuedConnection);
   connect(
       &bridge, &EngineEventBridge::bufferingChanged, &receiver,
-      [&receivedCount, &receivedBufferingPercentage](const int percentage) {
+      [&receivedCount, &receivedEventRequestId,
+       &receivedBufferingPercentage](const core::OpenRequestId requestId,
+                                    const int percentage) {
         ++receivedCount;
+        receivedEventRequestId = requestId;
         receivedBufferingPercentage = percentage;
       },
       Qt::QueuedConnection);
   connect(
       &bridge, &EngineEventBridge::audioWaveformChanged, &receiver,
-      [&receivedCount, &receivedWaveform](core::AudioWaveform waveform) {
+      [&receivedCount, &receivedEventRequestId, &receivedWaveform](
+          const core::OpenRequestId requestId, core::AudioWaveform waveform) {
         ++receivedCount;
+        receivedEventRequestId = requestId;
         receivedWaveform = std::move(waveform);
       },
       Qt::QueuedConnection);
   connect(
       &bridge, &EngineEventBridge::endReached, &receiver,
-      [&receivedCount] { ++receivedCount; }, Qt::QueuedConnection);
+      [&receivedCount, &receivedEventRequestId](
+          const core::OpenRequestId requestId) {
+        ++receivedCount;
+        receivedEventRequestId = requestId;
+      },
+      Qt::QueuedConnection);
   connect(
       &bridge, &EngineEventBridge::errorOccurred, &receiver,
-      [&receivedCount, &receivedError](core::PlaybackError error) {
+      [&receivedCount, &receivedEventRequestId, &receivedError](
+          const core::OpenRequestId requestId, core::PlaybackError error) {
         ++receivedCount;
+        receivedEventRequestId = requestId;
         receivedError = std::move(error);
       },
       Qt::QueuedConnection);
@@ -3711,13 +3865,14 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
     waveform.samples[12] = 0.6F;
     waveform.intensity = 0.7F;
     bridge.onOpenStarted(42);
-    bridge.onStateChanged(core::PlaybackState::Playing);
-    bridge.onPositionChanged(core::PlaybackPosition{750ms, 3s, true});
-    bridge.onDurationChanged(3s);
-    bridge.onBufferingChanged(48);
-    bridge.onAudioWaveformChanged(waveform);
-    bridge.onEndReached();
-    bridge.onError(core::PlaybackError{
+    bridge.onStateChanged(42, core::PlaybackState::Playing);
+    bridge.onPositionChanged(42,
+                             core::PlaybackPosition{750ms, 3s, true});
+    bridge.onDurationChanged(42, 3s);
+    bridge.onBufferingChanged(42, 48);
+    bridge.onAudioWaveformChanged(42, waveform);
+    bridge.onEndReached(42);
+    bridge.onError(42, core::PlaybackError{
         core::PlaybackErrorKind::Unknown,
         "Worker event",
         "工作线程错误",
@@ -3728,6 +3883,7 @@ void MainWindowTest::forwardsEveryBridgeEventAsQueuedValue() {
 
   QTRY_COMPARE(receivedCount, 9);
   QCOMPARE(receivedOpenRequestId, core::OpenRequestId{42});
+  QCOMPARE(receivedEventRequestId, core::OpenRequestId{42});
   QCOMPARE(releasedVideoSurface, reinterpret_cast<void*>(0x1234));
   QCOMPARE(handledThread, QCoreApplication::instance()->thread());
   QCOMPARE(receivedPosition.current, 750ms);
@@ -5491,6 +5647,87 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   QVERIFY(fullScreenButton->isVisible());
 }
 
+void MainWindowTest::togglesMiniPlayerWithoutRestartingPlayback() {
+  GuiHarness harness;
+  harness.window.show();
+  harness.window.resize(1100, 760);
+  QTRY_COMPARE(harness.window.size(), QSize(1100, 760));
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/mini.m3u8"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QCoreApplication::processEvents();
+
+  auto* const miniPlayerButton =
+      requiredChild<QToolButton>(harness.window, "miniPlayerButton");
+  auto* const mediaDisplay =
+      requiredChild<QWidget>(harness.window, "mediaDisplay");
+  auto* const transportPanel =
+      requiredChild<QWidget>(harness.window, "transportPanel");
+  auto* const playlistPanel =
+      requiredChild<QWidget>(harness.window, "playlistPanel");
+  auto* const playlistToggle =
+      requiredChild<QToolButton>(harness.window, "playlistToggleButton");
+  auto* const displayModePanel =
+      requiredChild<QWidget>(harness.window, "displayModePanel");
+  auto* const headerPanel =
+      requiredChild<QWidget>(harness.window, "headerPanel");
+  auto* const mediaCard =
+      requiredChild<QWidget>(harness.window, "mediaCard");
+  auto* const progressSlider =
+      requiredChild<QSlider>(harness.window, "progressSlider");
+  auto* const playPauseButton =
+      requiredChild<QToolButton>(harness.window, "playPauseButton");
+  auto* const stopButton =
+      requiredChild<QToolButton>(harness.window, "stopButton");
+  auto* const refreshButton =
+      requiredChild<QToolButton>(harness.window, "networkRefreshButton");
+  auto* const volumeButton =
+      requiredChild<QToolButton>(harness.window, "volumeButton");
+  auto* const fullScreenButton =
+      requiredChild<QToolButton>(harness.window, "fullScreenButton");
+  const QSize previousMinimumSize = harness.window.minimumSize();
+  const auto commandsBeforeToggle = harness.engine.commands().size();
+  QVERIFY(miniPlayerButton->isEnabled());
+
+  QTest::mouseClick(miniPlayerButton, Qt::LeftButton);
+  QTRY_VERIFY(harness.window.windowFlags().testFlag(
+      Qt::WindowStaysOnTopHint));
+  QTRY_COMPARE(harness.window.size(), QSize(600, 400));
+  QCOMPARE(harness.window.minimumSize(), QSize(480, 320));
+  QCOMPARE(miniPlayerButton->accessibleName(),
+           QStringLiteral("返回正常窗口"));
+  QVERIFY(mediaDisplay->isVisible());
+  QVERIFY(transportPanel->isVisible());
+  QVERIFY(progressSlider->isVisible());
+  QVERIFY(playPauseButton->isVisible());
+  QVERIFY(stopButton->isVisible());
+  QVERIFY(refreshButton->isVisible());
+  QVERIFY(volumeButton->isVisible());
+  QVERIFY(miniPlayerButton->isVisible());
+  QVERIFY(displayModePanel->isHidden());
+  QVERIFY(headerPanel->isHidden());
+  QVERIFY(mediaCard->isHidden());
+  QVERIFY(playlistPanel->isHidden());
+  QVERIFY(playlistToggle->isHidden());
+  QVERIFY(fullScreenButton->isHidden());
+  QCOMPARE(harness.engine.commands().size(), commandsBeforeToggle);
+
+  QTest::mouseClick(miniPlayerButton, Qt::LeftButton);
+  QTRY_VERIFY(!harness.window.windowFlags().testFlag(
+      Qt::WindowStaysOnTopHint));
+  QTRY_COMPARE(harness.window.size(), QSize(1100, 760));
+  QCOMPARE(harness.window.minimumSize(), previousMinimumSize);
+  QCOMPARE(miniPlayerButton->accessibleName(), QStringLiteral("小窗口播放"));
+  QVERIFY(displayModePanel->isVisible());
+  QVERIFY(headerPanel->isVisible());
+  QVERIFY(mediaCard->isVisible());
+  QVERIFY(playlistPanel->isVisible());
+  QVERIFY(playlistToggle->isVisible());
+  QVERIFY(fullScreenButton->isVisible());
+  QCOMPARE(harness.engine.commands().size(), commandsBeforeToggle);
+}
+
 void MainWindowTest::togglesFullScreenWithF11() {
   GuiHarness harness;
   harness.window.show();
@@ -5822,7 +6059,7 @@ void MainWindowTest::stopsForwardingBeforeWindowCloses() {
   QCOMPARE(commands[commands.size() - 2].nativeHandle, nullptr);
   QVERIFY(commands.back().kind == test::FakeEngineCommandKind::Stop);
 
-  harness.eventBridge.onStateChanged(core::PlaybackState::Opening);
+  harness.eventBridge.onStateChanged(0, core::PlaybackState::Opening);
   QCoreApplication::processEvents();
   QCOMPARE(statusText(harness), QStringLiteral("未打开媒体"));
 }

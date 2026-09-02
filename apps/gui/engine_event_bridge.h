@@ -26,31 +26,43 @@ class EngineEventBridge final : public QObject,
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
   void onOpenStarted(core::OpenRequestId requestId) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onStateChanged(core::PlaybackState state) noexcept override;
+  void onStateChanged(core::OpenRequestId requestId,
+                      core::PlaybackState state) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onPositionChanged(core::PlaybackPosition position) noexcept override;
+  void onPositionChanged(core::OpenRequestId requestId,
+                         core::PlaybackPosition position) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onDurationChanged(OptionalDuration duration) noexcept override;
+  void onDurationChanged(core::OpenRequestId requestId,
+                         OptionalDuration duration) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onBufferingChanged(int percentage) noexcept override;
+  void onBufferingChanged(core::OpenRequestId requestId,
+                          int percentage) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onAudioWaveformChanged(core::AudioWaveform waveform) noexcept override;
+  void onAudioWaveformChanged(core::OpenRequestId requestId,
+                              core::AudioWaveform waveform) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onEndReached() noexcept override;
+  void onEndReached(core::OpenRequestId requestId) noexcept override;
   // 调用线程：任意内核线程。函数只检查关闭标记并发出值类型信号。
-  void onError(core::PlaybackError error) noexcept override;
+  void onError(core::OpenRequestId requestId,
+               core::PlaybackError error) noexcept override;
   // 调用线程：旧播放器回收线程。函数只投递已释放的嵌入句柄。
   void onVideoSurfaceReleased(void* nativeHandle) noexcept override;
 
  signals:
   void openStarted(mediahub::core::OpenRequestId requestId);
-  void stateChanged(core::PlaybackState state);
-  void positionChanged(core::PlaybackPosition position);
-  void durationChanged(mediahub::gui::OptionalDuration duration);
-  void bufferingChanged(int percentage);
-  void audioWaveformChanged(core::AudioWaveform waveform);
-  void endReached();
-  void errorOccurred(core::PlaybackError error);
+  void stateChanged(mediahub::core::OpenRequestId requestId,
+                    core::PlaybackState state);
+  void positionChanged(mediahub::core::OpenRequestId requestId,
+                       core::PlaybackPosition position);
+  void durationChanged(mediahub::core::OpenRequestId requestId,
+                       mediahub::gui::OptionalDuration duration);
+  void bufferingChanged(mediahub::core::OpenRequestId requestId,
+                        int percentage);
+  void audioWaveformChanged(mediahub::core::OpenRequestId requestId,
+                            core::AudioWaveform waveform);
+  void endReached(mediahub::core::OpenRequestId requestId);
+  void errorOccurred(mediahub::core::OpenRequestId requestId,
+                     core::PlaybackError error);
   void videoSurfaceReleased(void* nativeHandle);
 
  private:

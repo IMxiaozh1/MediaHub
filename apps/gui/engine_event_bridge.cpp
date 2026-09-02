@@ -25,47 +25,54 @@ void EngineEventBridge::onOpenStarted(
 }
 
 void EngineEventBridge::onStateChanged(
+    const core::OpenRequestId requestId,
     const core::PlaybackState state) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit stateChanged(state);
+    emit stateChanged(requestId, state);
   }
 }
 
 void EngineEventBridge::onPositionChanged(
+    const core::OpenRequestId requestId,
     core::PlaybackPosition position) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit positionChanged(std::move(position));
+    emit positionChanged(requestId, std::move(position));
   }
 }
 
-void EngineEventBridge::onDurationChanged(OptionalDuration duration) noexcept {
+void EngineEventBridge::onDurationChanged(
+    const core::OpenRequestId requestId, OptionalDuration duration) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit durationChanged(std::move(duration));
+    emit durationChanged(requestId, std::move(duration));
   }
 }
 
-void EngineEventBridge::onBufferingChanged(const int percentage) noexcept {
+void EngineEventBridge::onBufferingChanged(
+    const core::OpenRequestId requestId, const int percentage) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit bufferingChanged(percentage);
+    emit bufferingChanged(requestId, percentage);
   }
 }
 
 void EngineEventBridge::onAudioWaveformChanged(
+    const core::OpenRequestId requestId,
     core::AudioWaveform waveform) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit audioWaveformChanged(std::move(waveform));
+    emit audioWaveformChanged(requestId, std::move(waveform));
   }
 }
 
-void EngineEventBridge::onEndReached() noexcept {
+void EngineEventBridge::onEndReached(
+    const core::OpenRequestId requestId) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit endReached();
+    emit endReached(requestId);
   }
 }
 
-void EngineEventBridge::onError(core::PlaybackError error) noexcept {
+void EngineEventBridge::onError(const core::OpenRequestId requestId,
+                                core::PlaybackError error) noexcept {
   if (isActive_.load(std::memory_order_acquire)) {
-    emit errorOccurred(std::move(error));
+    emit errorOccurred(requestId, std::move(error));
   }
 }
 

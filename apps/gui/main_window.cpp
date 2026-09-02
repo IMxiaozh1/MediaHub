@@ -116,6 +116,8 @@ constexpr int kPlaylistMaximumWidth = 390;
 constexpr int kKeyboardVolumeStep = 5;
 constexpr int kDefaultKeyboardSeekStepSeconds = 5;
 constexpr int kRightKeyHoldThresholdMilliseconds = 350;
+constexpr QSize kMiniPlayerSize{600, 400};
+constexpr QSize kMiniPlayerMinimumSize{480, 320};
 constexpr std::array<double, 6> kPlaybackRates{0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
 constexpr std::array<int, 4> kSeekSteps{5, 10, 15, 20};
 
@@ -135,6 +137,8 @@ enum class ControlIcon {
   Muted,
   FullScreen,
   ExitFullScreen,
+  MiniPlayer,
+  ExitMiniPlayer,
   Sequential,
   LoopAll,
   LoopOne,
@@ -287,6 +291,18 @@ QIcon controlIcon(
                        QPointF(20 - inner, 20 - outer));
       break;
     }
+    case ControlIcon::MiniPlayer:
+      painter.drawRoundedRect(QRectF(3, 3.5, 14, 12), 1.5, 1.5);
+      painter.setBrush(ink);
+      painter.drawRoundedRect(QRectF(10, 10, 6, 4.5), 1, 1);
+      break;
+    case ControlIcon::ExitMiniPlayer:
+      painter.drawRoundedRect(QRectF(3, 4, 14, 12), 1.5, 1.5);
+      painter.drawLine(QPointF(7, 9), QPointF(3, 5));
+      painter.drawLine(QPointF(7, 9), QPointF(3, 9));
+      painter.drawLine(QPointF(13, 11), QPointF(17, 15));
+      painter.drawLine(QPointF(13, 11), QPointF(17, 11));
+      break;
     case ControlIcon::Sequential:
       painter.drawLine(QPointF(3, 6), QPointF(15, 6));
       painter.drawLine(QPointF(3, 10), QPointF(15, 10));
@@ -972,6 +988,15 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   livePlaylistSearchEdit_->setPlaceholderText(
       QStringLiteral("搜索频道"));
   livePlaylistSearchEdit_->setClearButtonEnabled(true);
+  livePlaylistScopeTabs_ = new QTabBar(playlistPanel_);
+  livePlaylistScopeTabs_->setObjectName(
+      QStringLiteral("livePlaylistScopeTabs"));
+  livePlaylistScopeTabs_->setAccessibleName(QStringLiteral("直播列表范围"));
+  livePlaylistScopeTabs_->setDocumentMode(true);
+  livePlaylistScopeTabs_->setExpanding(true);
+  livePlaylistScopeTabs_->setUsesScrollButtons(false);
+  livePlaylistScopeTabs_->addTab(QStringLiteral("全部直播"));
+  livePlaylistScopeTabs_->addTab(QStringLiteral("我的收藏"));
   playlistView_ = new QListView(playlistPanel_);
   playlistView_->setObjectName(QStringLiteral("playlistView"));
   playlistView_->setAccessibleName(QStringLiteral("播放列表"));
@@ -1049,6 +1074,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   playlistLayout->addLayout(playlistHeaderRow);
   playlistLayout->addWidget(playlistKindTabs_);
   playlistLayout->addWidget(livePlaylistTools_);
+  playlistLayout->addWidget(livePlaylistScopeTabs_);
   playlistLayout->addWidget(livePlaylistSearchEdit_);
   playlistLayout->addWidget(playlistView_, 1);
   mediaWorkspace->addWidget(playlistPanel_, 1);
@@ -1295,6 +1321,11 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   configureTransportButton(fullScreenButton_, QStringLiteral("进入全屏"),
                            QStringLiteral("进入全屏（F11）"),
                            ControlIcon::FullScreen);
+  miniPlayerButton_ = new QToolButton(transportPanel);
+  miniPlayerButton_->setObjectName(QStringLiteral("miniPlayerButton"));
+  configureTransportButton(miniPlayerButton_, QStringLiteral("小窗口播放"),
+                           QStringLiteral("切换到小窗口播放"),
+                           ControlIcon::MiniPlayer);
 
   auto* const controlRow = new QHBoxLayout();
   controlRow->setSpacing(6);
@@ -1310,6 +1341,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   controlRow->addWidget(lyricsButton_);
   controlRow->addWidget(playbackRateButton_);
   controlRow->addWidget(keyboardSeekStepButton_);
+  controlRow->addWidget(miniPlayerButton_);
   controlRow->addWidget(fullScreenButton_);
   transportLayout->addLayout(controlRow);
   playerDockLayout->addWidget(transportPanel);
@@ -1331,6 +1363,9 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   outerLayout->addWidget(displayModeContainer, 1);
 
   fullScreenChrome_ = {displayModePanel_, headerPanel_, mediaCard_};
+  miniPlayerHiddenControls_ = {
+      playbackModeButton_, previousButton_, nextButton_, lyricsButton_,
+      playbackRateButton_, keyboardSeekStepButton_, fullScreenButton_};
 
   setCentralWidget(centralSurface_);
   applyThemeSettings(themeSettings_);
@@ -1367,6 +1402,8 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
           requestLivePlaylistLoad);
   connect(livePlaylistSearchEdit_, &QLineEdit::textChanged, this,
           &MainWindow::applyLivePlaylistFilter);
+  connect(livePlaylistScopeTabs_, &QTabBar::currentChanged, this,
+          &MainWindow::applyLivePlaylistFilter);
   connect(livePlaylistHistoryButton_, &QToolButton::clicked, this,
           &MainWindow::showLiveUrlHistory);
   connect(livePlaylistLocateButton_, &QPushButton::clicked, this, [this] {
@@ -1375,6 +1412,7 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
     }
     if (playlistView_->isRowHidden(currentLivePlaybackIndex_)) {
       livePlaylistSearchEdit_->clear();
+      livePlaylistScopeTabs_->setCurrentIndex(0);
     }
     selectPlaylistRow(currentLivePlaybackIndex_);
     playlistView_->scrollTo(
@@ -1524,6 +1562,8 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
           &MainWindow::togglePlaylistVisibility);
   connect(fullScreenButton_, &QToolButton::clicked, this,
           &MainWindow::toggleFullScreen);
+  connect(miniPlayerButton_, &QToolButton::clicked, this,
+          &MainWindow::toggleMiniPlayer);
   connect(fullScreenAction_, &QAction::triggered, this,
           &MainWindow::toggleFullScreen);
   connect(fullScreenShortcut, &QShortcut::activated, this,
@@ -1561,6 +1601,9 @@ const ThemeSettings& MainWindow::themeSettings() const noexcept {
 }
 
 void MainWindow::showDisplayMode(const DisplayMode mode) {
+  if (mode == DisplayMode::Web && isMiniPlayer_) {
+    exitMiniPlayer();
+  }
   const bool leavesWeb = displayMode_ == DisplayMode::Web &&
                          mode != DisplayMode::Web;
   if (leavesWeb) {
@@ -1686,6 +1729,9 @@ void MainWindow::refreshControlIcons() {
   fullScreenButton_->setIcon(controlIcon(
       isFullScreen() ? ControlIcon::ExitFullScreen : ControlIcon::FullScreen,
       controlIconColor_));
+  miniPlayerButton_->setIcon(controlIcon(
+      isMiniPlayer_ ? ControlIcon::ExitMiniPlayer : ControlIcon::MiniPlayer,
+      controlIconColor_));
   playlistToggleButton_->setIcon(
       controlIcon(isPlaylistExpanded_ ? ControlIcon::CollapseRight
                                       : ControlIcon::ExpandLeft,
@@ -1764,6 +1810,8 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
                                               : viewState.playbackRate);
   fullScreenAction_->setEnabled(viewState.canToggleFullscreen);
   fullScreenButton_->setEnabled(viewState.canToggleFullscreen);
+  miniPlayerButton_->setEnabled(isMiniPlayer_ ||
+                                viewState.canToggleFullscreen);
   mediaNameLabel_->setText(viewState.mediaName);
   statusLabel_->setText(viewState.statusText);
   positionLabel_->setText(viewState.positionText);
@@ -1956,6 +2004,8 @@ void MainWindow::setPlaylistModels(QAbstractItemModel* const localModel,
   if (livePlaylistModel_ != nullptr) {
     connect(livePlaylistModel_, &QAbstractItemModel::modelReset, this,
             &MainWindow::applyLivePlaylistFilter, Qt::UniqueConnection);
+    connect(livePlaylistModel_, &QAbstractItemModel::dataChanged, this,
+            &MainWindow::applyLivePlaylistFilter, Qt::UniqueConnection);
   }
   showPlaylistKind(isLivePlaylistActive_ ? 1 : 0);
 }
@@ -1997,6 +2047,7 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
   livePlaylistLoadButton_->setVisible(showsLivePlaylist);
   livePlaylistLocateButton_->setVisible(showsLivePlaylist);
   livePlaylistStatusLabel_->setVisible(showsLivePlaylist);
+  livePlaylistScopeTabs_->setVisible(showsLivePlaylist);
   livePlaylistSearchEdit_->setVisible(showsLivePlaylist);
   openButton_->setVisible(!showsLivePlaylist);
   if (showsLivePlaylist) {
@@ -2010,12 +2061,18 @@ void MainWindow::applyLivePlaylistFilter() {
     return;
   }
   const QString query = livePlaylistSearchEdit_->text().trimmed();
+  const bool showsFavoritesOnly =
+      livePlaylistScopeTabs_->currentIndex() == 1;
   for (int row = 0; row < livePlaylistModel_->rowCount(); ++row) {
-    const QString displayName =
-        livePlaylistModel_->index(row, 0).data(Qt::UserRole).toString();
-    playlistView_->setRowHidden(
-        row, !query.isEmpty() &&
-                 !displayName.contains(query, Qt::CaseInsensitive));
+    const QModelIndex index = livePlaylistModel_->index(row, 0);
+    const QString displayName = index.data(Qt::UserRole).toString();
+    const bool matchesSearch =
+        query.isEmpty() ||
+        displayName.contains(query, Qt::CaseInsensitive);
+    const bool matchesScope =
+        !showsFavoritesOnly ||
+        index.data(PlaylistModel::kFavoriteRole).toBool();
+    playlistView_->setRowHidden(row, !matchesSearch || !matchesScope);
   }
 }
 
@@ -2404,6 +2461,12 @@ void MainWindow::dropEvent(QDropEvent* const event) {
 }
 
 void MainWindow::toggleFullScreen() {
+  if (isMiniPlayer_) {
+    exitMiniPlayer();
+    showFullScreen();
+    updateFullScreenText();
+    return;
+  }
   if (isFullScreen()) {
     showNormal();
   } else {
@@ -2422,6 +2485,67 @@ void MainWindow::exitFullScreen() {
     showNormal();
     updateFullScreenText();
   }
+}
+
+void MainWindow::toggleMiniPlayer() {
+  if (isMiniPlayer_) {
+    exitMiniPlayer();
+  } else {
+    enterMiniPlayer();
+  }
+}
+
+void MainWindow::enterMiniPlayer() {
+  if (isMiniPlayer_ || displayMode_ == DisplayMode::Web) {
+    return;
+  }
+
+  miniPlayerPreviousMinimumSize_ = minimumSize();
+  miniPlayerPreviousWasOnTop_ =
+      windowFlags().testFlag(Qt::WindowStaysOnTopHint);
+  if (isFullScreen()) {
+    miniPlayerPreviousGeometry_ = normalGeometry();
+    miniPlayerPreviousWindowState_ = Qt::WindowNoState;
+    showNormal();
+  } else {
+    miniPlayerPreviousGeometry_ =
+        isMaximized() ? normalGeometry() : geometry();
+    miniPlayerPreviousWindowState_ = windowState();
+  }
+
+  const QPoint previousCenter = miniPlayerPreviousGeometry_.center();
+  isMiniPlayer_ = true;
+  setWindowState(Qt::WindowNoState);
+  setWindowFlag(Qt::WindowStaysOnTopHint, true);
+  setMinimumSize(kMiniPlayerMinimumSize);
+  setGeometry(QRect(previousCenter -
+                        QPoint(kMiniPlayerSize.width() / 2,
+                               kMiniPlayerSize.height() / 2),
+                    kMiniPlayerSize));
+  show();
+  raise();
+  activateWindow();
+  updateFullScreenText();
+}
+
+void MainWindow::exitMiniPlayer() {
+  if (!isMiniPlayer_) {
+    return;
+  }
+
+  isMiniPlayer_ = false;
+  setWindowState(Qt::WindowNoState);
+  setWindowFlag(Qt::WindowStaysOnTopHint,
+                miniPlayerPreviousWasOnTop_);
+  setMinimumSize(miniPlayerPreviousMinimumSize_);
+  if (miniPlayerPreviousGeometry_.isValid()) {
+    setGeometry(miniPlayerPreviousGeometry_);
+  }
+  setWindowState(miniPlayerPreviousWindowState_);
+  show();
+  raise();
+  activateWindow();
+  updateFullScreenText();
 }
 
 void MainWindow::handleWebFullScreenChanged(const bool isFullScreen) {
@@ -2448,11 +2572,15 @@ void MainWindow::updateFullScreenText() {
   const bool isNowFullScreen = isFullScreen();
   menuBar()->hide();
   for (auto* const widget : fullScreenChrome_) {
-    widget->setVisible(!isNowFullScreen);
+    widget->setVisible(!isNowFullScreen && !isMiniPlayer_);
   }
-  playlistPanel_->setVisible(!isNowFullScreen && isPlaylistExpanded_);
-  playlistToggleButton_->setVisible(!isNowFullScreen);
-  if (isNowFullScreen) {
+  for (auto* const widget : miniPlayerHiddenControls_) {
+    widget->setVisible(!isMiniPlayer_);
+  }
+  playlistPanel_->setVisible(!isNowFullScreen && !isMiniPlayer_ &&
+                             isPlaylistExpanded_);
+  playlistToggleButton_->setVisible(!isNowFullScreen && !isMiniPlayer_);
+  if (isNowFullScreen || isMiniPlayer_) {
     rootLayout_->setContentsMargins(0, 0, 0, 0);
     rootLayout_->setSpacing(0);
   } else {
@@ -2474,6 +2602,15 @@ void MainWindow::updateFullScreenText() {
   fullScreenButton_->setToolTip(isNowFullScreen
                                     ? QStringLiteral("退出全屏（F11 或 Esc）")
                                     : QStringLiteral("进入全屏（F11）"));
+  miniPlayerButton_->setIcon(controlIcon(
+      isMiniPlayer_ ? ControlIcon::ExitMiniPlayer : ControlIcon::MiniPlayer,
+      controlIconColor_));
+  miniPlayerButton_->setAccessibleName(
+      isMiniPlayer_ ? QStringLiteral("返回正常窗口")
+                    : QStringLiteral("小窗口播放"));
+  miniPlayerButton_->setToolTip(
+      isMiniPlayer_ ? QStringLiteral("返回正常尺寸播放")
+                    : QStringLiteral("切换到置顶小窗口播放"));
 }
 
 void MainWindow::togglePlaylistVisibility() {

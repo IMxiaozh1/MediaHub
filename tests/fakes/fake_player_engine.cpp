@@ -102,6 +102,7 @@ void FakePlayerEngine::emitOpenStarted(const core::OpenRequestId requestId) {
 
 void FakePlayerEngine::emitStateChanged(const core::PlaybackState state) {
   core::OpenRequestId openRequestId = 0;
+  core::OpenRequestId eventRequestId = 0;
   {
     const std::lock_guard lock(mutex_);
     state_ = state;
@@ -110,6 +111,7 @@ void FakePlayerEngine::emitStateChanged(const core::PlaybackState state) {
       announcedOpenRequestId_ = latestOpenRequestId_;
       openRequestId = latestOpenRequestId_;
     }
+    eventRequestId = latestOpenRequestId_;
   }
   if (openRequestId != 0) {
     if (auto* const currentListener = listener()) {
@@ -117,52 +119,78 @@ void FakePlayerEngine::emitStateChanged(const core::PlaybackState state) {
     }
   }
   if (auto* const currentListener = listener()) {
-    currentListener->onStateChanged(state);
+    currentListener->onStateChanged(eventRequestId, state);
+  }
+}
+
+void FakePlayerEngine::emitStateChangedForRequest(
+    const core::OpenRequestId requestId, const core::PlaybackState state) {
+  {
+    const std::lock_guard lock(mutex_);
+    state_ = state;
+  }
+  if (auto* const currentListener = listener()) {
+    currentListener->onStateChanged(requestId, state);
   }
 }
 
 void FakePlayerEngine::emitPositionChanged(core::PlaybackPosition position) {
+  core::OpenRequestId requestId = 0;
   {
     const std::lock_guard lock(mutex_);
     position_ = position;
+    requestId = latestOpenRequestId_;
   }
   if (auto* const currentListener = listener()) {
-    currentListener->onPositionChanged(std::move(position));
+    currentListener->onPositionChanged(requestId, std::move(position));
   }
 }
 
 void FakePlayerEngine::emitDurationChanged(
     const std::optional<std::chrono::milliseconds> duration) {
+  core::OpenRequestId requestId = 0;
   {
     const std::lock_guard lock(mutex_);
     position_.total = duration;
+    requestId = latestOpenRequestId_;
   }
   if (auto* const currentListener = listener()) {
-    currentListener->onDurationChanged(duration);
+    currentListener->onDurationChanged(requestId, duration);
   }
 }
 
 void FakePlayerEngine::emitBufferingChanged(const int percentage) {
   if (auto* const currentListener = listener()) {
-    currentListener->onBufferingChanged(percentage);
+    currentListener->onBufferingChanged(eventRequestId(), percentage);
   }
 }
 
 void FakePlayerEngine::emitAudioWaveformChanged(core::AudioWaveform waveform) {
   if (auto* const currentListener = listener()) {
-    currentListener->onAudioWaveformChanged(std::move(waveform));
+    currentListener->onAudioWaveformChanged(eventRequestId(),
+                                            std::move(waveform));
   }
 }
 
 void FakePlayerEngine::emitEndReached() {
+  emitEndReachedForRequest(eventRequestId());
+}
+
+void FakePlayerEngine::emitEndReachedForRequest(
+    const core::OpenRequestId requestId) {
   if (auto* const currentListener = listener()) {
-    currentListener->onEndReached();
+    currentListener->onEndReached(requestId);
   }
 }
 
 void FakePlayerEngine::emitError(core::PlaybackError error) {
+  emitErrorForRequest(eventRequestId(), std::move(error));
+}
+
+void FakePlayerEngine::emitErrorForRequest(
+    const core::OpenRequestId requestId, core::PlaybackError error) {
   if (auto* const currentListener = listener()) {
-    currentListener->onError(std::move(error));
+    currentListener->onError(requestId, std::move(error));
   }
 }
 
@@ -180,6 +208,11 @@ void FakePlayerEngine::record(FakeEngineCommand command) {
 core::PlayerEventListener* FakePlayerEngine::listener() const {
   const std::lock_guard lock(mutex_);
   return listener_;
+}
+
+core::OpenRequestId FakePlayerEngine::eventRequestId() const {
+  const std::lock_guard lock(mutex_);
+  return latestOpenRequestId_;
 }
 
 }  // namespace mediahub::test

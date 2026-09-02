@@ -36,38 +36,52 @@ class RecordingListener final : public core::PlayerEventListener {
     lastOpenRequestId = requestId;
   }
 
-  void onStateChanged(const core::PlaybackState state) noexcept override {
+  void onStateChanged(const core::OpenRequestId requestId,
+                      const core::PlaybackState state) noexcept override {
     events.push_back(ObservedEventKind::State);
+    lastEventRequestId = requestId;
     lastState = state;
   }
 
-  void onPositionChanged(core::PlaybackPosition position) noexcept override {
+  void onPositionChanged(const core::OpenRequestId requestId,
+                         core::PlaybackPosition position) noexcept override {
     events.push_back(ObservedEventKind::Position);
+    lastEventRequestId = requestId;
     lastPosition = std::move(position);
   }
 
-  void onDurationChanged(const std::optional<std::chrono::milliseconds>
-                             duration) noexcept override {
+  void onDurationChanged(
+      const core::OpenRequestId requestId,
+      const std::optional<std::chrono::milliseconds> duration) noexcept override {
     events.push_back(ObservedEventKind::Duration);
+    lastEventRequestId = requestId;
     lastDuration = duration;
   }
 
-  void onBufferingChanged(const int percentage) noexcept override {
+  void onBufferingChanged(const core::OpenRequestId requestId,
+                          const int percentage) noexcept override {
     events.push_back(ObservedEventKind::Buffering);
+    lastEventRequestId = requestId;
     lastBufferingPercentage = percentage;
   }
 
-  void onAudioWaveformChanged(core::AudioWaveform waveform) noexcept override {
+  void onAudioWaveformChanged(
+      const core::OpenRequestId requestId,
+      core::AudioWaveform waveform) noexcept override {
     events.push_back(ObservedEventKind::Waveform);
+    lastEventRequestId = requestId;
     lastWaveform = std::move(waveform);
   }
 
-  void onEndReached() noexcept override {
+  void onEndReached(const core::OpenRequestId requestId) noexcept override {
     events.push_back(ObservedEventKind::End);
+    lastEventRequestId = requestId;
   }
 
-  void onError(core::PlaybackError error) noexcept override {
+  void onError(const core::OpenRequestId requestId,
+               core::PlaybackError error) noexcept override {
     events.push_back(ObservedEventKind::Error);
+    lastEventRequestId = requestId;
     lastError = std::move(error);
   }
 
@@ -84,6 +98,7 @@ class RecordingListener final : public core::PlayerEventListener {
   core::AudioWaveform lastWaveform;
   core::PlaybackError lastError;
   core::OpenRequestId lastOpenRequestId{0};
+  core::OpenRequestId lastEventRequestId{0};
   void* lastReleasedVideoSurface{nullptr};
 };
 
@@ -94,17 +109,21 @@ class StateMachineListener final : public core::PlayerEventListener {
       : machine_(machine) {}
 
   void onOpenStarted(core::OpenRequestId) noexcept override {}
-  void onStateChanged(const core::PlaybackState state) noexcept override {
+  void onStateChanged(core::OpenRequestId,
+                      const core::PlaybackState state) noexcept override {
     results.push_back(machine_.transitionTo(state));
   }
 
-  void onPositionChanged(core::PlaybackPosition) noexcept override {}
+  void onPositionChanged(core::OpenRequestId,
+                         core::PlaybackPosition) noexcept override {}
   void onDurationChanged(
+      core::OpenRequestId,
       std::optional<std::chrono::milliseconds>) noexcept override {}
-  void onBufferingChanged(int) noexcept override {}
-  void onAudioWaveformChanged(core::AudioWaveform) noexcept override {}
-  void onEndReached() noexcept override {}
-  void onError(core::PlaybackError) noexcept override {}
+  void onBufferingChanged(core::OpenRequestId, int) noexcept override {}
+  void onAudioWaveformChanged(core::OpenRequestId,
+                              core::AudioWaveform) noexcept override {}
+  void onEndReached(core::OpenRequestId) noexcept override {}
+  void onError(core::OpenRequestId, core::PlaybackError) noexcept override {}
   void onVideoSurfaceReleased(void*) noexcept override {}
 
   std::vector<core::PlaybackTransitionResult> results;
@@ -160,6 +179,9 @@ TEST(FakePlayerEngineTest, EmitsEventsInExactCallerControlledOrder) {
   FakePlayerEngine engine;
   RecordingListener listener;
   engine.setEventListener(&listener);
+  const auto requestId = engine.open(
+      core::MediaItem{"C:/Media/event.wav", core::MediaSourceKind::LocalFile,
+                      "event.wav"});
 
   const core::PlaybackPosition position{1500ms, 8000ms, true};
   const core::PlaybackError error{core::PlaybackErrorKind::UnsupportedFormat,
@@ -177,7 +199,8 @@ TEST(FakePlayerEngineTest, EmitsEventsInExactCallerControlledOrder) {
   engine.emitError(error);
 
   const std::vector expectedEvents{
-      ObservedEventKind::State,    ObservedEventKind::Position,
+      ObservedEventKind::OpenStarted, ObservedEventKind::State,
+      ObservedEventKind::Position,
       ObservedEventKind::Duration, ObservedEventKind::Buffering,
       ObservedEventKind::Waveform, ObservedEventKind::End,
       ObservedEventKind::Error};
@@ -188,6 +211,7 @@ TEST(FakePlayerEngineTest, EmitsEventsInExactCallerControlledOrder) {
   EXPECT_EQ(listener.lastBufferingPercentage, 37);
   EXPECT_EQ(listener.lastWaveform, waveform);
   EXPECT_EQ(listener.lastError, error);
+  EXPECT_EQ(listener.lastEventRequestId, requestId);
   EXPECT_EQ(engine.state(), core::PlaybackState::Opening);
   EXPECT_EQ(engine.position(), position);
   EXPECT_EQ(engine.duration(), 8000ms);

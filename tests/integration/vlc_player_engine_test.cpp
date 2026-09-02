@@ -35,35 +35,46 @@ class RecordingListener final : public core::PlayerEventListener {
     changed_.notify_all();
   }
 
-  void onStateChanged(const core::PlaybackState state) noexcept override {
+  void onStateChanged(const core::OpenRequestId requestId,
+                      const core::PlaybackState state) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     states_.push_back(state);
     stateThreads_.emplace_back(state, std::this_thread::get_id());
     changed_.notify_all();
   }
 
-  void onPositionChanged(core::PlaybackPosition position) noexcept override {
+  void onPositionChanged(const core::OpenRequestId requestId,
+                         core::PlaybackPosition position) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     position_ = std::move(position);
     changed_.notify_all();
   }
 
-  void onDurationChanged(const std::optional<std::chrono::milliseconds>
-                             duration) noexcept override {
+  void onDurationChanged(
+      const core::OpenRequestId requestId,
+      const std::optional<std::chrono::milliseconds> duration) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     duration_ = duration;
     hasDurationEvent_ = true;
     changed_.notify_all();
   }
 
-  void onBufferingChanged(const int percentage) noexcept override {
+  void onBufferingChanged(const core::OpenRequestId requestId,
+                          const int percentage) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     bufferingPercentage_ = percentage;
     changed_.notify_all();
   }
 
-  void onAudioWaveformChanged(core::AudioWaveform waveform) noexcept override {
+  void onAudioWaveformChanged(
+      const core::OpenRequestId requestId,
+      core::AudioWaveform waveform) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     waveformTimes_.push_back(std::chrono::steady_clock::now());
     waveform_ = std::move(waveform);
     ++waveformCount_;
@@ -76,14 +87,17 @@ class RecordingListener final : public core::PlayerEventListener {
     changed_.notify_all();
   }
 
-  void onEndReached() noexcept override {
+  void onEndReached(const core::OpenRequestId requestId) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     ++endCount_;
     changed_.notify_all();
   }
 
-  void onError(core::PlaybackError error) noexcept override {
+  void onError(const core::OpenRequestId requestId,
+               core::PlaybackError error) noexcept override {
     const std::lock_guard lock(mutex_);
+    lastEventRequestId_ = requestId;
     errors_.push_back(std::move(error));
     changed_.notify_all();
   }
@@ -219,6 +233,11 @@ class RecordingListener final : public core::PlayerEventListener {
     return endCount_;
   }
 
+  [[nodiscard]] core::OpenRequestId lastEventRequestId() const {
+    const std::lock_guard lock(mutex_);
+    return lastEventRequestId_;
+  }
+
   [[nodiscard]] std::thread::id stateThread(
       const core::PlaybackState state) const {
     const std::lock_guard lock(mutex_);
@@ -246,6 +265,7 @@ class RecordingListener final : public core::PlayerEventListener {
   std::size_t endCount_{0};
   std::vector<core::PlaybackError> errors_;
   std::vector<core::OpenRequestId> openRequestIds_;
+  core::OpenRequestId lastEventRequestId_{0};
   std::vector<void*> releasedVideoSurfaces_;
 };
 
@@ -389,13 +409,14 @@ TEST(VlcPlayerEngineTest, ReportsMissingLocalFileWithoutLeakingFullPath) {
   VlcPlayerEngine engine(testOptions());
   engine.setEventListener(&listener);
 
-  engine.open(core::MediaItem{missingSource, core::MediaSourceKind::LocalFile,
-                              "missing.wav"});
+  const auto requestId = engine.open(core::MediaItem{
+      missingSource, core::MediaSourceKind::LocalFile, "missing.wav"});
 
   ASSERT_TRUE(listener.waitForError());
   const auto error = listener.lastError();
   EXPECT_EQ(engine.state(), core::PlaybackState::Failed);
   EXPECT_EQ(error.kind, core::PlaybackErrorKind::SourceNotFound);
+  EXPECT_EQ(listener.lastEventRequestId(), requestId);
   EXPECT_NE(error.userMessage.find("missing.wav"), std::string::npos);
   EXPECT_EQ(error.engineDetail.find(missingSource), std::string::npos);
   EXPECT_EQ(error.userMessage.find(missingSource), std::string::npos);

@@ -1507,9 +1507,10 @@ void PlayerPresenter::changePlaybackMode(const int modeIndex) {
   render();
 }
 
-void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
+void PlayerPresenter::handleStateChanged(
+    const core::OpenRequestId requestId, const core::PlaybackState state) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_) {
+  if (isShuttingDown_ || requestId != pendingOpenRequestId_) {
     return;
   }
   if (isNetworkMedia_ &&
@@ -1551,6 +1552,7 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
   }
 
   if (state == core::PlaybackState::Playing) {
+    window_.clearPlaybackError();
     if (isNetworkMedia_) {
       networkOpenTimeoutTimer_->stop();
       isNetworkOpenPending_ = false;
@@ -1620,9 +1622,10 @@ void PlayerPresenter::handleStateChanged(const core::PlaybackState state) {
   }
 }
 
-void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
+void PlayerPresenter::handlePositionChanged(
+    const core::OpenRequestId requestId, core::PlaybackPosition position) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (!isShuttingDown_ &&
+  if (!isShuttingDown_ && requestId == pendingOpenRequestId_ &&
       !(isNetworkMedia_ &&
         (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_))) {
     if (pendingRestartPosition_.has_value()) {
@@ -1658,9 +1661,10 @@ void PlayerPresenter::handlePositionChanged(core::PlaybackPosition position) {
   }
 }
 
-void PlayerPresenter::handleDurationChanged(const OptionalDuration duration) {
+void PlayerPresenter::handleDurationChanged(
+    const core::OpenRequestId requestId, const OptionalDuration duration) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (!isShuttingDown_ &&
+  if (!isShuttingDown_ && requestId == pendingOpenRequestId_ &&
       !(isNetworkMedia_ &&
         (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_))) {
     position_.total = duration;
@@ -1678,9 +1682,11 @@ void PlayerPresenter::handleDurationChanged(const OptionalDuration duration) {
   }
 }
 
-void PlayerPresenter::handleBufferingChanged(const int percentage) {
+void PlayerPresenter::handleBufferingChanged(
+    const core::OpenRequestId requestId, const int percentage) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ || !isNetworkMedia_ || ignoresCancelledNetworkEvents_ ||
+  if (isShuttingDown_ || requestId != pendingOpenRequestId_ ||
+      !isNetworkMedia_ || ignoresCancelledNetworkEvents_ ||
       isNetworkReconnectPending_) {
     return;
   }
@@ -1690,9 +1696,11 @@ void PlayerPresenter::handleBufferingChanged(const int percentage) {
   }
 }
 
-void PlayerPresenter::handleAudioWaveformChanged(core::AudioWaveform waveform) {
+void PlayerPresenter::handleAudioWaveformChanged(
+    const core::OpenRequestId requestId, core::AudioWaveform waveform) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (!isShuttingDown_ && !isVideoMedia_) {
+  if (!isShuttingDown_ && requestId == pendingOpenRequestId_ &&
+      !isVideoMedia_) {
     window_.setAudioWaveform(std::move(waveform));
   }
 }
@@ -1708,9 +1716,9 @@ void PlayerPresenter::handleLyricsResult(LyricsResult result) {
   render();
 }
 
-void PlayerPresenter::handleEndReached() {
+void PlayerPresenter::handleEndReached(const core::OpenRequestId requestId) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ ||
+  if (isShuttingDown_ || requestId != pendingOpenRequestId_ ||
       (isNetworkMedia_ &&
        (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_))) {
     return;
@@ -1754,9 +1762,10 @@ void PlayerPresenter::handleEndReached() {
   }
 }
 
-void PlayerPresenter::handleError(core::PlaybackError error) {
+void PlayerPresenter::handleError(const core::OpenRequestId requestId,
+                                  core::PlaybackError error) {
   Q_ASSERT(QThread::currentThread() == thread());
-  if (isShuttingDown_ ||
+  if (isShuttingDown_ || requestId != pendingOpenRequestId_ ||
       (isNetworkMedia_ &&
        (ignoresCancelledNetworkEvents_ || isNetworkReconnectPending_ ||
         isNetworkReconnectExhausted_))) {

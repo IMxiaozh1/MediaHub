@@ -59,6 +59,9 @@ class FakePlayerEngine final : public core::PlayerEngine {
   void emitOpenStarted(core::OpenRequestId requestId);
   // 调用线程：测试线程。回调在调用者线程中同步执行，方便精确控制事件顺序。
   void emitStateChanged(core::PlaybackState state);
+  // 调用线程：测试线程。用于构造被后续打开请求取代的迟到状态事件。
+  void emitStateChangedForRequest(core::OpenRequestId requestId,
+                                  core::PlaybackState state);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitPositionChanged(core::PlaybackPosition position);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
@@ -69,14 +72,20 @@ class FakePlayerEngine final : public core::PlayerEngine {
   void emitAudioWaveformChanged(core::AudioWaveform waveform);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitEndReached();
+  // 调用线程：测试线程。用于构造被后续打开请求取代的迟到结束事件。
+  void emitEndReachedForRequest(core::OpenRequestId requestId);
   // 调用线程：测试线程。回调在调用者线程中同步执行。
   void emitError(core::PlaybackError error);
+  // 调用线程：测试线程。用于构造被后续打开请求取代的迟到失败事件。
+  void emitErrorForRequest(core::OpenRequestId requestId,
+                           core::PlaybackError error);
   // 调用线程：测试线程。通知界面旧播放器已释放指定视频句柄。
   void emitVideoSurfaceReleased(void* nativeHandle);
 
  private:
   void record(FakeEngineCommand command);
   [[nodiscard]] core::PlayerEventListener* listener() const;
+  [[nodiscard]] core::OpenRequestId eventRequestId() const;
 
   mutable std::mutex mutex_;
   std::vector<FakeEngineCommand> commands_;

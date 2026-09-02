@@ -18,14 +18,20 @@ class PlayerEventListener {
 
   // 内核已完成旧媒体让位并开始处理该请求；此时才可启动连接超时计时。
   virtual void onOpenStarted(OpenRequestId requestId) noexcept = 0;
-  virtual void onStateChanged(PlaybackState state) noexcept = 0;
-  virtual void onPositionChanged(PlaybackPosition position) noexcept = 0;
+  virtual void onStateChanged(OpenRequestId requestId,
+                              PlaybackState state) noexcept = 0;
+  virtual void onPositionChanged(OpenRequestId requestId,
+                                 PlaybackPosition position) noexcept = 0;
   virtual void onDurationChanged(
+      OpenRequestId requestId,
       std::optional<std::chrono::milliseconds> duration) noexcept = 0;
-  virtual void onBufferingChanged(int percentage) noexcept = 0;
-  virtual void onAudioWaveformChanged(AudioWaveform waveform) noexcept = 0;
-  virtual void onEndReached() noexcept = 0;
-  virtual void onError(PlaybackError error) noexcept = 0;
+  virtual void onBufferingChanged(OpenRequestId requestId,
+                                  int percentage) noexcept = 0;
+  virtual void onAudioWaveformChanged(OpenRequestId requestId,
+                                      AudioWaveform waveform) noexcept = 0;
+  virtual void onEndReached(OpenRequestId requestId) noexcept = 0;
+  virtual void onError(OpenRequestId requestId,
+                       PlaybackError error) noexcept = 0;
   // 旧播放器已不再引用该句柄，拥有方可以安全销毁对应原生窗口。
   virtual void onVideoSurfaceReleased(void* nativeHandle) noexcept = 0;
 };

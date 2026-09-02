@@ -550,6 +550,10 @@ class VlcPlayerEngine::Impl {
       videoSurface_ = nativeVideoHandle;
     }
     clearCurrentMedia(displayNameFor(item));
+    {
+      const std::lock_guard lock(mutex_);
+      activeOpenRequestId_.store(requestId, std::memory_order_release);
+    }
     if (playerVideoSurface_ != videoSurface_) {
       void* const releasedSurface = playerVideoSurface_;
       applyVideoSurface(player_.get(), videoSurface_,
@@ -569,7 +573,7 @@ class VlcPlayerEngine::Impl {
     if (item.kind == core::MediaSourceKind::NetworkStream) {
       if (core::validateNetworkUrl(item.source) !=
           core::NetworkUrlValidationError::None) {
-        reportError(core::PlaybackErrorKind::UnsupportedFormat,
+        reportError(requestId, core::PlaybackErrorKind::UnsupportedFormat,
                     "Network input failed URL validation",
                     "网络地址格式无效或协议暂不受支持。");
         return;
@@ -578,7 +582,7 @@ class VlcPlayerEngine::Impl {
       VlcMediaPtr newMedia(
           libvlc_media_new_location(instance_.get(), item.source.c_str()));
       if (!newMedia) {
-        reportError(core::PlaybackErrorKind::SourceUnreadable,
+        reportError(requestId, core::PlaybackErrorKind::SourceUnreadable,
                     "libVLC could not create a network media descriptor",
                     "无法打开网络媒体“" + displayNameFor(item) + "”。");
         return;
@@ -602,7 +606,7 @@ class VlcPlayerEngine::Impl {
       dispatch([requestId](core::PlayerEventListener& listener) noexcept {
         listener.onOpenStarted(requestId);
       });
-      updateState(core::PlaybackState::Opening);
+      updateState(requestId, core::PlaybackState::Opening);
       return;
     }
 
@@ -610,13 +614,13 @@ class VlcPlayerEngine::Impl {
     std::error_code pathError;
     const bool pathExists = std::filesystem::exists(path, pathError);
     if (pathError) {
-      reportError(core::PlaybackErrorKind::SourceUnreadable,
+      reportError(requestId, core::PlaybackErrorKind::SourceUnreadable,
                   "Local media path could not be inspected",
                   "无法读取媒体文件“" + displayNameFor(item) + "”。");
       return;
     }
     if (!pathExists) {
-      reportError(core::PlaybackErrorKind::SourceNotFound,
+      reportError(requestId, core::PlaybackErrorKind::SourceNotFound,
                   "Local media path does not exist",
                   "找不到媒体文件“" + displayNameFor(item) + "”。");
       return;
@@ -624,14 +628,14 @@ class VlcPlayerEngine::Impl {
     const bool isRegularFile =
         std::filesystem::is_regular_file(path, pathError);
     if (pathError || !isRegularFile) {
-      reportError(core::PlaybackErrorKind::SourceUnreadable,
+      reportError(requestId, core::PlaybackErrorKind::SourceUnreadable,
                   "Local media path is not a readable regular file",
                   "无法读取媒体文件“" + displayNameFor(item) + "”。");
       return;
     }
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-      reportError(core::PlaybackErrorKind::SourceUnreadable,
+      reportError(requestId, core::PlaybackErrorKind::SourceUnreadable,
                   "Local media file could not be opened for reading",
                   "无法读取媒体文件“" + displayNameFor(item) + "”。");
       return;
@@ -639,7 +643,7 @@ class VlcPlayerEngine::Impl {
     input.close();
 
     if (hasObviouslyInvalidMp4Content(path)) {
-      reportError(core::PlaybackErrorKind::UnsupportedFormat,
+      reportError(requestId, core::PlaybackErrorKind::UnsupportedFormat,
                   "MP4 container signature is missing or invalid",
                   "无法播放媒体“" + displayNameFor(item) +
                       "”，文件内容可能损坏或格式不受支持。");
@@ -653,7 +657,7 @@ class VlcPlayerEngine::Impl {
     VlcMediaPtr newMedia(
         libvlc_media_new_path(instance_.get(), nativeSource.c_str()));
     if (!newMedia) {
-      reportError(core::PlaybackErrorKind::SourceUnreadable,
+      reportError(requestId, core::PlaybackErrorKind::SourceUnreadable,
                   "libVLC could not create a media descriptor",
                   "无法打开媒体文件“" + displayNameFor(item) + "”。");
       return;
@@ -663,7 +667,7 @@ class VlcPlayerEngine::Impl {
       newAnalysisMedia.reset(
           libvlc_media_new_path(analysisInstance_.get(), nativeSource.c_str()));
       if (!newAnalysisMedia) {
-        reportError(core::PlaybackErrorKind::SourceUnreadable,
+        reportError(requestId, core::PlaybackErrorKind::SourceUnreadable,
                     "libVLC could not create an audio analysis descriptor",
                     "无法分析媒体文件“" + displayNameFor(item) + "”。");
         return;
@@ -708,18 +712,19 @@ class VlcPlayerEngine::Impl {
     dispatch([requestId](core::PlayerEventListener& listener) noexcept {
       listener.onOpenStarted(requestId);
     });
-    updateState(core::PlaybackState::Opening);
+    updateState(requestId, core::PlaybackState::Opening);
   }
 
   void playNow() {
+    const auto requestId = activeOpenRequestId_.load(std::memory_order_acquire);
     if (!media_) {
-      reportError(core::PlaybackErrorKind::EngineNotInitialized,
+      reportError(requestId, core::PlaybackErrorKind::EngineNotInitialized,
                   "Play was requested without loaded media",
                   "请先打开一个媒体文件再开始播放。");
       return;
     }
     if (libvlc_media_player_play(player_.get()) != 0) {
-      reportPlaybackFailure("libVLC rejected the play request",
+      reportPlaybackFailure(requestId, "libVLC rejected the play request",
                             core::PlaybackErrorKind::Unknown);
       return;
     }
@@ -763,12 +768,13 @@ class VlcPlayerEngine::Impl {
         position_ = {};
         lastPositionNotification_ = {};
       }
-      updateState(core::PlaybackState::Stopped);
+      updateState(activeOpenRequestId_.load(std::memory_order_acquire),
+                  core::PlaybackState::Stopped);
     } else {
       libvlc_media_player_stop(player_.get());
       stopAudioAnalysis();
     }
-    resetWaveform();
+    resetWaveform(activeOpenRequestId_.load(std::memory_order_acquire));
   }
 
   void seekNow(std::chrono::milliseconds position) {
@@ -786,9 +792,10 @@ class VlcPlayerEngine::Impl {
     libvlc_media_player_set_time(player_.get(), position.count());
     if (isAudioOnlyMedia_) {
       libvlc_media_player_set_time(analysisPlayer_.get(), position.count());
-      resetWaveform();
+      resetWaveform(activeOpenRequestId_.load(std::memory_order_acquire));
     }
-    updatePosition(position, true);
+    updatePosition(activeOpenRequestId_.load(std::memory_order_acquire),
+                   position, true);
   }
 
   void setVolumeNow(const int volume) {
@@ -845,7 +852,7 @@ class VlcPlayerEngine::Impl {
       // 纯音频可在当前位置重建时钟；视频这样做会跳到附近关键帧。
       libvlc_media_player_set_time(player_.get(), currentTime);
       libvlc_media_player_set_time(analysisPlayer_.get(), currentTime);
-      resetWaveform();
+      resetWaveform(activeOpenRequestId_.load(std::memory_order_acquire));
     }
   }
 
@@ -893,14 +900,16 @@ class VlcPlayerEngine::Impl {
         command();
       } catch (const std::exception& error) {
         try {
-          reportError(core::PlaybackErrorKind::Unknown,
+          reportError(activeOpenRequestId_.load(std::memory_order_acquire),
+                      core::PlaybackErrorKind::Unknown,
                       std::string("Player command failed: ") + error.what(),
                       "播放内核执行操作失败，请重试。");
         } catch (...) {
         }
       } catch (...) {
         try {
-          reportError(core::PlaybackErrorKind::Unknown,
+          reportError(activeOpenRequestId_.load(std::memory_order_acquire),
+                      core::PlaybackErrorKind::Unknown,
                       "Player command failed with an unknown exception",
                       "播放内核执行操作失败，请重试。");
         } catch (...) {
@@ -954,8 +963,10 @@ class VlcPlayerEngine::Impl {
                              void* const opaque) noexcept {
     if (event != nullptr && opaque != nullptr) {
       auto& implementation = *static_cast<Impl*>(opaque);
+      const auto requestId = implementation.activeOpenRequestId_.load(
+          std::memory_order_acquire);
       implementation.beginLibVlcCallback();
-      implementation.handleEvent(*event);
+      implementation.handleEvent(requestId, *event);
       implementation.finishLibVlcCallback();
     }
   }
@@ -969,9 +980,11 @@ class VlcPlayerEngine::Impl {
       return;
     }
     auto& implementation = *static_cast<Impl*>(opaque);
+    const auto requestId = implementation.activeOpenRequestId_.load(
+        std::memory_order_acquire);
     implementation.beginAudioCallback();
-    implementation.handleAudioSamples(static_cast<const std::int16_t*>(samples),
-                                      count);
+    implementation.handleAudioSamples(
+        requestId, static_cast<const std::int16_t*>(samples), count);
     implementation.finishAudioCallback();
   }
 
@@ -1001,12 +1014,15 @@ class VlcPlayerEngine::Impl {
     }
   }
 
-  void handleAudioSamples(const std::int16_t* const samples,
+  void handleAudioSamples(const core::OpenRequestId requestId,
+                          const std::int16_t* const samples,
                           const std::size_t count) noexcept {
     const auto now = std::chrono::steady_clock::now();
     {
       const std::lock_guard lock(mutex_);
-      if (isShuttingDown_ || !isAudioOnlyMedia_) {
+      if (isShuttingDown_ ||
+          requestId != activeOpenRequestId_.load(std::memory_order_acquire) ||
+          !isAudioOnlyMedia_) {
         return;
       }
     }
@@ -1014,7 +1030,9 @@ class VlcPlayerEngine::Impl {
     const float intensity = audioEnergyIntensity(samples, count);
     {
       const std::lock_guard lock(mutex_);
-      if (isShuttingDown_ || !isAudioOnlyMedia_ ||
+      if (isShuttingDown_ ||
+          requestId != activeOpenRequestId_.load(std::memory_order_acquire) ||
+          !isAudioOnlyMedia_ ||
           (lastWaveformNotification_ !=
                std::chrono::steady_clock::time_point{} &&
            now - lastWaveformNotification_ < kWaveformEventInterval)) {
@@ -1025,8 +1043,9 @@ class VlcPlayerEngine::Impl {
 
     auto waveform = audioWaveformFromPcm(samples, count);
     waveform.intensity = intensity;
-    dispatch([waveform](core::PlayerEventListener& listener) mutable noexcept {
-      listener.onAudioWaveformChanged(std::move(waveform));
+    dispatch([requestId, waveform](
+                 core::PlayerEventListener& listener) mutable noexcept {
+      listener.onAudioWaveformChanged(requestId, std::move(waveform));
     });
   }
 
@@ -1063,13 +1082,19 @@ class VlcPlayerEngine::Impl {
   }
 
   // 调用线程：libVLC 事件线程，只更新快照并向监听器发送值类型事件。
-  void handleEvent(const libvlc_event_t& event) noexcept {
+  void handleEvent(const core::OpenRequestId requestId,
+                   const libvlc_event_t& event) noexcept {
+    if (requestId !=
+        activeOpenRequestId_.load(std::memory_order_acquire)) {
+      return;
+    }
     if (const auto playbackEvent = playbackEventFromLibVlc(event.type)) {
       if (*playbackEvent == VlcPlaybackEvent::Buffering) {
         const float cachePercentage = event.u.media_player_buffering.new_cache;
         const int percentage = bufferingPercentage(cachePercentage);
-        dispatch([percentage](core::PlayerEventListener& listener) noexcept {
-          listener.onBufferingChanged(percentage);
+        dispatch([requestId, percentage](
+                     core::PlayerEventListener& listener) noexcept {
+          listener.onBufferingChanged(requestId, percentage);
         });
         if (!isBufferingInProgress(cachePercentage, state())) {
           return;
@@ -1077,21 +1102,22 @@ class VlcPlayerEngine::Impl {
       }
       const auto nextState = mapPlaybackState(*playbackEvent);
       if (*playbackEvent == VlcPlaybackEvent::Stopped) {
-        updatePosition(0ms, true);
+        updatePosition(requestId, 0ms, true);
       } else if (*playbackEvent == VlcPlaybackEvent::EndReached) {
-        movePositionToEnd();
+        movePositionToEnd(requestId);
       }
-      updateState(nextState);
+      updateState(requestId, nextState);
       if (*playbackEvent == VlcPlaybackEvent::Playing) {
         reapplyAudioStateAfterPlaying();
       }
 
       if (*playbackEvent == VlcPlaybackEvent::EndReached) {
-        dispatch([](core::PlayerEventListener& listener) noexcept {
-          listener.onEndReached();
+        dispatch([requestId](core::PlayerEventListener& listener) noexcept {
+          listener.onEndReached(requestId);
         });
       } else if (*playbackEvent == VlcPlaybackEvent::EncounteredError) {
-        reportPlaybackFailure("libVLC reported MediaPlayerEncounteredError",
+        reportPlaybackFailure(requestId,
+                              "libVLC reported MediaPlayerEncounteredError",
                               core::PlaybackErrorKind::UnsupportedFormat,
                               false);
       }
@@ -1100,15 +1126,17 @@ class VlcPlayerEngine::Impl {
 
     switch (event.type) {
       case libvlc_MediaPlayerTimeChanged:
-        updatePosition(std::chrono::milliseconds(std::max<libvlc_time_t>(
+        updatePosition(requestId,
+                       std::chrono::milliseconds(std::max<libvlc_time_t>(
                            event.u.media_player_time_changed.new_time, 0)),
                        false);
         break;
       case libvlc_MediaPlayerSeekableChanged:
-        updateSeekable(event.u.media_player_seekable_changed.new_seekable != 0);
+        updateSeekable(requestId,
+                       event.u.media_player_seekable_changed.new_seekable != 0);
         break;
       case libvlc_MediaPlayerLengthChanged:
-        updateDuration(
+        updateDuration(requestId,
             durationFromLibVlc(event.u.media_player_length_changed.new_length));
         break;
       default:
@@ -1116,22 +1144,32 @@ class VlcPlayerEngine::Impl {
     }
   }
 
-  void updateState(const core::PlaybackState state) noexcept {
+  void updateState(const core::OpenRequestId requestId,
+                   const core::PlaybackState state) noexcept {
     {
       const std::lock_guard lock(mutex_);
+      if (requestId !=
+          activeOpenRequestId_.load(std::memory_order_acquire)) {
+        return;
+      }
       state_ = state;
     }
-    dispatch([state](core::PlayerEventListener& listener) noexcept {
-      listener.onStateChanged(state);
+    dispatch([requestId, state](core::PlayerEventListener& listener) noexcept {
+      listener.onStateChanged(requestId, state);
     });
   }
 
-  void updatePosition(const std::chrono::milliseconds current,
+  void updatePosition(const core::OpenRequestId requestId,
+                      const std::chrono::milliseconds current,
                       const bool force) noexcept {
     core::PlaybackPosition snapshot;
     bool shouldNotify = false;
     {
       const std::lock_guard lock(mutex_);
+      if (requestId !=
+          activeOpenRequestId_.load(std::memory_order_acquire)) {
+        return;
+      }
       position_.current = current;
       const auto now = std::chrono::steady_clock::now();
       shouldNotify = force ||
@@ -1144,52 +1182,70 @@ class VlcPlayerEngine::Impl {
       }
     }
     if (shouldNotify) {
-      dispatch([snapshot](core::PlayerEventListener& listener) noexcept {
-        listener.onPositionChanged(snapshot);
+      dispatch([requestId, snapshot](
+                   core::PlayerEventListener& listener) noexcept {
+        listener.onPositionChanged(requestId, snapshot);
       });
     }
   }
 
-  void updateDuration(
+  void updateDuration(const core::OpenRequestId requestId,
       const std::optional<std::chrono::milliseconds> duration) noexcept {
     {
       const std::lock_guard lock(mutex_);
+      if (requestId !=
+          activeOpenRequestId_.load(std::memory_order_acquire)) {
+        return;
+      }
       position_.total = duration;
     }
-    dispatch([duration](core::PlayerEventListener& listener) noexcept {
-      listener.onDurationChanged(duration);
+    dispatch([requestId, duration](
+                 core::PlayerEventListener& listener) noexcept {
+      listener.onDurationChanged(requestId, duration);
     });
   }
 
-  void updateSeekable(const bool isSeekable) noexcept {
+  void updateSeekable(const core::OpenRequestId requestId,
+                      const bool isSeekable) noexcept {
     core::PlaybackPosition snapshot;
     {
       const std::lock_guard lock(mutex_);
+      if (requestId !=
+          activeOpenRequestId_.load(std::memory_order_acquire)) {
+        return;
+      }
       position_.isSeekable = isSeekable;
       lastPositionNotification_ = std::chrono::steady_clock::now();
       snapshot = position_;
     }
-    dispatch([snapshot](core::PlayerEventListener& listener) noexcept {
-      listener.onPositionChanged(snapshot);
+    dispatch([requestId, snapshot](
+                 core::PlayerEventListener& listener) noexcept {
+      listener.onPositionChanged(requestId, snapshot);
     });
   }
 
-  void movePositionToEnd() noexcept {
+  void movePositionToEnd(const core::OpenRequestId requestId) noexcept {
     core::PlaybackPosition snapshot;
     {
       const std::lock_guard lock(mutex_);
+      if (requestId !=
+          activeOpenRequestId_.load(std::memory_order_acquire)) {
+        return;
+      }
       if (position_.total.has_value()) {
         position_.current = *position_.total;
       }
       lastPositionNotification_ = std::chrono::steady_clock::now();
       snapshot = position_;
     }
-    dispatch([snapshot](core::PlayerEventListener& listener) noexcept {
-      listener.onPositionChanged(snapshot);
+    dispatch([requestId, snapshot](
+                 core::PlayerEventListener& listener) noexcept {
+      listener.onPositionChanged(requestId, snapshot);
     });
   }
 
-  void reportPlaybackFailure(const std::string detail,
+  void reportPlaybackFailure(const core::OpenRequestId requestId,
+                             const std::string detail,
                              const core::PlaybackErrorKind kind =
                                  core::PlaybackErrorKind::UnsupportedFormat,
                              const bool updateFailedState = true) {
@@ -1202,7 +1258,7 @@ class VlcPlayerEngine::Impl {
       isNetworkMedia = isNetworkMedia_;
     }
     if (updateFailedState) {
-      updateState(core::PlaybackState::Failed);
+      updateState(requestId, core::PlaybackState::Failed);
     }
     const auto resolvedKind =
         isNetworkMedia ? core::PlaybackErrorKind::SourceUnreadable : kind;
@@ -1211,23 +1267,26 @@ class VlcPlayerEngine::Impl {
                              "”，请检查地址、网络或服务状态。"
                        : "无法播放媒体“" + displayName +
                              "”，文件内容可能损坏或格式不受支持。";
-    dispatch([error = core::PlaybackError{resolvedKind, detail, userMessage}](
+    dispatch([requestId,
+              error = core::PlaybackError{resolvedKind, detail, userMessage}](
                  core::PlayerEventListener& listener) mutable noexcept {
-      listener.onError(std::move(error));
+      listener.onError(requestId, std::move(error));
     });
   }
 
-  void reportError(const core::PlaybackErrorKind kind, std::string detail,
+  void reportError(const core::OpenRequestId requestId,
+                   const core::PlaybackErrorKind kind, std::string detail,
                    std::string userMessage) {
-    updateState(core::PlaybackState::Failed);
-    dispatch([error = core::PlaybackError{kind, std::move(detail),
+    updateState(requestId, core::PlaybackState::Failed);
+    dispatch([requestId,
+              error = core::PlaybackError{kind, std::move(detail),
                                           std::move(userMessage)}](
                  core::PlayerEventListener& listener) mutable noexcept {
-      listener.onError(std::move(error));
+      listener.onError(requestId, std::move(error));
     });
   }
 
-  void resetWaveform() noexcept {
+  void resetWaveform(const core::OpenRequestId requestId) noexcept {
     {
       const std::lock_guard lock(waveformAnalysisMutex_);
       bassLowPassState_ = 0.0F;
@@ -1237,8 +1296,8 @@ class VlcPlayerEngine::Impl {
       const std::lock_guard lock(mutex_);
       lastWaveformNotification_ = {};
     }
-    dispatch([](core::PlayerEventListener& listener) noexcept {
-      listener.onAudioWaveformChanged({});
+    dispatch([requestId](core::PlayerEventListener& listener) noexcept {
+      listener.onAudioWaveformChanged(requestId, {});
     });
   }
 
@@ -1373,7 +1432,7 @@ class VlcPlayerEngine::Impl {
       lastPositionNotification_ = {};
       lastWaveformNotification_ = {};
     }
-    resetWaveform();
+    resetWaveform(activeOpenRequestId_.load(std::memory_order_acquire));
   }
 
   void waitUntilPlayerStops(libvlc_media_player_t* const player) noexcept {
@@ -1434,6 +1493,7 @@ class VlcPlayerEngine::Impl {
   void* videoSurface_{nullptr};
   void* playerVideoSurface_{nullptr};
   std::atomic<core::OpenRequestId> latestOpenRequestId_{0};
+  std::atomic<core::OpenRequestId> activeOpenRequestId_{0};
   std::shared_ptr<EventDispatcher> eventDispatcher_{
       std::make_shared<EventDispatcher>()};
   std::shared_ptr<RetiredPlayerReclaimer> retiredPlayerReclaimer_{

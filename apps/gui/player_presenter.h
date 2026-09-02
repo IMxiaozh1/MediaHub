@@ -108,14 +108,18 @@ class PlayerPresenter final : public QObject {
   void handleLivePlaylistFailure(LivePlaylistLoadError error);
   void attachVideoSurface(void* nativeHandle);
   void handleOpenStarted(core::OpenRequestId requestId);
-  void handleStateChanged(core::PlaybackState state);
-  void handlePositionChanged(core::PlaybackPosition position);
-  void handleDurationChanged(OptionalDuration duration);
-  void handleBufferingChanged(int percentage);
-  void handleAudioWaveformChanged(core::AudioWaveform waveform);
+  void handleStateChanged(core::OpenRequestId requestId,
+                          core::PlaybackState state);
+  void handlePositionChanged(core::OpenRequestId requestId,
+                             core::PlaybackPosition position);
+  void handleDurationChanged(core::OpenRequestId requestId,
+                             OptionalDuration duration);
+  void handleBufferingChanged(core::OpenRequestId requestId, int percentage);
+  void handleAudioWaveformChanged(core::OpenRequestId requestId,
+                                  core::AudioWaveform waveform);
   void handleLyricsResult(LyricsResult result);
-  void handleEndReached();
-  void handleError(core::PlaybackError error);
+  void handleEndReached(core::OpenRequestId requestId);
+  void handleError(core::OpenRequestId requestId, core::PlaybackError error);
   void handleVideoSurfaceReleased(void* nativeHandle);
   void handleNetworkOpenTimeout();
   void handleNetworkReconnectTimeout();

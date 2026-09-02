@@ -3,6 +3,8 @@
 #include <QList>
 #include <QMainWindow>
 #include <QColor>
+#include <QRect>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -177,6 +179,9 @@ class MainWindow final : public QMainWindow {
   void applyThemeSettings(const ThemeSettings& settings);
   void toggleFullScreen();
   void exitFullScreen();
+  void toggleMiniPlayer();
+  void enterMiniPlayer();
+  void exitMiniPlayer();
   void handleWebFullScreenChanged(bool isFullScreen);
   // 调用线程：GUI 主线程。只更新网页模式入口，不改变当前播放或显示模式。
   void updateWebAudibleTabCount(int audibleTabCount);
@@ -220,6 +225,7 @@ class MainWindow final : public QMainWindow {
   QToolButton* stopButton_{nullptr};
   QToolButton* networkRefreshButton_{nullptr};
   QToolButton* fullScreenButton_{nullptr};
+  QToolButton* miniPlayerButton_{nullptr};
   QToolButton* previousButton_{nullptr};
   QToolButton* nextButton_{nullptr};
   QToolButton* volumeButton_{nullptr};
@@ -237,6 +243,7 @@ class MainWindow final : public QMainWindow {
   QToolButton* helpMenuButton_{nullptr};
   QToolButton* themeButton_{nullptr};
   QTabBar* playlistKindTabs_{nullptr};
+  QTabBar* livePlaylistScopeTabs_{nullptr};
   QLineEdit* livePlaylistUrlEdit_{nullptr};
   QLineEdit* livePlaylistSearchEdit_{nullptr};
   QPushButton* livePlaylistLoadButton_{nullptr};
@@ -276,6 +283,7 @@ class MainWindow final : public QMainWindow {
   QTimer* rightKeyHoldTimer_{nullptr};
   QList<QShortcut*> nativePlaybackShortcuts_;
   QList<QWidget*> fullScreenChrome_;
+  QList<QWidget*> miniPlayerHiddenControls_;
   QList<int> playlistContextRows_;
   QStringList recentNetworkUrls_;
   QStringList livePlaylistHistoryUrls_;
@@ -288,6 +296,10 @@ class MainWindow final : public QMainWindow {
   int keyboardSeekStepSeconds_{5};
   std::optional<UiPresentationMode> presentationMode_;
   std::optional<Qt::WindowStates> webFullScreenPreviousWindowState_;
+  QRect miniPlayerPreviousGeometry_;
+  QSize miniPlayerPreviousMinimumSize_;
+  Qt::WindowStates miniPlayerPreviousWindowState_{};
+  bool miniPlayerPreviousWasOnTop_{false};
   DisplayMode displayMode_{DisplayMode::Local};
   int audibleWebTabCount_{0};
   int currentPlaylistIndex_{-1};
@@ -303,6 +315,7 @@ class MainWindow final : public QMainWindow {
   bool isRightKeyPressed_{false};
   bool isRightKeyHoldActive_{false};
   bool isDownloadExitConfirmed_{false};
+  bool isMiniPlayer_{false};
   std::unique_ptr<BrowserBackend> ownedBrowserBackend_;
   BrowserBackend* browserBackend_{nullptr};
 };
