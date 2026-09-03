@@ -1462,6 +1462,12 @@ MainWindow::MainWindow(BrowserBackend* const browserBackend,
   connect(volumeButton_, &QToolButton::clicked, this, &MainWindow::muteToggled);
   connect(lyricsButton_, &QToolButton::clicked, this,
           &MainWindow::lyricsToggled);
+  connect(this, &MainWindow::playlistItemActivated, this,
+          [this](const int row) {
+    if (isLivePlaylistActive_ && isLivePlaylistSearchActive_) {
+      livePlaylistSearchActivatedRow_ = row;
+    }
+  });
   connect(playlistView_, &QListView::doubleClicked, this,
           [this](const QModelIndex& index) {
             emit playlistItemActivated(index.row());
@@ -2017,6 +2023,9 @@ void MainWindow::showPlaylistKind(const int kindIndex) {
     for (int row = 0; row < playlistView_->model()->rowCount(); ++row) {
       playlistView_->setRowHidden(row, false);
     }
+    isLivePlaylistSearchActive_ = false;
+    livePlaylistSearchScrollPositions_.fill(std::nullopt);
+    livePlaylistSearchActivatedRow_.reset();
   }
   isLivePlaylistActive_ = showsLivePlaylist;
   if (displayMode_ != DisplayMode::Web) {
@@ -2062,17 +2071,33 @@ void MainWindow::changeLivePlaylistScope(const int scopeIndex) {
     return;
   }
 
-  livePlaylistScopeScrollPositions_[livePlaylistScopeIndex_] =
-      playlistView_->verticalScrollBar()->value();
+  if (!isLivePlaylistSearchActive_) {
+    livePlaylistScopeScrollPositions_[livePlaylistScopeIndex_] =
+        playlistView_->verticalScrollBar()->value();
+  }
   livePlaylistScopeIndex_ = scopeIndex;
+  if (isLivePlaylistSearchActive_ &&
+      !livePlaylistSearchScrollPositions_[scopeIndex].has_value()) {
+    livePlaylistSearchScrollPositions_[scopeIndex] =
+        livePlaylistScopeScrollPositions_[scopeIndex];
+  }
   applyLivePlaylistFilter();
-  const int scrollPosition = livePlaylistScopeScrollPositions_[scopeIndex];
+  const int scrollPosition =
+      isLivePlaylistSearchActive_
+          ? livePlaylistSearchScrollPositions_[scopeIndex].value_or(
+                livePlaylistScopeScrollPositions_[scopeIndex])
+          : livePlaylistScopeScrollPositions_[scopeIndex];
+  const bool isSearchActive = isLivePlaylistSearchActive_;
   playlistView_->verticalScrollBar()->setValue(scrollPosition);
-  QTimer::singleShot(0, playlistView_, [this, scopeIndex, scrollPosition] {
-    if (isLivePlaylistActive_ && livePlaylistScopeIndex_ == scopeIndex) {
-      playlistView_->verticalScrollBar()->setValue(scrollPosition);
-    }
-  });
+  QTimer::singleShot(0, playlistView_,
+                     [this, scopeIndex, scrollPosition, isSearchActive] {
+                       if (isLivePlaylistActive_ &&
+                           isLivePlaylistSearchActive_ == isSearchActive &&
+                           livePlaylistScopeIndex_ == scopeIndex) {
+                         playlistView_->verticalScrollBar()->setValue(
+                             scrollPosition);
+                       }
+                     });
 }
 
 void MainWindow::applyLivePlaylistFilter() {
@@ -2081,19 +2106,78 @@ void MainWindow::applyLivePlaylistFilter() {
     return;
   }
   const QString query = livePlaylistSearchEdit_->text().trimmed();
+  const bool hasSearchQuery = !query.isEmpty();
+  const bool wasSearchActive = isLivePlaylistSearchActive_;
+  // 搜索期间隐藏行会触发 Qt 重算滚动范围，因此清空时不能依赖视图当前值。
+  if (hasSearchQuery && !wasSearchActive) {
+    livePlaylistSearchScrollPositions_.fill(std::nullopt);
+    livePlaylistScopeScrollPositions_[livePlaylistScopeIndex_] =
+        playlistView_->verticalScrollBar()->value();
+    livePlaylistSearchScrollPositions_[livePlaylistScopeIndex_] =
+        livePlaylistScopeScrollPositions_[livePlaylistScopeIndex_];
+    livePlaylistSearchActivatedRow_.reset();
+    isLivePlaylistSearchActive_ = true;
+  }
   const bool showsFavoritesOnly =
       livePlaylistScopeTabs_->currentIndex() == 1;
   for (int row = 0; row < livePlaylistModel_->rowCount(); ++row) {
     const QModelIndex index = livePlaylistModel_->index(row, 0);
     const QString displayName = index.data(Qt::UserRole).toString();
     const bool matchesSearch =
-        query.isEmpty() ||
+        !hasSearchQuery ||
         displayName.contains(query, Qt::CaseInsensitive);
     const bool matchesScope =
         !showsFavoritesOnly ||
         index.data(PlaylistModel::kFavoriteRole).toBool();
     playlistView_->setRowHidden(row, !matchesSearch || !matchesScope);
   }
+
+  if (hasSearchQuery || !wasSearchActive) {
+    return;
+  }
+
+  isLivePlaylistSearchActive_ = false;
+  const int scopeIndex = livePlaylistScopeIndex_;
+  const int activatedRow = livePlaylistSearchActivatedRow_.value_or(-1);
+  const bool locatesActivatedRow =
+      livePlaylistSearchActivatedRow_.has_value() && activatedRow >= 0 &&
+      activatedRow < livePlaylistModel_->rowCount() &&
+      !playlistView_->isRowHidden(activatedRow);
+  const int scrollPosition =
+      livePlaylistSearchScrollPositions_[scopeIndex].value_or(
+          livePlaylistScopeScrollPositions_[scopeIndex]);
+  livePlaylistSearchScrollPositions_.fill(std::nullopt);
+  livePlaylistSearchActivatedRow_.reset();
+
+  if (locatesActivatedRow) {
+    selectPlaylistRow(activatedRow);
+    playlistView_->scrollTo(livePlaylistModel_->index(activatedRow, 0),
+                            QAbstractItemView::PositionAtCenter);
+    livePlaylistScopeScrollPositions_[scopeIndex] =
+        playlistView_->verticalScrollBar()->value();
+    QTimer::singleShot(0, playlistView_, [this, scopeIndex, activatedRow] {
+      if (!isLivePlaylistActive_ || isLivePlaylistSearchActive_ ||
+          livePlaylistScopeIndex_ != scopeIndex ||
+          playlistView_->isRowHidden(activatedRow)) {
+        return;
+      }
+      selectPlaylistRow(activatedRow);
+      playlistView_->scrollTo(livePlaylistModel_->index(activatedRow, 0),
+                              QAbstractItemView::PositionAtCenter);
+      livePlaylistScopeScrollPositions_[scopeIndex] =
+          playlistView_->verticalScrollBar()->value();
+    });
+    return;
+  }
+
+  playlistView_->verticalScrollBar()->setValue(scrollPosition);
+  livePlaylistScopeScrollPositions_[scopeIndex] = scrollPosition;
+  QTimer::singleShot(0, playlistView_, [this, scopeIndex, scrollPosition] {
+    if (isLivePlaylistActive_ && !isLivePlaylistSearchActive_ &&
+        livePlaylistScopeIndex_ == scopeIndex) {
+      playlistView_->verticalScrollBar()->setValue(scrollPosition);
+    }
+  });
 }
 
 void MainWindow::closeEvent(QCloseEvent* const event) {

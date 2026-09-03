@@ -296,6 +296,8 @@ class MainWindow final : public QMainWindow {
   QAbstractItemModel* localPlaylistModel_{nullptr};
   QAbstractItemModel* livePlaylistModel_{nullptr};
   std::array<int, 2> livePlaylistScopeScrollPositions_{};
+  std::array<std::optional<int>, 2> livePlaylistSearchScrollPositions_{};
+  std::optional<int> livePlaylistSearchActivatedRow_;
   int keyboardSeekStepSeconds_{5};
   int livePlaylistScopeIndex_{0};
   std::optional<UiPresentationMode> presentationMode_;
@@ -310,6 +312,7 @@ class MainWindow final : public QMainWindow {
   int currentLivePlaybackIndex_{-1};
   bool isPlaylistExpanded_{true};
   bool isLivePlaylistActive_{false};
+  bool isLivePlaylistSearchActive_{false};
   bool isLivePlaylistLoading_{false};
   bool canEditPlaylist_{false};
   bool canPlayCurrentItem_{false};

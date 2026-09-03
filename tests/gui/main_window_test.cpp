@@ -270,6 +270,7 @@ private slots:
   void controlsAndMarksLiveSourcesFromRightClickMenu();
   void keepsLiveListPositionAndLocatesCurrentPlayback();
   void filtersLivePlaylistWithoutChangingSourceRows();
+  void restoresOrLocatesAfterClearingLivePlaylistSearch();
   void filtersLivePlaylistByFavoriteScopeWithoutChangingSourceRows();
   void restoresLivePlaylistScrollPositionAcrossFavoriteScopeChanges();
   void persistsLiveFavoritesButNotUnavailableMarks();
@@ -1676,6 +1677,51 @@ void MainWindowTest::filtersLivePlaylistWithoutChangingSourceRows() {
   for (int row = 0; row < model->rowCount(); ++row) {
     QVERIFY(!playlistView->isRowHidden(row));
   }
+}
+
+void MainWindowTest::restoresOrLocatesAfterClearingLivePlaylistSearch() {
+  GuiHarness harness;
+  harness.window.show();
+  QCoreApplication::processEvents();
+  for (int row = 0; row < 80; ++row) {
+    harness.presenter.openNetworkUrl(
+        QStringLiteral("https://example.test/live/channel-%1.m3u8")
+            .arg(row, 2, 10, QChar('0')));
+  }
+
+  auto* const playlistView =
+      requiredChild<QListView>(harness.window, "playlistView");
+  auto* const searchEdit =
+      requiredChild<QLineEdit>(harness.window, "livePlaylistSearchEdit");
+  auto* const scrollBar = playlistView->verticalScrollBar();
+  auto* const model = playlistView->model();
+
+  playlistView->scrollTo(model->index(45, 0),
+                         QAbstractItemView::PositionAtCenter);
+  QCoreApplication::processEvents();
+  const int positionBeforeSearch = scrollBar->value();
+  QVERIFY(positionBeforeSearch > 0);
+
+  searchEdit->setText(QStringLiteral("channel-05"));
+  QCoreApplication::processEvents();
+  searchEdit->clear();
+  QCoreApplication::processEvents();
+  QCOMPARE(scrollBar->value(), positionBeforeSearch);
+
+  playlistView->scrollTo(model->index(10, 0),
+                         QAbstractItemView::PositionAtCenter);
+  QCoreApplication::processEvents();
+  searchEdit->setText(QStringLiteral("channel-70"));
+  QVERIFY(!playlistView->isRowHidden(70));
+  QVERIFY(QMetaObject::invokeMethod(
+      playlistView, "doubleClicked", Qt::DirectConnection,
+      Q_ARG(QModelIndex, model->index(70, 0))));
+  searchEdit->clear();
+  QCoreApplication::processEvents();
+
+  QCOMPARE(playlistView->currentIndex().row(), 70);
+  QVERIFY(playlistView->viewport()->rect().contains(
+      playlistView->visualRect(model->index(70, 0)).center()));
 }
 
 void MainWindowTest::
