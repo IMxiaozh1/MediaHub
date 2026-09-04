@@ -1617,6 +1617,11 @@ void MainWindow::showDisplayMode(const DisplayMode mode) {
   }
 
   displayMode_ = mode;
+  if (mode != DisplayMode::Live) {
+    isLiveImmersiveView_ = false;
+  } else if (!isMiniPlayer_ && isFullScreen()) {
+    isLiveImmersiveView_ = true;
+  }
   const bool showsWeb = mode == DisplayMode::Web;
   displayModeStack_->setCurrentWidget(showsWeb
                                           ? static_cast<QWidget*>(browserPage_)
@@ -1637,6 +1642,7 @@ void MainWindow::showDisplayMode(const DisplayMode mode) {
   } else {
     showPlaylistKind(mode == DisplayMode::Live ? 1 : 0);
   }
+  updateFullScreenText();
 }
 
 void MainWindow::updateWebAudibleTabCount(const int audibleTabCount) {
@@ -1860,6 +1866,7 @@ void MainWindow::applyViewState(const PlayerViewState& viewState) {
       viewState.isAudioVisualizationPlaying, viewState.progressValue,
       viewState.mediaName, viewState.videoPlaceholder);
   if (!viewState.canToggleFullscreen && isFullScreen()) {
+    isLiveImmersiveView_ = false;
     showNormal();
   }
 }
@@ -2246,6 +2253,13 @@ void MainWindow::showActiveDownloadExitConfirmation(
 void MainWindow::changeEvent(QEvent* const event) {
   QMainWindow::changeEvent(event);
   if (event->type() == QEvent::WindowStateChange) {
+    if (displayMode_ == DisplayMode::Live && !isMiniPlayer_) {
+      if (isFullScreen()) {
+        isLiveImmersiveView_ = true;
+      } else if (!isMinimized()) {
+        isLiveImmersiveView_ = false;
+      }
+    }
     updateFullScreenText();
   }
 }
@@ -2567,13 +2581,16 @@ void MainWindow::dropEvent(QDropEvent* const event) {
 void MainWindow::toggleFullScreen() {
   if (isMiniPlayer_) {
     exitMiniPlayer();
+    isLiveImmersiveView_ = displayMode_ == DisplayMode::Live;
     showFullScreen();
     updateFullScreenText();
     return;
   }
   if (isFullScreen()) {
+    isLiveImmersiveView_ = false;
     showNormal();
   } else {
+    isLiveImmersiveView_ = displayMode_ == DisplayMode::Live;
     showFullScreen();
   }
   updateFullScreenText();
@@ -2586,6 +2603,7 @@ void MainWindow::exitFullScreen() {
     return;
   }
   if (isFullScreen()) {
+    isLiveImmersiveView_ = false;
     showNormal();
     updateFullScreenText();
   }
@@ -2674,17 +2692,22 @@ void MainWindow::updateFullScreenText() {
   }
 
   const bool isNowFullScreen = isFullScreen();
+  const bool isImmersiveLiveView =
+      isLiveImmersiveView_ && displayMode_ == DisplayMode::Live &&
+      !isMiniPlayer_;
+  const bool hidesPlaybackChrome = isNowFullScreen || isImmersiveLiveView;
   menuBar()->hide();
   for (auto* const widget : fullScreenChrome_) {
-    widget->setVisible(!isNowFullScreen && !isMiniPlayer_);
+    widget->setVisible(!hidesPlaybackChrome && !isMiniPlayer_);
   }
   for (auto* const widget : miniPlayerHiddenControls_) {
     widget->setVisible(!isMiniPlayer_);
   }
-  playlistPanel_->setVisible(!isNowFullScreen && !isMiniPlayer_ &&
+  playlistPanel_->setVisible(!hidesPlaybackChrome && !isMiniPlayer_ &&
                              isPlaylistExpanded_);
-  playlistToggleButton_->setVisible(!isNowFullScreen && !isMiniPlayer_);
-  if (isNowFullScreen || isMiniPlayer_) {
+  playlistToggleButton_->setVisible(!hidesPlaybackChrome && !isMiniPlayer_);
+  transportPanel_->setVisible(!isImmersiveLiveView);
+  if (hidesPlaybackChrome || isMiniPlayer_) {
     rootLayout_->setContentsMargins(0, 0, 0, 0);
     rootLayout_->setSpacing(0);
   } else {

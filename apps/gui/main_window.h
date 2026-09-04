@@ -323,6 +323,8 @@ class MainWindow final : public QMainWindow {
   bool isRightKeyHoldActive_{false};
   bool isDownloadExitConfirmed_{false};
   bool isMiniPlayer_{false};
+  // 只记录直播全屏的沉浸式布局；标题栏最大化和小窗口不进入此状态。
+  bool isLiveImmersiveView_{false};
   std::unique_ptr<BrowserBackend> ownedBrowserBackend_;
   BrowserBackend* browserBackend_{nullptr};
 };

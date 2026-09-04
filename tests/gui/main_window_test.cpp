@@ -351,6 +351,7 @@ private slots:
   void keepsLivePlaylistCompactAcrossWindowBreakpoints();
   void keepsPresentationModesInsideResponsiveBounds();
   void resizesVideoSurfaceAndTogglesFullScreen();
+  void hidesLiveTransportOnlyInFullScreen();
   void togglesMiniPlayerWithoutRestartingPlayback();
   void togglesFullScreenWithF11();
   void showsSupportedShortcutsFromHelpMenu();
@@ -5743,6 +5744,53 @@ void MainWindowTest::resizesVideoSurfaceAndTogglesFullScreen() {
   QTRY_VERIFY(!harness.window.isFullScreen());
   QCOMPARE(fullScreenButton->accessibleName(), QStringLiteral("进入全屏"));
   QVERIFY(fullScreenButton->isVisible());
+}
+
+void MainWindowTest::hidesLiveTransportOnlyInFullScreen() {
+  GuiHarness harness;
+  harness.window.show();
+  harness.window.activateWindow();
+  harness.presenter.openNetworkUrl(
+      QStringLiteral("https://example.test/live/immersive.m3u8"));
+  harness.engine.emitStateChanged(core::PlaybackState::Opening);
+  harness.engine.emitStateChanged(core::PlaybackState::Playing);
+  QCoreApplication::processEvents();
+
+  auto* const transportPanel =
+      requiredChild<QWidget>(harness.window, "transportPanel");
+  auto* const fullScreenButton =
+      requiredChild<QToolButton>(harness.window, "fullScreenButton");
+  auto* const volumeSlider =
+      requiredChild<QSlider>(harness.window, "volumeSlider");
+  QVERIFY(transportPanel->isVisible());
+
+  QTest::mouseClick(fullScreenButton, Qt::LeftButton);
+  QTRY_VERIFY(harness.window.isFullScreen());
+  QTRY_VERIFY(transportPanel->isHidden());
+
+  const int volumeCommandsBeforeShortcut =
+      commandCount(harness, test::FakeEngineCommandKind::SetVolume);
+  QTest::keyClick(&harness.window, Qt::Key_Down);
+  QTRY_COMPARE(commandCount(harness, test::FakeEngineCommandKind::SetVolume),
+               volumeCommandsBeforeShortcut + 1);
+  QCOMPARE(volumeSlider->value(), 95);
+
+  harness.window.showMinimized();
+  QTRY_VERIFY(harness.window.isMinimized());
+  harness.window.showMaximized();
+  QTRY_VERIFY(harness.window.isMaximized());
+  QTRY_VERIFY(transportPanel->isVisible());
+
+  QTest::keyClick(&harness.window, Qt::Key_F11);
+  QTRY_VERIFY(harness.window.isFullScreen());
+  QTRY_VERIFY(transportPanel->isHidden());
+  QTest::keyClick(&harness.window, Qt::Key_F11);
+  QTRY_VERIFY(!harness.window.isFullScreen());
+  QTRY_VERIFY(transportPanel->isVisible());
+
+  harness.window.showNormal();
+  QTRY_VERIFY(!harness.window.isMaximized());
+  QTRY_VERIFY(transportPanel->isVisible());
 }
 
 void MainWindowTest::togglesMiniPlayerWithoutRestartingPlayback() {
