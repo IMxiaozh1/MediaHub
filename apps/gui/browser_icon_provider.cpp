@@ -242,7 +242,7 @@ QIcon BrowserIconProvider::icon(const BrowserIcon type, const QColor& color,
         pixmap.setDevicePixelRatio(scale);
         QPainter painter(&pixmap);
         painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.scale(scale, scale);
+        // 设置 DPR 后，QPainter 已经按逻辑像素绘制；再次缩放会把图标裁成左上角一块。
         drawIcon(painter, type, QRectF(0.5, 0.5, logicalSize - 1.0,
                                       logicalSize - 1.0), color);
         result.addPixmap(pixmap);

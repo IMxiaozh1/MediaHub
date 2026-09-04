@@ -145,6 +145,22 @@ if(NOT MEDIAHUB_CORE_ONLY)
     )
     set_tests_properties(gui.browser_favicon_cache PROPERTIES TIMEOUT 10)
 
+    add_executable(mediahub_browser_icon_provider_tests
+        gui/browser_icon_provider_test.cpp
+    )
+    set_target_properties(mediahub_browser_icon_provider_tests
+        PROPERTIES AUTOMOC ON
+    )
+    target_link_libraries(mediahub_browser_icon_provider_tests
+        PRIVATE mediahub_gui_support Qt6::Test
+    )
+    mediahub_enable_warnings(mediahub_browser_icon_provider_tests)
+    mediahub_deploy_qt(mediahub_browser_icon_provider_tests)
+    add_test(NAME gui.browser_icon_provider
+        COMMAND mediahub_browser_icon_provider_tests -platform offscreen
+    )
+    set_tests_properties(gui.browser_icon_provider PROPERTIES TIMEOUT 10)
+
     add_executable(mediahub_browser_session_store_tests
         gui/browser_session_store_test.cpp
     )
